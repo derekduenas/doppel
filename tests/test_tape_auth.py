@@ -457,6 +457,7 @@ async def test_kalshi_brti_polls_signed(tmp_path, monkeypatch, kind):
     try:
         src = KalshiBrti("ref_brti_live", SegmentWriter(tmp_path, "ref_brti_live"),
                          url=f"http://127.0.0.1:{port}{PATH}?id=BRTI")
+        src.interval_s = 0.5  # test cadence, independent of the production default
         stop = asyncio.Event()
         task = asyncio.create_task(src.run(stop))
         await asyncio.sleep(1.3)
