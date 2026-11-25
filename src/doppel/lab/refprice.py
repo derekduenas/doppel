@@ -1,8 +1,10 @@
-"""Settlement reference series from Polymarket US: CF Benchmarks BRTI (and other assets) at 1 s.
+"""Settlement reference series from Polymarket US (crypto: BRTI-based) at 1 s.
 
-Polymarket US Up/Down settles on BRTI: the simple average of the 60 one-second prints in [T-60s, T),
-ties settle Up (docs.polymarket.us/faqs/crypto-faqs). ``GET /v1/asset-prices/history`` serves these
-prints without auth, 3600 candles per call, at least ~30 days back (checked 2026-11-25).
+``GET /v1/asset-prices/history`` serves, without auth, 3600 candles per call, >= ~30 days back, a 1 s
+series that is ALREADY the settlement statistic: the rolling 60 s average of BRTI, labeled at its
+last second (tickCount=60; lags raw BRTI). Verified on 10 settled windows (FINDINGS E18):
+Up/Down priceToBeat = A(S-1), settlement = A(E-1), ties settle Up. So for this series use
+``updown_open_close`` below, NOT a second 60 s average.
 
 Raw responses go to tape stream ``ref_prices``. A state file records the last fully fetched second
 per asset, so the timer only tops up. Chunks overlap by a few seconds; readers dedupe by
@@ -82,8 +84,14 @@ def load_series(root: Path, asset: str) -> dict[int, float]:
     return out
 
 
+def updown_open_close(series: dict[int, float], start: int, end: int):
+    """(priceToBeat, settlement) of a PM US Up/Down window from the published averaged series."""
+    return series.get(start - 1), series.get(end - 1)
+
+
 def settlement_value(series: dict[int, float], t: int) -> float | None:
-    """Average of the 60 prints in [t-60, t); None if any second is missing."""
+    """Average of 60 RAW index prints in [t-60, t); None if any second is missing.
+    Use only with a raw-index series (e.g. a BRTI replica), never the PM US averaged series."""
     xs: list[float] = []
     for s in range(t - 60, t):
         v = series.get(s)
