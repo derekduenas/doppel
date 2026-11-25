@@ -77,6 +77,8 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--allow-stale-rest", action="store_true",
                     help="diagnostics: also simulate REST-only windows (CDN-stale books); never in the verdict")
+    ap.add_argument("--min-trade-coverage", type=float, default=0.9,
+                    help="maker windows need this print coverage; < 0.9 marks the run DIAGNOSTIC")
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args(argv)
     g = from_dict(orjson.loads(a.genome.read_bytes()))
@@ -97,10 +99,15 @@ def main(argv=None) -> int:
             print(f"unknown horizon {h}", file=sys.stderr)
             return 2
     cfg = SimConfig(latency_ms=a.latency_ms, brti_delay_s=a.brti_delay_s, fair_lag_s=a.fair_lag_s,
-                    depth_levels=a.depth_levels)
+                    depth_levels=a.depth_levels, min_trade_coverage=a.min_trade_coverage)
     results = run_twin(a.data, g, t_from, t_to, cfg, a.allow_stale_rest)
     v = verdict(g, results, a.block, a.boot, a.seed)
-    doc = {"twin": {"code_sha256": code_sha256(), "config": asdict(cfg), "allow_stale_rest": a.allow_stale_rest},
+    diagnostic = a.allow_stale_rest or a.min_trade_coverage < 0.9
+    if diagnostic:
+        v["decision"] = "DIAGNOSTIC"
+        v["reason"] = "relaxed data-quality gates: not evidence for or against the genome"
+    doc = {"twin": {"code_sha256": code_sha256(), "config": asdict(cfg), "allow_stale_rest": a.allow_stale_rest,
+                    "diagnostic": diagnostic},
            "genome": {"id": g.id, "name": g.name, "status": g.status, "describe": describe(g)},
            "range": [t_from, t_to], "verdict": v, "windows": results}
     a.out.parent.mkdir(parents=True, exist_ok=True)

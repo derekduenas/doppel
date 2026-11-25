@@ -70,6 +70,9 @@ class SimConfig:
     rest_max_age_s: float = 3.0         # diagnostics only (REST is stale): older snapshot = no book
     markouts_s: tuple[int, ...] = (1, 5, 30)
     depth_levels: int = 10              # book levels kept per side
+    min_trade_coverage: float = 0.9     # maker windows need this share of sharesTraded seen as prints;
+                                        # below 0.9 the run is DIAGNOSTIC (missed prints are mostly
+                                        # adverse fills, so low coverage flatters a maker)
 
     @property
     def latency_ns(self) -> int:
@@ -592,7 +595,7 @@ def window_head(wt: WindowTape, ref: WindowRef) -> dict:
 MIN_TRADE_COVERAGE = 0.9   # maker windows need >= 90% of the venue's traded volume seen as prints
 
 
-def exclusion(g: Genome, wt: WindowTape, ref: WindowRef) -> str | None:
+def exclusion(g: Genome, wt: WindowTape, ref: WindowRef, min_cov: float = MIN_TRADE_COVERAGE) -> str | None:
     """Why a window cannot count toward a verdict (None = it counts).
 
     A maker is only scored where the trade feed is verifiably complete: missed prints are missed
@@ -612,7 +615,7 @@ def exclusion(g: Genome, wt: WindowTape, ref: WindowRef) -> str | None:
         if any(wt.start * NS <= t < wt.end * NS for t in wt.gaps) or (wt.stats.get("trade_gap_events") or 0) > 0:
             return "feed_gap"
         cov = wt.stats.get("trade_coverage")
-        if cov is not None and cov < MIN_TRADE_COVERAGE:
+        if cov is not None and cov < min_cov:
             return "incomplete_trade_feed"
     return None
 
@@ -624,7 +627,7 @@ def run_windows(g: Genome, items: Iterable[tuple[WindowTape, WindowRef]], cfg: S
     settled: list[tuple[int, float]] = []          # (end, net_usd) of simulated windows
     spans: list[tuple[int, int]] = []              # (first fill ns, end ns) of windows with fills
     for wt, ref in items:
-        why = exclusion(g, wt, ref)
+        why = exclusion(g, wt, ref, cfg.min_trade_coverage)
         if why == "stale_rest_diagnostic" and ref.outcome is not None:
             res = WindowSim(g, wt, ref, cfg, features=features_factory(g, ref, cfg) if features_factory else None).run()
             out.append({**res, "eligible": False, "excluded": why})
