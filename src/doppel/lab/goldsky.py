@@ -133,6 +133,8 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--n-controls", type=int, default=10)
     c.add_argument("--days", type=float, default=7.0)
     c.add_argument("--max-rows-per-wallet", type=int, default=20_000)
+    c.add_argument("--skip", type=int, default=0, help="skip the first N candidates and controls")
+    c.add_argument("--run-budget-rows", type=int, help="stop this run after this many rows")
     c.add_argument("--execute", action="store_true", help="without this, only print the plan")
     sub.add_parser("budget")
     a = ap.parse_args(argv)
@@ -160,10 +162,11 @@ def main(argv: list[str] | None = None) -> int:
 
 def _cohort(a, ledger: Ledger, key: str) -> int:
     doc = orjson.loads(a.cohort.read_bytes())
-    wallets = ([("cand", w) for w in doc["candidates"][:a.n_candidates]]
-               + [("ctrl", w) for w in doc["controls"][:a.n_controls]])
-    worst = len(wallets) * a.max_rows_per_wallet
+    wallets = ([("cand", w) for w in doc["candidates"][a.skip:a.skip + a.n_candidates]]
+               + [("ctrl", w) for w in doc["controls"][a.skip:a.skip + a.n_controls]])
+    worst = min(len(wallets) * a.max_rows_per_wallet, a.run_budget_rows or 10**12)
     plan = {"cohort_sha256": doc["sha256"], "wallets": len(wallets), "days": a.days,
+            "run_budget_rows": a.run_budget_rows,
             "max_rows_per_wallet": a.max_rows_per_wallet, "worst_case_rows": worst,
             "worst_case_usd": round(worst * USD_PER_ROW, 2), "ledger_before": ledger.summary()}
     print(orjson.dumps(plan).decode())
@@ -176,11 +179,17 @@ def _cohort(a, ledger: Ledger, key: str) -> int:
     start = end - int(a.days * 86400)
     writer = SegmentWriter(a.data, "goldsky_activity")
     tag = doc["sha256"][:12]
+    spent = 0
     try:
         for role, w in wallets:
+            room = worst - spent
+            if room <= 0:
+                print(orjson.dumps({"stopped": "run budget reached", "spent": spent}).decode())
+                break
             n = asyncio.run(pull(f"cohort-{tag}-{role}-{w}", {"address": w, "start_time": start,
                                                               "end_time": end},
-                                 key, ledger, writer, a.max_rows_per_wallet))
+                                 key, ledger, writer, min(a.max_rows_per_wallet, room)))
+            spent += n
             print(orjson.dumps({"wallet": w, "role": role, "rows": n,
                                 "truncated": n >= a.max_rows_per_wallet}).decode(), flush=True)
     finally:
