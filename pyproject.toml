@@ -15,6 +15,7 @@ dependencies = [
 doppel-tape = "doppel.tape.cli:main"
 doppel-goldsky = "doppel.lab.goldsky:main"
 doppel-completeness = "doppel.lab.completeness:main"
+doppel-scan = "doppel.lab.scan:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
