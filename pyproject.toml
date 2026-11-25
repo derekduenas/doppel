@@ -22,6 +22,7 @@ doppel-census = "doppel.lab.census:main"
 doppel-refprice = "doppel.lab.refprice:main"
 doppel-fair = "doppel.lab.fair:main"
 doppel-brti-import = "doppel.lab.brti_import:main"
+doppel-vsmarket = "doppel.lab.vsmarket:main"
 
 [dependency-groups]
 dev = [
