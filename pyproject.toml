@@ -18,6 +18,7 @@ doppel-completeness = "doppel.lab.completeness:main"
 doppel-scan = "doppel.lab.scan:main"
 doppel-ledger = "doppel.lab.ledger:main"
 doppel-census = "doppel.lab.census:main"
+doppel-refprice = "doppel.lab.refprice:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]

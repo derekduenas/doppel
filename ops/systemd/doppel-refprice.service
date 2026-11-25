@@ -1,0 +1,9 @@
+[Unit]
+Description=DOPPEL settlement reference prices (PM US BRTI 1s) top-up
+
+[Service]
+Type=oneshot
+User=doppel
+WorkingDirectory=/tmp
+ExecStart=/opt/doppel/.venv/bin/doppel-refprice --data /mnt/volume_nyc1_1793485122853/doppel/tape --state /mnt/volume_nyc1_1793485122853/doppel/lab/refprice-state.json
+TimeoutStartSec=3600
