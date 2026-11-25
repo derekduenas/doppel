@@ -30,6 +30,7 @@ doppel-vsmarket = "doppel.lab.vsmarket:main"
 doppel-xvenue = "doppel.lab.xvenue:main"
 doppel-anticipation = "doppel.lab.anticipation:main"
 doppel-dossier = "doppel.lab.dossier:main"
+doppel-genome = "doppel.strategy.cli:main"
 
 [dependency-groups]
 dev = [
