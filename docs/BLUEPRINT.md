@@ -174,6 +174,8 @@ third_party/REFERENCES.md
 | **M4 Inversion → H3** | weeks 5–8 | C5 on top atlas operators; anticipation tests; H2/H3 genomes | G2–G4 on held-out weeks | Add strategies |
 | **M5 Simulator + agents + H5** | weeks 8+ | Multi-agent learned simulator; C13 agents; sports/esports after G3 | Agents' proposals survive at a measured rate; simulator fills match twin | Scale |
 
+| **M6 Perps expansion** | planned | Polymarket intl perps as the lab, Kalshi perps as the venue. See [ROADMAP.md](ROADMAP.md) | Gate P0: wallet attribution of perps fills | Owner request 2026-11-25 |
+
 ### Gates (unchanged in spirit, tightened)
 
 G0 ledger truth · G1 PIT skill vs controls (3 of 4 rolling windows) · G2 clonable (side AUC ≥ 0.65,
