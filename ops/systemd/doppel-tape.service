@@ -8,7 +8,7 @@ Type=simple
 User=doppel
 WorkingDirectory=/opt/doppel
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/doppel/.venv/bin/doppel-tape run --data /var/lib/doppel/tape
+ExecStart=/opt/doppel/.venv/bin/doppel-tape run --data /mnt/volume_nyc1_1793485122853/doppel/tape
 Restart=always
 RestartSec=3
 # Recorder measured at ~0.5 core / ~80 MB RSS; cap so it can never starve a shared host.
@@ -18,7 +18,7 @@ MemoryMax=1G
 Nice=5
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/doppel
+ReadWritePaths=/mnt/volume_nyc1_1793485122853/doppel
 PrivateTmp=true
 
 [Install]

@@ -1,0 +1,7 @@
+[Unit]
+Description=DOPPEL tape janitor (free-space floor)
+
+[Service]
+Type=oneshot
+User=doppel
+ExecStart=/opt/doppel/ops/doppel-janitor.sh /mnt/volume_nyc1_1793485122853/doppel/tape 12
