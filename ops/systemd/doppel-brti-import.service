@@ -1,0 +1,11 @@
+[Unit]
+Description=DOPPEL import raw BRTI from PERELMAN stream (read-only) into tape ref_brti_raw
+
+[Service]
+Type=oneshot
+# root only to READ /var/lib/private/perelman (DynamicUser state dir); writes go to DOPPEL tape.
+User=root
+WorkingDirectory=/tmp
+ExecStart=/opt/doppel/.venv/bin/doppel-brti-import --data /mnt/volume_nyc1_1793485122853/doppel/tape --state /mnt/volume_nyc1_1793485122853/doppel/lab/brti-import-state.json
+ExecStartPost=/bin/chown -R doppel:doppel /mnt/volume_nyc1_1793485122853/doppel/tape/ref_brti_raw /mnt/volume_nyc1_1793485122853/doppel/lab/brti-import-state.json
+ReadOnlyPaths=/var/lib/private/perelman
