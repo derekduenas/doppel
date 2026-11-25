@@ -52,5 +52,15 @@ def test_g0_uses_snapshot_blocks_when_available():
            {"timestamp": D + 2 * DAY, "source_block": 300, "trade_pnl": 7, "fees_paid": -3.5, "volume_usdc": 160}]
     res = g0_compare(led, pts)
     assert res["n_days"] == 2
-    assert res["days"][0]["ours"] == {"trade_pnl": 7.0, "fees": 1.0, "volume": 100.0}
+    assert res["days"][0]["ours"] == {"trade_pnl": 7.0, "fees": 1.0, "volume": 100.0,
+                                      "boundary_exposure": 0.0}
     assert res["days"][1]["ours"]["volume"] == 60.0 and res["volume_ratio"] == 1.0
+
+
+def test_boundary_exposure_counts_only_open_positions():
+    from doppel.lab.ledger import boundary_exposure
+    led = {"bt": [(100, D), (400, D + 600)],
+           "tok_moves": {"A": [(110, 10.0)], "B": [(120, 5.0), (130, -5.0)], "C": [(150, 3.0)]},
+           "tok_end": {"A": D + 1000, "B": D + 1000, "C": D + 60}}  # C ended at ~block 130
+    assert boundary_exposure(led, 200) == 10.0  # A open, B flat, C already ended
+    assert boundary_exposure(led, 105) == 0.0

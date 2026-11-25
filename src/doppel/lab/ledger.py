@@ -123,6 +123,7 @@ def wallet_ledger(rows: list[dict], tmap: TokenMap) -> dict:
                                "pos": 0.0, "censored": False, "first": None})
     day_fees, day_notional = defaultdict(float), defaultdict(float)
     fills_b: list[tuple[int, float, float]] = []  # (block, fee, notional) for block-exact G0
+    tok_moves: dict[str, list[tuple[int, float]]] = defaultdict(list)  # token -> (block, +/-shares)
     for r in rows:
         t = tok[r["token_id"]]
         sh, usd = float(r["amount_shares"]), float(r["amount_usdc"])
@@ -143,14 +144,17 @@ def wallet_ledger(rows: list[dict], tmap: TokenMap) -> dict:
         day_fees[d] += f
         day_notional[d] += usd
         fills_b.append((int(r["block_number"]), f, usd))
+        tok_moves[r["token_id"]].append((int(r["block_number"]), sh if r["side"] == "BUY" else -sh))
     day_pnl = defaultdict(float)
     tok_pnl: list[tuple[int, float]] = []  # (realization ts ~ market end, pnl)
+    tok_end: dict[str, int | None] = {}
     stats = {"tokens": len(tok), "resolved": 0, "open": 0, "unknown": 0, "censored": 0,
              "resolved_notional": 0.0, "total_notional": 0.0, "unresolved_exposure": 0.0}
     for k, t in tok.items():
         notional = t["paid"] + t["recv"]
         stats["total_notional"] += notional
         info = tmap.m.get(k, {"status": "unknown"})
+        tok_end[k] = _end_ts(info.get("end"))
         if t["censored"]:
             stats["censored"] += 1
             continue
@@ -167,8 +171,23 @@ def wallet_ledger(rows: list[dict], tmap: TokenMap) -> dict:
     bt = sorted({(int(r["block_number"]), int(r["block_timestamp"])) for r in rows})
     return {"stats": stats, "day_pnl": dict(day_pnl), "day_fees": dict(day_fees),
             "day_notional": dict(day_notional), "fills_b": fills_b, "tok_pnl": tok_pnl, "bt": bt,
+            "tok_moves": dict(tok_moves), "tok_end": tok_end,
             "span": [rows[0]["block_timestamp"], rows[-1]["block_timestamp"]] if rows else None,
             "span_blocks": [bt[0][0], bt[-1][0]] if bt else None}
+
+
+def boundary_exposure(led: dict, block: int) -> float:
+    """Shares held at ``block`` in tokens not yet ended by then. The API's trade_pnl marks such
+    open positions to market at its snapshots; our ledger books them at resolution, so this much
+    exposure (each share can swing up to $1) is legitimately unmatched across that snapshot."""
+    tot = 0.0
+    for tok, moves in (led.get("tok_moves") or {}).items():
+        end = (led.get("tok_end") or {}).get(tok)
+        if end is not None and _ts_to_block(led["bt"], end) <= block:
+            continue
+        pos = sum(q for b, q in moves if b <= block)
+        tot += abs(pos)
+    return tot
 
 
 def _ts_to_block(bt: list[tuple[int, int]], ts: int) -> float:
@@ -226,7 +245,8 @@ def g0_compare(led: dict, points: list[dict], tol_abs=50.0, tol_rel=0.02,
             fee = sum(f for blk, f, _ in led["fills_b"] if sa < blk <= sb)
             vol = sum(u for blk, _, u in led["fills_b"] if sa < blk <= sb)
             pnl = sum(p for ts, p in led["tok_pnl"] if sa < _ts_to_block(led["bt"], ts) <= sb)
-            ours = {"trade_pnl": pnl, "fees": fee, "volume": vol}
+            ours = {"trade_pnl": pnl, "fees": fee, "volume": vol,
+                    "boundary_exposure": round(boundary_exposure(led, sa) + boundary_exposure(led, sb), 2)}
         else:
             if d < lo or d + DAY > hi:
                 continue
@@ -245,7 +265,8 @@ def g0_compare(led: dict, points: list[dict], tol_abs=50.0, tol_rel=0.02,
     def ok(x, y):
         return abs(x - y) <= max(tol_abs, tol_rel * abs(y))
     vol_ratio = tot["volume"]["ours"] / tot["volume"]["api"] if tot["volume"]["api"] else None
-    return {"days": days, "n_days": len(days), "totals": tot,
+    bexp = sum(x["ours"].get("boundary_exposure", 0.0) for x in days)
+    return {"days": days, "n_days": len(days), "totals": tot, "boundary_exposure": round(bexp, 2),
             "volume_ratio": round(vol_ratio, 4) if vol_ratio is not None else None,
             "pnl_ok": bool(days) and ok(tot["trade_pnl"]["ours"], tot["trade_pnl"]["api"]),
             "fees_ok": bool(days) and ok(tot["fees"]["ours"], tot["fees"]["api"])}
@@ -270,6 +291,8 @@ def g0_verdict(stats: dict, g0: dict, min_resolved=0.95, max_censored=0.02, vol_
     tol = max(50.0, 0.02 * abs(g0["totals"]["trade_pnl"]["api"]))
     if stats.get("unresolved_exposure", 0.0) > tol:
         return "NOT_COMPARABLE:unresolved_exposure"
+    if g0.get("boundary_exposure", 0.0) > tol:
+        return "NOT_COMPARABLE:boundary_exposure"
     return "PASS" if g0["pnl_ok"] and g0["fees_ok"] else "FAIL"
 
 
