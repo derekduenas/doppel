@@ -1,0 +1,356 @@
+<title>DOPPEL Architecture</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: reading column for prose, full-width scroll containers for the two engineering figures */
+:root{
+  --bg:#f5f6f8; --surface:#ffffff; --tint:#eef1f5; --fg:#18222f; --muted:#5b6676; --line:#cfd6df;
+  --accent:#0e7c66; --accent-soft:#dcf1ec;
+  --display:"Space Grotesk",ui-sans-serif,system-ui,sans-serif; --sans:"Inter",ui-sans-serif,system-ui,sans-serif; --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f141b; --surface:#161d27; --tint:#121922; --fg:#e3e8ef; --muted:#93a0b1; --line:#2a3544;
+  --accent:#4cc9a8; --accent-soft:#10302a; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f141b; --surface:#161d27; --tint:#121922; --fg:#e3e8ef; --muted:#93a0b1; --line:#2a3544;
+  --accent:#4cc9a8; --accent-soft:#10302a; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:16px;line-height:1.6;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0 64px}
+.wrap{max-width:1240px;margin:0 auto;display:flex;flex-direction:column;gap:36px}
+.prose{max-width:72ch}
+h1,h2{font-family:var(--display);line-height:1.15;margin:0;text-wrap:balance}
+h1{font-size:clamp(2.2rem,5vw,3.2rem);letter-spacing:-.02em}
+h2{font-size:1.45rem}
+p{margin:0}
+.eyebrow{font-family:var(--mono);font-size:.75rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+header{padding-top:44px;display:flex;flex-direction:column;gap:14px;border-bottom:1px solid var(--line);padding-bottom:28px}
+.stack{display:flex;flex-direction:column;gap:14px}
+.legend{display:flex;flex-wrap:wrap;gap:18px;font-family:var(--mono);font-size:.8rem;color:var(--muted);align-items:center}
+.legend span{display:inline-flex;align-items:center;gap:8px}
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:10px}
+figure{margin:0;display:flex;flex-direction:column;gap:10px}
+figcaption{font-size:.92rem;color:var(--muted);max-width:90ch}
+svg{display:block;width:100%;height:auto;color:var(--fg)}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px 18px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.card .k{font-family:var(--mono);font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--accent)}
+ul.rules{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px}
+code{font-family:var(--mono);font-size:.88em}
+/* SVG vocabulary */
+.box{fill:var(--surface);stroke:var(--fg);stroke-width:1.2}
+.live{stroke-dasharray:none}
+.building{stroke-dasharray:6 4}
+.planned{stroke-dasharray:2 4}
+.container{fill:var(--tint);stroke:var(--line);stroke-width:1}
+.t{font:600 13px var(--sans);fill:var(--fg)}
+.s{font:400 10.5px var(--mono);fill:var(--muted)}
+.lbl{font:400 10px var(--mono);fill:var(--muted)}
+.hd{font:600 11px var(--mono);letter-spacing:.12em;fill:var(--muted)}
+.wire{stroke:var(--fg);stroke-width:1.2;fill:none;opacity:.7}
+.acc{stroke:var(--accent);stroke-width:2.2;opacity:1}
+.bridge{fill:var(--accent-soft);stroke:var(--accent);stroke-width:1.5}
+.bt{font:600 12px var(--mono);letter-spacing:.08em;fill:var(--accent)}
+.albl{font:600 10px var(--mono);fill:var(--accent)}
+#ah path{fill:var(--fg)} #aha path{fill:var(--accent)}
+.sw{width:34px;height:14px;display:inline-block;border:1.4px solid var(--fg);border-radius:3px;background:var(--surface)}
+.sw.b{border-style:dashed}.sw.p{border-style:dotted}.sw.a{border-color:var(--accent);background:var(--accent-soft)}
+</style>
+
+<div class="wrap">
+<header>
+  <div class="eyebrow">DOPPEL · system architecture · 2026-11-25</div>
+  <h1>DOPPEL Architecture</h1>
+  <p class="prose">Venues feed one append-only tape. The research plane turns it into exact P&amp;L, who earns and how, fair value, flow intelligence, and finally executable strategy genomes that a replay twin scores. Only a sealed genome crosses into execution, where a single key-holder sends Polymarket US quotes and Kalshi hedges. Results flow back into a lineage graph and the learning loops.</p>
+  <div class="legend">
+    <span><i class="sw"></i>live</span>
+    <span><i class="sw b"></i>being built</span>
+    <span><i class="sw p"></i>planned</span>
+    <span><i class="sw a"></i>money path (genome → order)</span>
+  </div>
+</header>
+
+<figure>
+  <div class="scroll">
+  <svg viewBox="0 0 1460 690" role="img" aria-label="DOPPEL data and money flow: six live sensors write one tape; the research plane builds ledger, census, dossiers, policy inversion, fair value, flow guard, genome extraction, registry and twin; a sealed genome is the only crossing into the execution plane of live features, runtime, riskd, hedge router and sentinel, which send maker quotes to Polymarket US and hedges to Kalshi; fills return to the sentinel and everything is recorded in a lineage graph that feeds learning loops and the desk.">
+    <defs>
+      <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+      <marker id="aha" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+    </defs>
+
+    <!-- column headers -->
+    <text class="hd" x="117" y="40" text-anchor="middle">SENSORS</text>
+    <text class="hd" x="310" y="40" text-anchor="middle">TAPE</text>
+    <text class="hd" x="655" y="40" text-anchor="middle">RESEARCH PLANE · batch</text>
+    <text class="hd" x="946" y="40" text-anchor="middle">SEAL</text>
+    <text class="hd" x="1115" y="40" text-anchor="middle">EXECUTION PLANE · hot path</text>
+    <text class="hd" x="1365" y="40" text-anchor="middle">VENUES</text>
+
+    <!-- sensors -->
+    <g>
+      <rect class="box live" x="20" y="70" width="195" height="56" rx="8"/>
+      <text class="t" x="117" y="93" text-anchor="middle">Polymarket intl CLOB</text>
+      <text class="s" x="117" y="111" text-anchor="middle">anon books + prints · 8 WS</text>
+      <rect class="box live" x="20" y="140" width="195" height="56" rx="8"/>
+      <text class="t" x="117" y="163" text-anchor="middle">RTDS identity tape</text>
+      <text class="s" x="117" y="181" text-anchor="middle">wallet · role · fee · 2 sockets</text>
+      <rect class="box live" x="20" y="210" width="195" height="56" rx="8"/>
+      <text class="t" x="117" y="233" text-anchor="middle">Polygon via Goldsky</text>
+      <text class="s" x="117" y="251" text-anchor="middle">fill history · $70 cap</text>
+      <rect class="box live" x="20" y="280" width="195" height="56" rx="8"/>
+      <text class="t" x="117" y="303" text-anchor="middle">Polymarket US WS</text>
+      <text class="s" x="117" y="321" text-anchor="middle">books + aggressor prints</text>
+      <rect class="box live" x="20" y="350" width="195" height="56" rx="8"/>
+      <text class="t" x="117" y="373" text-anchor="middle">Kalshi</text>
+      <text class="s" x="117" y="391" text-anchor="middle">books · raw BRTI · WS next</text>
+      <rect class="box live" x="20" y="420" width="195" height="56" rx="8"/>
+      <text class="t" x="117" y="443" text-anchor="middle">Spot + settlement</text>
+      <text class="s" x="117" y="461" text-anchor="middle">3 exchanges · PM US A(t)</text>
+    </g>
+    <g class="wire" marker-end="url(#ah)">
+      <line class="wire" x1="215" y1="98" x2="243" y2="98" marker-end="url(#ah)"/>
+      <line class="wire" x1="215" y1="168" x2="243" y2="168" marker-end="url(#ah)"/>
+      <line class="wire" x1="215" y1="238" x2="243" y2="238" marker-end="url(#ah)"/>
+      <line class="wire" x1="215" y1="308" x2="243" y2="308" marker-end="url(#ah)"/>
+      <line class="wire" x1="215" y1="378" x2="243" y2="378" marker-end="url(#ah)"/>
+      <line class="wire" x1="215" y1="448" x2="243" y2="448" marker-end="url(#ah)"/>
+    </g>
+    <text class="lbl" x="229" y="90" text-anchor="middle">raw</text>
+
+    <!-- tape -->
+    <rect class="box live" x="245" y="70" width="130" height="406" rx="10"/>
+    <text class="t" x="310" y="210" text-anchor="middle">Append-only</text>
+    <text class="s" x="310" y="234" text-anchor="middle">zstd + CRC32</text>
+    <text class="s" x="310" y="254" text-anchor="middle">3 clocks</text>
+    <text class="s" x="310" y="274" text-anchor="middle">gap watchdog</text>
+    <text class="s" x="310" y="294" text-anchor="middle">hourly receipts</text>
+    <text class="s" x="310" y="314" text-anchor="middle">on Apex</text>
+    <line class="wire" x1="375" y1="265" x2="408" y2="265" marker-end="url(#ah)"/>
+    <text class="lbl" x="392" y="257" text-anchor="middle">as-of</text>
+
+    <!-- research container -->
+    <rect class="container" x="410" y="52" width="490" height="470" rx="14"/>
+    <!-- c1 -->
+    <rect class="box live" x="430" y="70" width="200" height="64" rx="8"/>
+    <text class="t" x="530" y="97" text-anchor="middle">Fill store + ledger</text>
+    <text class="s" x="530" y="116" text-anchor="middle">exact P&amp;L · G0 vs API</text>
+    <rect class="box live" x="430" y="160" width="200" height="64" rx="8"/>
+    <text class="t" x="530" y="187" text-anchor="middle">Census + cohorts</text>
+    <text class="s" x="530" y="206" text-anchor="middle">point-in-time · controls</text>
+    <rect class="box live" x="430" y="250" width="200" height="64" rx="8"/>
+    <text class="t" x="530" y="277" text-anchor="middle">Dossiers</text>
+    <text class="s" x="530" y="296" text-anchor="middle">per-fill state · markouts</text>
+    <rect class="box live" x="430" y="340" width="200" height="64" rx="8"/>
+    <text class="t" x="530" y="367" text-anchor="middle">Policy inversion</text>
+    <text class="s" x="530" y="386" text-anchor="middle">explainability ceiling</text>
+    <rect class="box building" x="430" y="440" width="200" height="64" rx="8"/>
+    <text class="t" x="530" y="467" text-anchor="middle">Persistence · W8</text>
+    <text class="s" x="530" y="486" text-anchor="middle">who keeps winning</text>
+    <!-- c2 -->
+    <rect class="box live" x="660" y="70" width="210" height="64" rx="8"/>
+    <text class="t" x="765" y="97" text-anchor="middle">Fair value</text>
+    <text class="s" x="765" y="116" text-anchor="middle">fair-v1 · raw BRTI</text>
+    <rect class="box building" x="660" y="160" width="210" height="64" rx="8"/>
+    <text class="t" x="765" y="187" text-anchor="middle">Flow guard · W3</text>
+    <text class="s" x="765" y="206" text-anchor="middle">intl informed flow</text>
+    <rect class="box building" x="660" y="250" width="210" height="64" rx="8"/>
+    <text class="t" x="765" y="277" text-anchor="middle">Genome extraction</text>
+    <text class="s" x="765" y="296" text-anchor="middle">dossier → executable spec</text>
+    <rect class="box building" x="660" y="340" width="210" height="64" rx="8"/>
+    <text class="t" x="765" y="367" text-anchor="middle">Registry</text>
+    <text class="s" x="765" y="386" text-anchor="middle">prereg · hash chain · FDR</text>
+    <rect class="box building" x="660" y="440" width="210" height="64" rx="8"/>
+    <text class="t" x="765" y="467" text-anchor="middle">Twin · W1</text>
+    <text class="s" x="765" y="486" text-anchor="middle">PM US WS · queue · fees</text>
+
+    <!-- research wiring -->
+    <line class="wire" x1="530" y1="134" x2="530" y2="158" marker-end="url(#ah)"/>
+    <text class="lbl" x="538" y="150">P&amp;L</text>
+    <line class="wire" x1="530" y1="224" x2="530" y2="248" marker-end="url(#ah)"/>
+    <text class="lbl" x="538" y="240">top operators</text>
+    <line class="wire" x1="530" y1="314" x2="530" y2="338" marker-end="url(#ah)"/>
+    <text class="lbl" x="538" y="330">per-fill state</text>
+    <path class="wire" d="M630,372 H645 V282 H658" marker-end="url(#ah)"/>
+    <text class="lbl" x="641" y="330" text-anchor="middle" transform="rotate(-90 641 330)">rules</text>
+    <path class="wire" d="M430,198 H420 V472 H428" marker-end="url(#ah)"/>
+    <text class="lbl" x="416" y="335" text-anchor="middle" transform="rotate(-90 416 335)">cohort v1</text>
+    <line class="wire" x1="765" y1="314" x2="765" y2="338" marker-end="url(#ah)"/>
+    <text class="lbl" x="773" y="330">candidates</text>
+    <line class="wire" x1="765" y1="404" x2="765" y2="438" marker-end="url(#ah)"/>
+    <text class="lbl" x="773" y="425">preregistered</text>
+    <path class="wire" d="M870,102 H885 V472 H872" marker-end="url(#ah)"/>
+    <path class="wire" d="M870,192 H885"/>
+    <text class="lbl" x="893" y="300" text-anchor="middle" transform="rotate(90 893 300)">features x(t)</text>
+
+    <!-- seal -->
+    <path class="wire acc" d="M870,494 H916" marker-end="url(#aha)"/>
+    <text class="albl" x="893" y="512" text-anchor="middle">PASS</text>
+    <rect class="bridge" x="918" y="52" width="56" height="470" rx="10"/>
+    <text class="bt" x="946" y="287" text-anchor="middle" transform="rotate(-90 946 287)">SEALED GENOME · content hash · the only crossing</text>
+
+    <!-- execution container -->
+    <rect class="container" x="990" y="52" width="250" height="470" rx="14"/>
+    <rect class="box planned" x="1003" y="70" width="222" height="64" rx="8"/>
+    <text class="t" x="1114" y="97" text-anchor="middle">Live features · W6</text>
+    <text class="s" x="1114" y="116" text-anchor="middle">fast fair · flow guard</text>
+    <rect class="box planned" x="1003" y="160" width="222" height="64" rx="8"/>
+    <text class="t" x="1114" y="187" text-anchor="middle">Strategy runtime · W7</text>
+    <text class="s" x="1114" y="206" text-anchor="middle">paper ≡ live · one genome</text>
+    <rect class="box planned" x="1003" y="250" width="222" height="64" rx="8"/>
+    <text class="t" x="1114" y="277" text-anchor="middle">riskd</text>
+    <text class="s" x="1114" y="296" text-anchor="middle">sole key · caps · kill</text>
+    <rect class="box planned" x="1003" y="340" width="222" height="64" rx="8"/>
+    <text class="t" x="1114" y="367" text-anchor="middle">Hedge router · W5</text>
+    <text class="s" x="1114" y="386" text-anchor="middle">PM US ⇄ Kalshi 15m</text>
+    <rect class="box planned" x="1003" y="430" width="222" height="64" rx="8"/>
+    <text class="t" x="1114" y="457" text-anchor="middle">Sentinel + allocator · W9</text>
+    <text class="s" x="1114" y="476" text-anchor="middle">e-values · auto-demote</text>
+
+    <!-- execution wiring -->
+    <path class="wire acc" d="M974,180 H1001" marker-end="url(#aha)"/>
+    <line class="wire" x1="1114" y1="134" x2="1114" y2="158" marker-end="url(#ah)"/>
+    <text class="lbl" x="1122" y="150">x(t)</text>
+    <line class="wire acc" x1="1114" y1="224" x2="1114" y2="248" marker-end="url(#aha)"/>
+    <text class="albl" x="1122" y="240">intents</text>
+    <line class="wire" x1="1114" y1="340" x2="1114" y2="316" marker-end="url(#ah)"/>
+    <text class="lbl" x="1122" y="333">hedge intents</text>
+    <path class="wire" d="M1003,462 H996 V206 H1001" marker-end="url(#ah)"/>
+    <text class="lbl" x="999" y="335" text-anchor="middle" transform="rotate(-90 999 335)">auto-demote</text>
+
+    <!-- venues (order destinations) -->
+    <rect class="box planned" x="1290" y="160" width="150" height="64" rx="8"/>
+    <text class="t" x="1365" y="187" text-anchor="middle">Polymarket US</text>
+    <text class="s" x="1365" y="206" text-anchor="middle">maker quotes</text>
+    <rect class="box planned" x="1290" y="340" width="150" height="64" rx="8"/>
+    <text class="t" x="1365" y="367" text-anchor="middle">Kalshi</text>
+    <text class="s" x="1365" y="386" text-anchor="middle">hedge leg</text>
+    <path class="wire acc" d="M1225,272 H1244 V192 H1288" marker-end="url(#aha)"/>
+    <text class="albl" x="1268" y="185" text-anchor="middle">orders</text>
+    <path class="wire" d="M1225,292 H1258 V372 H1288" marker-end="url(#ah)"/>
+    <text class="lbl" x="1273" y="365" text-anchor="middle">hedges</text>
+    <path class="wire" d="M1440,192 H1452 V470 H1227" marker-end="url(#ah)"/>
+    <path class="wire" d="M1440,372 H1452"/>
+    <text class="lbl" x="1340" y="463" text-anchor="middle">fills · markouts</text>
+
+    <!-- lineage graph -->
+    <rect class="box planned" x="245" y="548" width="995" height="40" rx="8"/>
+    <text class="t" x="742" y="573" text-anchor="middle">Knowledge graph · bitemporal lineage: wallet → dossier → genome → trial → verdict → retirement</text>
+    <line class="wire" x1="600" y1="522" x2="600" y2="546" marker-end="url(#ah)"/>
+    <text class="lbl" x="608" y="539">lineage</text>
+    <line class="wire" x1="720" y1="548" x2="720" y2="524" marker-end="url(#ah)"/>
+    <text class="lbl" x="728" y="539">priors</text>
+    <line class="wire" x1="1114" y1="494" x2="1114" y2="546" marker-end="url(#ah)"/>
+    <text class="lbl" x="1122" y="539">verdicts</text>
+
+    <!-- learning loops -->
+    <text class="hd" x="245" y="614">LEARNING LOOPS · walk-forward, gated</text>
+    <g>
+      <rect class="box planned" x="245" y="624" width="158" height="50" rx="8"/>
+      <text class="t" x="324" y="645" text-anchor="middle">Fair residual</text>
+      <text class="s" x="324" y="663" text-anchor="middle">→ fair value</text>
+      <rect class="box planned" x="412" y="624" width="158" height="50" rx="8"/>
+      <text class="t" x="491" y="645" text-anchor="middle">Fill / adverse sel.</text>
+      <text class="s" x="491" y="663" text-anchor="middle">→ maker spread</text>
+      <rect class="box live" x="579" y="624" width="158" height="50" rx="8"/>
+      <text class="t" x="658" y="645" text-anchor="middle">Policy inversion</text>
+      <text class="s" x="658" y="663" text-anchor="middle">→ extraction</text>
+      <rect class="box planned" x="746" y="624" width="158" height="50" rx="8"/>
+      <text class="t" x="825" y="645" text-anchor="middle">Genome search</text>
+      <text class="s" x="825" y="663" text-anchor="middle">→ registry · FDR</text>
+      <rect class="box building" x="913" y="624" width="158" height="50" rx="8"/>
+      <text class="t" x="992" y="645" text-anchor="middle">Wallet informedness</text>
+      <text class="s" x="992" y="663" text-anchor="middle">→ flow guard</text>
+      <rect class="box planned" x="1080" y="624" width="158" height="50" rx="8"/>
+      <text class="t" x="1159" y="645" text-anchor="middle">Decay / regime</text>
+      <text class="s" x="1159" y="663" text-anchor="middle">→ sentinel</text>
+    </g>
+
+    <!-- desk -->
+    <rect class="box planned" x="1290" y="548" width="150" height="126" rx="8"/>
+    <text class="t" x="1365" y="572" text-anchor="middle">Desk · W11</text>
+    <text class="s" x="1365" y="596" text-anchor="middle">genome P&amp;L</text>
+    <text class="s" x="1365" y="614" text-anchor="middle">fair vs market</text>
+    <text class="s" x="1365" y="632" text-anchor="middle">flow · tape health</text>
+    <text class="s" x="1365" y="650" text-anchor="middle">spend · inventory</text>
+    <line class="wire" x1="1240" y1="568" x2="1288" y2="568" marker-end="url(#ah)"/>
+    <text class="lbl" x="1264" y="561" text-anchor="middle">reads</text>
+  </svg>
+  </div>
+  <figcaption>Everything a strategy can know comes from the tape at its receive time. Polymarket US REST books are excluded because they are cached up to 20 s stale. The green path is the only way money moves: a twin PASS seals a genome, the runtime turns it into intents, and riskd, the only process holding keys, sends orders. Fills come back to the sentinel, which can demote a strategy on its own but never promote one.</figcaption>
+</figure>
+
+<section class="stack">
+  <div class="eyebrow">How to read it</div>
+  <div class="cols">
+    <div class="card"><span class="k">Data path</span><p>Six sensors write raw messages to one append-only tape on Apex. Research reads it as-of, so a decision only sees what had arrived by then. Chain data from Goldsky reconciles every wallet's P&amp;L to Polymarket's own numbers before anything is believed.</p></div>
+    <div class="card"><span class="k">Strategy path</span><p>Census finds who earns, dossiers show how, and policy inversion recovers the rule. Extraction writes the rule as a genome, and the registry seals it before its test window exists. The twin replays Polymarket US books and prints to decide PASS or KILL.</p></div>
+    <div class="card"><span class="k">Money path</span><p>Only a sealed genome reaches execution. The same genome runs on paper and live. riskd enforces caps and the kill switch. Maker quotes go to Polymarket US, and inventory is hedged on Kalshi's identical 15-minute contract.</p></div>
+  </div>
+</section>
+
+<figure>
+  <div class="scroll">
+  <svg viewBox="0 0 1180 240" role="img" aria-label="Lifecycle of one strategy genome: candidate, registered, twin verdict, shadow paper, micro-live, scaled; any stage can fall to retired, and retired genomes can be mutated into new candidates with new ids charged to the false-discovery budget.">
+    <defs>
+      <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--fg)"/></marker>
+      <marker id="aha2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/></marker>
+    </defs>
+    <text class="hd" x="20" y="34">ONE GENOME'S LIFE</text>
+    <rect class="box live" x="20" y="60" width="150" height="56" rx="8"/>
+    <text class="t" x="95" y="84" text-anchor="middle">Candidate</text>
+    <text class="s" x="95" y="102" text-anchor="middle">extracted or designed</text>
+    <rect class="box building" x="220" y="60" width="150" height="56" rx="8"/>
+    <text class="t" x="295" y="84" text-anchor="middle">Registered</text>
+    <text class="s" x="295" y="102" text-anchor="middle">future window · family</text>
+    <rect class="box building" x="420" y="60" width="150" height="56" rx="8"/>
+    <text class="t" x="495" y="84" text-anchor="middle">Twin verdict</text>
+    <text class="s" x="495" y="102" text-anchor="middle">after-fee CI · kill rule</text>
+    <rect class="box planned" x="620" y="60" width="150" height="56" rx="8"/>
+    <text class="t" x="695" y="84" text-anchor="middle">Shadow paper</text>
+    <text class="s" x="695" y="102" text-anchor="middle">live data · no money</text>
+    <rect class="box planned" x="820" y="60" width="150" height="56" rx="8"/>
+    <text class="t" x="895" y="84" text-anchor="middle">Micro-live</text>
+    <text class="s" x="895" y="102" text-anchor="middle">owner-armed · caps</text>
+    <rect class="box planned" x="1020" y="60" width="140" height="56" rx="8"/>
+    <text class="t" x="1090" y="84" text-anchor="middle">Scaled</text>
+    <text class="s" x="1090" y="102" text-anchor="middle">allocator-sized</text>
+
+    <line class="wire" x1="170" y1="88" x2="218" y2="88" marker-end="url(#ah2)"/>
+    <text class="lbl" x="194" y="80" text-anchor="middle">seal</text>
+    <line class="wire" x1="370" y1="88" x2="418" y2="88" marker-end="url(#ah2)"/>
+    <text class="lbl" x="394" y="80" text-anchor="middle">replay</text>
+    <line class="wire acc" x1="570" y1="88" x2="618" y2="88" marker-end="url(#aha2)"/>
+    <text class="albl" x="594" y="80" text-anchor="middle">PASS</text>
+    <line class="wire acc" x1="770" y1="88" x2="818" y2="88" marker-end="url(#aha2)"/>
+    <text class="albl" x="794" y="80" text-anchor="middle">e ≥ 20</text>
+    <line class="wire acc" x1="970" y1="88" x2="1018" y2="88" marker-end="url(#aha2)"/>
+    <text class="albl" x="994" y="80" text-anchor="middle">$ &gt; 0</text>
+
+    <rect class="box planned" x="420" y="170" width="740" height="44" rx="8"/>
+    <text class="t" x="790" y="197" text-anchor="middle">Retired → failure library (cause recorded)</text>
+    <line class="wire" x1="495" y1="116" x2="495" y2="168" marker-end="url(#ah2)"/>
+    <text class="lbl" x="503" y="146">KILL</text>
+    <line class="wire" x1="695" y1="116" x2="695" y2="168" marker-end="url(#ah2)"/>
+    <text class="lbl" x="703" y="146">paper ≠ twin</text>
+    <line class="wire" x1="895" y1="116" x2="895" y2="168" marker-end="url(#ah2)"/>
+    <text class="lbl" x="903" y="146">decay</text>
+    <line class="wire" x1="1090" y1="116" x2="1090" y2="168" marker-end="url(#ah2)"/>
+    <text class="lbl" x="1098" y="146">decay</text>
+    <path class="wire" d="M420,192 H95 V118" marker-end="url(#ah2)"/>
+    <text class="lbl" x="258" y="185" text-anchor="middle">mutate: new id, charged to FDR budget</text>
+  </svg>
+  </div>
+  <figcaption>A genome can only move forward on evidence, and any stage can retire it. Promotion past shadow paper needs you; demotion never does. A mutation is a new strategy with a new ID, so search can never quietly overwrite a failure.</figcaption>
+</figure>
+
+<section class="stack">
+  <div class="eyebrow">Invariants the architecture enforces</div>
+  <ul class="rules prose">
+    <li><strong>As-of only.</strong> Every feature uses data received by the decision second. Venue history endpoints that look ahead are banned (Polymarket US price history, Polymarket US REST books).</li>
+    <li><strong>Truth before belief.</strong> Wallet P&amp;L must reconcile to Polymarket's own numbers (G0) and census figures must pass their self-check before they're used.</li>
+    <li><strong>Preregistration.</strong> A genome's test window must lie in the future when it is sealed, and every variant counts against its family's false-discovery budget.</li>
+    <li><strong>Agents propose, code decides.</strong> LLM agents draft dossiers and genomes; deterministic gates issue verdicts.</li>
+    <li><strong>One key holder.</strong> Only riskd signs orders. Polymarket US market data is signed by an existing signer, and DOPPEL never holds that key.</li>
+    <li><strong>Owner arms live.</strong> Nothing trades real money until you arm it, inside riskd's caps.</li>
+  </ul>
+</section>
+</div>
