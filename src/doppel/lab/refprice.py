@@ -84,9 +84,12 @@ def load_series(root: Path, asset: str) -> dict[int, float]:
 
 def settlement_value(series: dict[int, float], t: int) -> float | None:
     """Average of the 60 prints in [t-60, t); None if any second is missing."""
-    xs = [series.get(s) for s in range(t - 60, t)]
-    if any(x is None for x in xs):
-        return None
+    xs: list[float] = []
+    for s in range(t - 60, t):
+        v = series.get(s)
+        if v is None:
+            return None
+        xs.append(v)
     return sum(xs) / 60.0
 
 

@@ -21,7 +21,11 @@ doppel-census = "doppel.lab.census:main"
 doppel-refprice = "doppel.lab.refprice:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+dev = [
+    "pyright>=1.1.414",
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+]
 
 [build-system]
 requires = ["hatchling"]

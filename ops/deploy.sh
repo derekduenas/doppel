@@ -6,6 +6,7 @@ set -eu
 cd "$(dirname "$0")/.."
 [ -z "$(git status --porcelain)" ] || { echo "uncommitted changes; commit first" >&2; exit 1; }
 uv run pytest -q
+uv run pyright src
 uv export --no-dev --no-hashes --no-emit-project -q > ops/requirements.lock
 git diff --quiet ops/requirements.lock || { echo "requirements.lock changed; commit it" >&2; exit 1; }
 git push -q origin main

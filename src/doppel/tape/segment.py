@@ -19,6 +19,7 @@ import time
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, BinaryIO
 
 import orjson
 import zstandard
@@ -47,13 +48,13 @@ class SegmentWriter:
     stream: str
     level: int = 6
     _path: Path | None = None
-    _fh: object | None = None
+    _fh: BinaryIO | None = None
     _buf: list[bytes] = field(default_factory=list)
     _last_flush: float = 0.0
     _seq: int = 0
     _stats: SegmentStats = field(default_factory=SegmentStats)
-    _cctx: zstandard.ZstdCompressor | None = None
-    _hash: object | None = None
+    _cctx: Any = None
+    _hash: Any = None
 
     def __post_init__(self) -> None:
         self.root = Path(self.root)
