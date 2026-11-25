@@ -7,11 +7,44 @@ acceptance test or a recorded kill.
 |---|---|---|
 | M0 | Recorders: intl CLOB (8 shards), RTDS x2, PM US REST + WS (signer), Kalshi books + live BRTI, spot ×3, reference series, raw BRTI import | **Live on Apex** |
 | M1 | Census: exact ledger + G0, profit-blind cohorts, mechanism census, anticipation, dossiers + policy inversion | **Running** (census v0 done; cohort v1 freezes 2026-11-26 18:05Z) |
-| M2 | 5m complex fair value (fair-v1 live) + H1 guarded PM US maker in the twin | Next |
+| M2 | **Edge core** (workstreams W1–W12 below): twin, genomes, flow guard, venue economics, cross-venue hedge, fast fair, execution, ML loops | **In progress** |
 | M3 | Shadow paper + riskd + desk | |
 | M4 | Inversion → H3 taker clones | |
 | M5 | Learned simulator, persona agents, sports/esports | |
 | **M6** | **Perps expansion: Polymarket intl perps → Kalshi perps** | **Planned (owner request 2026-11-25)** |
+
+## M2 edge core: workstreams (owner: "all of them", 2026-11-25)
+
+Ordered by impact on profit. Each workstream ends on a test or a recorded kill. LLM agents propose;
+deterministic code and preregistered gates decide.
+
+| W | Workstream | What it adds to the edge | Done when | Status |
+|---|---|---|---|---|
+| W1 | **Twin** (PM US replay of genomes) | Honest after-fee P&L with CI; pessimistic queue, latency, aggressor-tagged prints | Fill model passes synthetic tests; H1 family scored on preregistered window | agent building |
+| W2 | **Genome extraction + registry** | Dossiers become executable candidate strategies; hash-chained preregistration; Holm/FDR ledger | Real dossiers yield valid genomes; registry verify() green | agent building |
+| W3 | **Intl informed-flow guard** (the unique edge) | Wallet informedness labels (point-in-time, from markouts) + live feature "informed net flow on intl, last N s" from the RTDS identity tape; maker pulls/shades before informed flow reaches PM US | Feature in genome vocabulary + twin; guarded vs unguarded H1 compared on the same windows | next |
+| W4 | **Venue economics** | PM US fees, maker rebates, liquidity incentives modelled exactly in `Costs`; quote where incentives pay | Costs reproduce real PM US fee/rebate statements; incentive-aware market selection | next |
+| W5 | **Cross-venue hedge + arb** | PM US 15m ↔ Kalshi 15m (both BRTI): hedge maker inventory, capture gaps after both fees | Measured gap/lead-lag on our tape; hedge genome scored in twin | next |
+| W6 | **Fast fair engine** | BRTI computed live from exchange books (PERELMAN replica) in ms, not a 5 s poll; Rust hot path | Replica within $0.01 of published BRTI p99; latency budget met | planned |
+| W7 | **Execution + riskd + paper runtime** | Same genome runs live on paper; PM US order adapter behind riskd (sole key holder); tiny owner-armed probes calibrate the twin's queue model (gate G6) | Paper ≈ twin; probe fills within the twin's predicted band | planned |
+| W8 | **Persistence (who to learn from)** | Cohort v1 scored on days after its freeze vs controls; only persistent operators feed extraction | G1 verdict on cohort v1 | scheduled 11-26 18:05Z |
+| W9 | **Allocator + decay sentinel** | Capital across surviving genomes/assets/horizons; Kelly fraction gated on calibration; anytime-valid e-values + changepoint auto-demotion | Sentinel demotes a synthetic decaying genome within one window | planned |
+| W10 | **ML loops** (below) | Learning that compounds without fooling itself | Each loop has a walk-forward test and a gate | planned |
+| W11 | **Desk (dashboard)** | One live view: genome P&L/verdicts, fair vs market, flow guard state, tape health, spend, inventory | Every number links to its source | planned (after W7) |
+| W12 | **Durable storage** | Tape never lost (object storage + Parquet compaction) | Owner provides Spaces/research box | **blocked on owner** |
+
+### W10 ML loops (each walk-forward, preregistered, never trained on its own test window)
+1. **Fair residual learner:** P(Up) = f(fair-v1, book state, intl flow, time-to-close). Gradient boosting on
+   settled windows, refit daily, promoted only if held-out log loss beats fair-v1 and the market mid.
+2. **Fill / adverse-selection model:** P(fill) and post-fill markout given quote distance, queue ahead,
+   flow, volatility. Learned from twin replays and live probes; feeds the maker's half-spread and size.
+3. **Policy inversion** (exists in dossiers): extract wallet rules; explainability ceiling decides cloneable
+   vs private information.
+4. **Genome search:** Bayesian optimisation inside a preregistered family. Every variant is charged to the
+   family's FDR ledger, and winners must survive Holm on a later window.
+5. **Wallet informedness:** online, point-in-time score per wallet from dir-adjusted markouts (shrunk to
+   the population mean); feeds W3.
+6. **Decay / regime detection:** BOCPD + e-processes on live edge per genome; feeds W9.
 
 ## M6: Perps expansion (PM intl perps as the lab, Kalshi perps as the venue)
 
