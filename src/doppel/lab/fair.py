@@ -225,7 +225,7 @@ def calibrate_raw(raw: dict[int, float], series: dict[int, float], hz: str, lag:
         if not len(m):
             continue
         y = m[:, 3]
-        out = {"n": int(len(m))}
+        out: dict = {"n": int(len(m))}
         for name, col in (("v1_raw", 1), ("v0_series", 2)):
             p = np.clip(m[:, col], 1e-6, 1 - 1e-6)
             out[name] = {"brier": round(float(np.mean((p - y) ** 2)), 5),
