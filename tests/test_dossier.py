@@ -452,3 +452,20 @@ def test_panel_has_no_post_trade_leak(tmp_path, monkeypatch):
     doc, _ = dz.dossier("0xw", rows, tm, idx, brti)
     leaky = doc["policy"]["took_any"]["auc_hgb"]
     assert leaky > 0.75 and leaky > clean + 0.2, (clean, leaky)
+
+
+def test_fit_drops_all_nan_and_constant_columns():
+    import numpy as np
+
+    from doppel.lab.dossier import FEATURES, _fit
+    rng = np.random.default_rng(0)
+    n, k = 400, len(FEATURES)
+    X = rng.normal(size=(n, k))
+    X[:, 0] = np.nan          # all-NaN column: used to crash sklearn's binning
+    X[:, 1] = 3.0             # constant column
+    y = (X[:, 2] > 0).astype(int)
+    res = _fit(X[:300], y[:300], X[300:], y[300:])
+    names = list(FEATURES)
+    assert names[0] in res["features_dropped"] and names[1] in res["features_dropped"]
+    assert res["auc_hgb"] > 0.9
+    assert _fit(X[:300], np.zeros(300, int), X[300:], y[300:])["status"] == "insufficient"

@@ -638,18 +638,40 @@ def build_panel(fills: list[dict], idx: BookIndex, brti: Brti, tmap_tokens: dict
 
 
 def _fit(Xtr, ytr, Xte, yte) -> dict:
+    """Fit the policy models. Columns with no finite training values or no variation are dropped
+    first (sklearn's binning crashes on all-NaN columns; a constant column carries no policy
+    information) and reported, so the rule text only names features the wallet could have used."""
     from sklearn.ensemble import HistGradientBoostingClassifier
     from sklearn.metrics import roc_auc_score
     from sklearn.tree import DecisionTreeClassifier, export_text
+    names = list(FEATURES)
+    if len(np.unique(ytr)) < 2 or len(np.unique(yte)) < 2:
+        return {"status": "insufficient", "reason": "single-class train or test labels"}
+    keep = []
+    for j in range(Xtr.shape[1]):
+        col = Xtr[:, j]
+        fin = col[np.isfinite(col)]
+        if fin.size >= 2 and np.nanstd(fin) > 0:
+            keep.append(j)
+    dropped = [names[j] for j in range(len(names)) if j not in keep]
+    if not keep:
+        return {"status": "insufficient", "reason": "no informative features", "dropped": dropped}
+    Xtr, Xte = Xtr[:, keep], Xte[:, keep]
+    kept = [names[j] for j in keep]
     hgb = HistGradientBoostingClassifier(max_iter=200, class_weight="balanced", random_state=SEED)
     hgb.fit(Xtr, ytr)
+    # DecisionTree cannot take NaN in older sklearn; impute with the training median per column.
+    med = np.nanmedian(Xtr, axis=0)
+    Xtr_t = np.where(np.isnan(Xtr), med, Xtr)
+    Xte_t = np.where(np.isnan(Xte), med, Xte)
     tree = DecisionTreeClassifier(max_depth=3, class_weight="balanced", min_samples_leaf=20,
                                   random_state=SEED)
-    tree.fit(Xtr, ytr)
+    tree.fit(Xtr_t, ytr)
     p_hgb = np.asarray(hgb.predict_proba(Xte))[:, 1]
-    p_tree = np.asarray(tree.predict_proba(Xte))[:, 1]
+    p_tree = np.asarray(tree.predict_proba(Xte_t))[:, 1]
     return {"auc_hgb": _r(roc_auc_score(yte, p_hgb)), "auc_tree": _r(roc_auc_score(yte, p_tree)),
-            "rules": export_text(tree, feature_names=list(FEATURES), show_weights=False)}
+            "features_used": kept, "features_dropped": dropped,
+            "rules": export_text(tree, feature_names=kept, show_weights=False)}
 
 
 def invert_policy(X: np.ndarray, y: np.ndarray, ws: np.ndarray, we: np.ndarray, info: dict) -> dict:

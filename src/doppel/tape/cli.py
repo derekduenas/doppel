@@ -30,7 +30,7 @@ from .universe import IntlUniverse
 ASSETS = ("btc", "eth", "sol", "xrp")
 HZ = ("5m", "15m")
 CLOB_SHARDS = tuple(f"clob_{a}_{h}" for a in ASSETS for h in HZ)  # one socket per shard
-ALL = ("rtds_a", "rtds_b", *CLOB_SHARDS, "pmus_books", "pmus_ws", "kalshi_books", "kalshi_brti",
+ALL = ("rtds_a", "rtds_b", *CLOB_SHARDS, "pmus_books", "pmus_ws_5m", "pmus_ws_15m", "kalshi_books", "kalshi_brti",
        "spot_coinbase", "spot_kraken", "spot_bitstamp")
 
 
@@ -46,7 +46,10 @@ def build_sources(data: Path, only: set[str]):
         "pmus_books": lambda: PmusBooks("pmus_books", w("pmus_books"), pmus_lim),
         "kalshi_books": lambda: KalshiBooks("kalshi_books", w("kalshi_books"), kalshi_lim),
         # auth via the host signer socket; DOPPEL never holds the PM US key
-        "pmus_ws": lambda: PmusMarketsWs("pmus_ws", w("pmus_ws")),
+        # One connection per horizon: PM US caps subscriptions per connection ("max subscriptions
+        # per connection reached" when one socket pre-subscribed the next 15m window).
+        "pmus_ws_5m": lambda: PmusMarketsWs("pmus_ws_5m", w("pmus_ws_5m"), horizons=("5m",)),
+        "pmus_ws_15m": lambda: PmusMarketsWs("pmus_ws_15m", w("pmus_ws_15m"), horizons=("15m",)),
         # ALL key differs from the stream name on purpose (it is a reference-price stream)
         "kalshi_brti": lambda: KalshiBrti("ref_brti_live", w("ref_brti_live")),
         "spot_coinbase": lambda: CoinbaseTrades("spot_coinbase", w("spot_coinbase")),
