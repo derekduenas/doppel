@@ -44,6 +44,21 @@ FEATURES = {
     "brti_move_30s": "raw BRTI change over last 30 s, USD",
     "dist_to_open_usd": "current settlement-average projection minus priceToBeat, USD",
     "inventory_up": "own net Up contracts in this window (Down counts negative)",
+    # Intl informed-flow guard (lab/flow.py). Rows: Polymarket intl RTDS TAKER fills (fee > 0) in the
+    # same asset/horizon/start window, counted by OUR receive time tw in (t - N, t], never by trade
+    # timestamp. USD = price*size, signed + for Up exposure (BUY Up / SELL Down). Wallet weight =
+    # clip((score - mu) / 10c, -1, 1) from point-in-time informedness as of the window start (0 when
+    # the wallet has no settled window yet); "informed" = score - mu >= 5c per share.
+    "intl_flow_up_usd_5s": "intl net Up-exposure taker USD, rows received in last 5 s",
+    "intl_flow_up_usd_30s": "intl net Up-exposure taker USD, rows received in last 30 s",
+    "intl_flow_up_usd_120s": "intl net Up-exposure taker USD, rows received in last 120 s",
+    "intl_informed_flow_5s": "intl_flow_up_usd_5s with each row times its wallet weight, USD",
+    "intl_informed_flow_30s": "intl_flow_up_usd_30s with each row times its wallet weight, USD",
+    "intl_informed_flow_120s": "intl_flow_up_usd_120s with each row times its wallet weight, USD",
+    "intl_informed_share_5s": "share (0-1) of gross taker USD in last 5 s from informed wallets; null if none",
+    "intl_informed_share_30s": "share (0-1) of gross taker USD in last 30 s from informed wallets; null if none",
+    "intl_informed_share_120s": "share (0-1) of gross taker USD in last 120 s from informed wallets; null if none",
+    "intl_mid_up_c": "intl CLOB Up-token mid, cents, quote received before t and <= 3 s old (else null)",
 }
 
 Venue = Literal["pmus", "kalshi", "intl_sim"]
