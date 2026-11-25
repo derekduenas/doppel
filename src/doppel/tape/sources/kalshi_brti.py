@@ -61,7 +61,7 @@ def default_profile_path() -> Path | None:
 
 
 class KalshiBrti(Source):
-    interval_s = 0.5
+    interval_s = 2.0  # shared Kalshi key with PERELMAN/btc-window; each response carries ~120 s of values
 
     def __init__(self, name, writer, profile_path: str | Path | None = None, url: str = BRTI_URL,
                  seen_cap: int = 20000):
