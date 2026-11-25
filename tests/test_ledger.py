@@ -42,7 +42,7 @@ def test_g0_compare_days_and_tolerance():
 
 
 def test_g0_uses_snapshot_blocks_when_available():
-    led = {"span": [D - 10, D + 2 * DAY], "span_blocks": [100, 400],
+    led = {"span": [D - 10, D + 2 * DAY], "span_blocks": [100 - 1800, 400],
            "day_pnl": {}, "day_fees": {}, "day_notional": {},
            "fills_b": [(150, 1.0, 100.0), (210, 2.0, 50.0), (260, 0.5, 10.0)],
            "tok_pnl": [(D + 50, 7.0)], "bt": [(100, D), (400, D + 600)]}

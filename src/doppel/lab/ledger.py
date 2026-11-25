@@ -192,7 +192,8 @@ async def api_points(wallet: str, interval: str = "1w") -> list[dict]:
     return sorted(doc.get("data", {}).get("points", []), key=lambda p: p["timestamp"])
 
 
-def g0_compare(led: dict, points: list[dict], tol_abs=50.0, tol_rel=0.02) -> dict:
+def g0_compare(led: dict, points: list[dict], tol_abs=50.0, tol_rel=0.02,
+               warmup_blocks: int = 1800) -> dict:
     """Compare each interval between consecutive API snapshots that lies inside our pulled span.
 
     API points are snapshots at ``source_block`` (not exactly at the labeled midnight), so when
@@ -212,7 +213,10 @@ def g0_compare(led: dict, points: list[dict], tol_abs=50.0, tol_rel=0.02) -> dic
                "volume": b["volume_usdc"] - a["volume_usdc"]}
         sa, sb = a.get("source_block"), b.get("source_block")
         if sa is not None and sb is not None and led.get("fills_b") is not None and blo is not None:
-            if sa < blo or sb > bhi:
+            # Positions opened before our first pulled fill can resolve inside an interval and are
+            # invisible to us (no sells to flag them). Require ~1 h of pulled history before the
+            # interval starts, so short-dated windows opened earlier have already resolved.
+            if sa < blo + warmup_blocks or sb > bhi:
                 continue
             fee = sum(f for blk, f, _ in led["fills_b"] if sa < blk <= sb)
             vol = sum(u for blk, _, u in led["fills_b"] if sa < blk <= sb)

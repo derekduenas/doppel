@@ -132,6 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--n-candidates", type=int, default=10)
     c.add_argument("--n-controls", type=int, default=10)
     c.add_argument("--days", type=float, default=7.0)
+    c.add_argument("--end", type=int, help="explicit end epoch (default now); start = end - days")
     c.add_argument("--max-rows-per-wallet", type=int, default=20_000)
     c.add_argument("--skip", type=int, default=0, help="skip the first N candidates and controls")
     c.add_argument("--run-budget-rows", type=int, help="stop this run after this many rows")
@@ -175,7 +176,7 @@ def _cohort(a, ledger: Ledger, key: str) -> int:
         return 3
     if not a.execute:
         return 0
-    end = int(time.time())
+    end = a.end or int(time.time())
     start = end - int(a.days * 86400)
     writer = SegmentWriter(a.data, "goldsky_activity")
     tag = doc["sha256"][:12]
@@ -186,7 +187,7 @@ def _cohort(a, ledger: Ledger, key: str) -> int:
             if room <= 0:
                 print(orjson.dumps({"stopped": "run budget reached", "spent": spent}).decode())
                 break
-            n = asyncio.run(pull(f"cohort-{tag}-{role}-{w}", {"address": w, "start_time": start,
+            n = asyncio.run(pull(f"cohort-{tag}-{role}-{w}-{start}", {"address": w, "start_time": start,
                                                               "end_time": end},
                                  key, ledger, writer, min(a.max_rows_per_wallet, room)))
             spent += n
