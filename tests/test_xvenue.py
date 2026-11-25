@@ -19,3 +19,10 @@ def test_tops_parse():
     k = kalshi_top({"orderbook_fp": {"yes_dollars": [["0.40", "10"], ["0.42", "5"]],
                                      "no_dollars": [["0.55", "7"], ["0.50", "3"]]}})
     assert k == (0.42, 5.0, 0.45, 7.0)     # yes bid 0.42; yes ask = 1 - best no bid 0.55
+
+
+def test_episodes_count_once_and_need_persistence():
+    from doppel.lab.xvenue import episodes
+    ser = [(10, 0.03, 100), (11, 0.02, 80), (12, -0.01, 50), (20, 0.05, 10), (30, 0.04, 5), (31, 0.04, 5)]
+    eps = episodes(ser, persist=2)
+    assert [(e["start"], e["secs"], e["dollars"]) for e in eps] == [(10, 2, 3.0), (30, 2, 0.2)]

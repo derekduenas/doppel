@@ -121,14 +121,29 @@ def pmus_meta(start: int) -> dict | None:
     return {"ptb": float(ptb.group(1)) if ptb else None, "settle": float(sp.group(1)) if sp else None}
 
 
-def asof(rows: list, t: float, max_age: float = 3.0):
+def asof(rows: list, t: float, max_age: float = 3.0, with_time: bool = False):
     i = bisect.bisect_right([r[0] for r in rows], t) - 1
     if i < 0 or t - rows[i][0] > max_age:
         return None
-    return rows[i][1]
+    return (rows[i][0], rows[i][1]) if with_time else rows[i][1]
 
 
-def run(root: Path, lab: Path) -> dict:
+def episodes(series: list[tuple[int, float, float]], persist: int) -> list[dict]:
+    """Contiguous runs of positive net edge lasting >= ``persist`` consecutive seconds. Each episode
+    is valued ONCE at its first second's edge x size (no re-counting of the same liquidity)."""
+    out, run = [], []
+    for s, e, q in series + [(10**12, -1.0, 0.0)]:
+        if e > 0 and (not run or s == run[-1][0] + 1):
+            run.append((s, e, q))
+            continue
+        if len(run) >= persist:
+            out.append({"start": run[0][0], "secs": len(run), "edge_c": round(100 * run[0][1], 2),
+                        "size": run[0][2], "dollars": round(run[0][1] * run[0][2], 2)})
+        run = [(s, e, q)] if e > 0 else []
+    return out
+
+
+def run(root: Path, lab: Path, max_age: float = 1.0, skew: float = 0.5, persist: int = 2) -> dict:
     pm = load_books(root, "pmus_books", "cpc-btc-updown-15m-")
     ka = load_books(root, "kalshi_books", "KXBTC15M-")
     km = kalshi_meta(sorted(ka), lab / "xvenue" / "kalshi_meta.json")
@@ -153,10 +168,10 @@ def run(root: Path, lab: Path) -> dict:
                 res["equivalence"]["result_match"] += pm_up == (meta["result"] == "yes")
         A, B, gaps = [], [], []
         for s in range(start + 5, start + 900 - 5):
-            pd_, kd = asof(prow, s), asof(krow, s)
-            if pd_ is None or kd is None:
+            pt, kt = asof(prow, s, max_age, True), asof(krow, s, max_age, True)
+            if pt is None or kt is None or abs(pt[0] - kt[0]) > skew:
                 continue
-            p, k = pmus_top(pd_), kalshi_top(kd)
+            p, k = pmus_top(pt[1]), kalshi_top(kt[1])
             if p is None or k is None:
                 continue
             pb, pbq, pa, paq = p
@@ -170,8 +185,14 @@ def run(root: Path, lab: Path) -> dict:
             B.append((s, b, min(pbq, kaq)))
         if not A:
             continue
+        ea, eb = episodes(A, persist), episodes(B, persist)
+        late = [e for e in ea + eb if e["start"] >= start + 840]
         pos = [x for x in A + B if x[1] > 0]
         res["windows"].append({
+            "episodes": len(ea) + len(eb), "episodes_last60s": len(late),
+            "episode_dollars": round(sum(e["dollars"] for e in ea + eb), 2),
+            "episode_dollars_ex_last60s": round(sum(e["dollars"] for e in ea + eb if e not in late), 2),
+            "top_episodes": sorted(ea + eb, key=lambda e: -e["dollars"])[:3],
             "slug": slug, "kalshi": t, **eq, "seconds": len(A),
             "mid_gap_c_p50": round(100 * sorted(gaps)[len(gaps) // 2], 2),
             "mid_gap_c_absmax": round(100 * max(abs(g) for g in gaps), 2),
@@ -179,7 +200,11 @@ def run(root: Path, lab: Path) -> dict:
             "arb_best_c": round(100 * max((x[1] for x in A + B)), 2),
             "arb_dollars_upper": round(sum(x[1] * x[2] for x in pos), 2)})
     w = res["windows"]
+    res["params"] = {"max_age_s": max_age, "max_skew_s": skew, "persist_s": persist}
     res["summary"] = {"windows": len(w), "arb_seconds": sum(x["arb_seconds"] for x in w),
+                      "episodes": sum(x["episodes"] for x in w),
+                      "episode_dollars": round(sum(x["episode_dollars"] for x in w), 2),
+                      "episode_dollars_ex_last60s": round(sum(x["episode_dollars_ex_last60s"] for x in w), 2),
                       "windows_with_arb": sum(x["arb_seconds"] > 0 for x in w),
                       "arb_dollars_upper_total": round(sum(x["arb_dollars_upper"] for x in w), 2),
                       "note": "upper bound: counts every positive second at displayed size; overlapping "
