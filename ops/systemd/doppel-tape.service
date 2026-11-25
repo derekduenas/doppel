@@ -1,0 +1,25 @@
+[Unit]
+Description=DOPPEL M0 tape recorders (intl CLOB shards, RTDS x2, PM US, Kalshi, spot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=doppel
+WorkingDirectory=/opt/doppel
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/doppel/.venv/bin/doppel-tape run --data /var/lib/doppel/tape
+Restart=always
+RestartSec=3
+# Recorder measured at ~0.5 core / ~80 MB RSS; cap so it can never starve a shared host.
+CPUQuota=150%
+MemoryHigh=512M
+MemoryMax=1G
+Nice=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/doppel
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,155 @@
+"""doppel-tape: run the M0 recorders, build receipts, verify segments.
+
+    doppel-tape run --data DIR [--only rtds_a,clob_intl,...] [--seconds N]
+    doppel-tape receipt --data DIR --day YYYYMMDD --hour H
+    doppel-tape verify --data DIR
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+import orjson
+
+from .receipts import build_receipt
+from .segment import SegmentWriter, read_segment
+from .sources.base import RateLimiter
+from .sources.venues import (BitstampTrades, CoinbaseTrades, IntlClobMarket, KalshiBooks,
+                             KrakenTrades, PmusBooks, RtdsTrades)
+from .universe import IntlUniverse
+
+ASSETS = ("btc", "eth", "sol", "xrp")
+HZ = ("5m", "15m")
+CLOB_SHARDS = tuple(f"clob_{a}_{h}" for a in ASSETS for h in HZ)  # one socket per shard
+ALL = ("rtds_a", "rtds_b", *CLOB_SHARDS, "pmus_books", "kalshi_books",
+       "spot_coinbase", "spot_kraken", "spot_bitstamp")
+
+
+def build_sources(data: Path, only: set[str]):
+    def w(name: str) -> SegmentWriter:
+        return SegmentWriter(data, name, level=3 if name.startswith("clob_") else 6)
+
+    pmus_lim = RateLimiter(10.0, burst=4)   # PM US public limit is 25 rps per IP; stay well under
+    kalshi_lim = RateLimiter(8.0, burst=4)
+    makers = {
+        "rtds_a": lambda: RtdsTrades("rtds_a", w("rtds_a")),
+        "rtds_b": lambda: RtdsTrades("rtds_b", w("rtds_b")),
+        "pmus_books": lambda: PmusBooks("pmus_books", w("pmus_books"), pmus_lim),
+        "kalshi_books": lambda: KalshiBooks("kalshi_books", w("kalshi_books"), kalshi_lim),
+        "spot_coinbase": lambda: CoinbaseTrades("spot_coinbase", w("spot_coinbase")),
+        "spot_kraken": lambda: KrakenTrades("spot_kraken", w("spot_kraken")),
+        "spot_bitstamp": lambda: BitstampTrades("spot_bitstamp", w("spot_bitstamp")),
+    }
+    for a in ASSETS:
+        for h in HZ:
+            n = f"clob_{a}_{h}"
+            makers[n] = (lambda n=n, a=a, h=h:
+                         IntlClobMarket(n, w(n), IntlUniverse(assets=(a,), horizons=(h,))))
+    if "clob_intl" in only:  # shorthand for every shard
+        only = (only - {"clob_intl"}) | set(CLOB_SHARDS)
+    return [makers[n]() for n in ALL if n in only]
+
+
+async def run(data: Path, only: set[str], seconds: float | None) -> int:
+    data.mkdir(parents=True, exist_ok=True)
+    sources = build_sources(data, only)
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
+    tasks = [asyncio.create_task(s.run(stop), name=s.name) for s in sources]
+    started = time.time()
+    last_hour = time.gmtime().tm_hour
+    status_path = data / "status.json"
+    try:
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+            for s in sources:
+                s.writer.flush()
+            st = {"tw": time.time_ns(), "pid": os.getpid(), "uptime_s": round(time.time() - started),
+                  "sources": {s.name: s.stats.as_dict() for s in sources}}
+            tmp = status_path.with_suffix(".tmp")
+            tmp.write_bytes(orjson.dumps(st, option=orjson.OPT_INDENT_2))
+            tmp.replace(status_path)
+            h = time.gmtime().tm_hour
+            if h != last_hour:  # previous hour closed: rotate writers, then build its receipt
+                prev = time.gmtime(time.time() - 3600)
+                for s in sources:
+                    s.writer.close_if_stale()
+                try:
+                    build_receipt(data, time.strftime("%Y%m%d", prev), prev.tm_hour)
+                except Exception as exc:  # noqa: BLE001
+                    logging.warning("receipt failed: %s", exc)
+                last_hour = h
+            if seconds is not None and time.time() - started >= seconds:
+                stop.set()
+    finally:
+        stop.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for s in sources:
+            s.writer.close()
+    return 0
+
+
+def verify(data: Path) -> int:
+    import hashlib
+    bad = 0
+    for man in sorted(data.glob("*/manifest.jsonl")):
+        latest: dict[str, dict] = {}  # a file reopened after a restart has several lines; last wins
+        for line in man.read_bytes().splitlines():
+            if line.strip():
+                m = orjson.loads(line)
+                latest[m["file"]] = m
+        for m in latest.values():
+            f = man.parent / m["file"]
+            ok_hash = f.exists() and hashlib.sha256(f.read_bytes()).hexdigest() == m["sha256"]
+            try:
+                n = sum(1 for _ in read_segment(f, verify=True)) if f.exists() else -1
+            except ValueError:
+                n = -2
+            ok = ok_hash and n >= m["records"]
+            bad += not ok
+            print(f"{'OK ' if ok else 'BAD'} {man.parent.name}/{m['file']} records={n}/{m['records']} sha={'ok' if ok_hash else 'MISMATCH'}")
+    print("verify:", "PASS" if bad == 0 else f"FAIL ({bad})")
+    return 1 if bad else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="doppel-tape")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    r = sub.add_parser("run")
+    r.add_argument("--data", type=Path, required=True)
+    r.add_argument("--only", default=",".join(ALL))
+    r.add_argument("--seconds", type=float)
+    rc = sub.add_parser("receipt")
+    rc.add_argument("--data", type=Path, required=True)
+    rc.add_argument("--day", required=True)
+    rc.add_argument("--hour", type=int, required=True)
+    v = sub.add_parser("verify")
+    v.add_argument("--data", type=Path, required=True)
+    a = ap.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    if a.cmd == "run":
+        only = {x.strip() for x in a.only.split(",") if x.strip()}
+        unknown = only - set(ALL) - {"clob_intl"}
+        if unknown:
+            ap.error(f"unknown sources: {sorted(unknown)}")
+        return asyncio.run(run(a.data, only, a.seconds))
+    if a.cmd == "receipt":
+        print(orjson.dumps(build_receipt(a.data, a.day, a.hour), option=orjson.OPT_INDENT_2).decode())
+        return 0
+    return verify(a.data)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
