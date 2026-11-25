@@ -61,7 +61,7 @@ def default_profile_path() -> Path | None:
 
 
 class KalshiBrti(Source):
-    interval_s = 2.0  # shared Kalshi key with PERELMAN/btc-window; each response carries ~120 s of values
+    interval_s = 5.0  # shared Kalshi key with PERELMAN/btc-window; each response carries ~120 s of values
 
     def __init__(self, name, writer, profile_path: str | Path | None = None, url: str = BRTI_URL,
                  seen_cap: int = 20000):
@@ -150,6 +150,7 @@ class KalshiBrti(Source):
             async with session.get(self.url, headers=headers, allow_redirects=False) as resp:
                 body = await resp.text()
                 status = resp.status
+                retry_after = resp.headers.get("Retry-After")
         except Exception as exc:  # noqa: BLE001 - type name only on the signed path
             self.stats.errors += 1
             self.stats.last_error = f"poll: {type(exc).__name__}"
@@ -161,5 +162,11 @@ class KalshiBrti(Source):
         if status != 200:
             self.stats.extra[f"http_{status}"] = self.stats.extra.get(f"http_{status}", 0) + 1
         if status == 429:
-            self.ctl("rate_limited")
-            await asyncio.sleep(1.0)
+            # Shared key (PERELMAN, btc-window): back off so we never starve them. No data is lost,
+            # each successful response carries ~120 s of history.
+            try:
+                wait = min(30.0, max(2.0, float(retry_after))) if retry_after else 10.0
+            except ValueError:
+                wait = 10.0
+            self.ctl("rate_limited", wait_s=wait)
+            await asyncio.sleep(wait)
