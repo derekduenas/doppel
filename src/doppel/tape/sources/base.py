@@ -77,9 +77,25 @@ class WsSource(Source):
     stall_s: float = 15.0
     keepalive_s: float = 5.0
     keepalive_msg: str | None = None  # app-level ping text, if the venue wants one
+    # Connect factory; a subclass may swap in a ``websockets.connect`` subclass (e.g. one that
+    # refuses redirects so handshake headers are never replayed to another host).
+    connect_cls = websockets.connect
 
     def expect_traffic(self) -> bool:
         return True
+
+    async def connect_headers(self) -> dict[str, str] | None:
+        """Extra handshake headers, fetched fresh before EVERY (re)connect. None means no extra
+        headers (the default). Values are treated as secrets: see ``redact``."""
+        return None
+
+    def redact(self, text: str) -> str:
+        """Scrub secrets from text bound for the tape, logs or status.json. Default: identity."""
+        return text
+
+    def on_message(self, raw: str | bytes) -> None:
+        """Handle one non-keepalive frame. Default: record it verbatim."""
+        self.record(raw)
 
     async def on_open(self, ws) -> None:
         pass
@@ -95,9 +111,13 @@ class WsSource(Source):
         while not stop.is_set():
             started = time.monotonic()
             try:
-                async with websockets.connect(self.url, ssl=SSL_CTX, max_size=None,
-                                              open_timeout=15, ping_interval=20, ping_timeout=20,
-                                              user_agent_header=UA) as ws:
+                extra: dict = {}
+                headers = await self.connect_headers()
+                if headers is not None:
+                    extra["additional_headers"] = headers
+                async with self.connect_cls(self.url, ssl=SSL_CTX, max_size=None,
+                                            open_timeout=15, ping_interval=20, ping_timeout=20,
+                                            user_agent_header=UA, **extra) as ws:
                     self.stats.connected = True
                     self.ctl("connect", url=self.url)
                     await self.on_open(ws)
@@ -106,7 +126,7 @@ class WsSource(Source):
                 raise
             except Exception as exc:  # noqa: BLE001 - recorder must survive anything
                 self.stats.errors += 1
-                self.stats.last_error = f"{type(exc).__name__}: {str(exc)[:200]}"
+                self.stats.last_error = self.redact(f"{type(exc).__name__}: {exc}")[:200]
                 log.warning("%s error: %s", self.name, self.stats.last_error)
             finally:
                 if self.stats.connected:
@@ -136,7 +156,11 @@ class WsSource(Source):
                 if self.keepalive_msg and now - last_ka >= self.keepalive_s:
                     await ws.send(self.keepalive_msg)
                     last_ka = now
-                await self.on_tick(ws)
+                try:
+                    await self.on_tick(ws)
+                except Exception as exc:  # noqa: BLE001 - never let a tick kill the watchdog
+                    self.stats.errors += 1
+                    self.stats.last_error = self.redact(f"tick: {type(exc).__name__}: {exc}")[:200]
                 if self.expect_traffic() and now - self._last_rx > self.stall_s:
                     self.stats.stalls += 1
                     self.ctl("stall", silent_s=round(now - self._last_rx, 3))
@@ -149,7 +173,7 @@ class WsSource(Source):
             async for raw in ws:
                 self._last_rx = time.monotonic()
                 if not self.is_keepalive_reply(raw):
-                    self.record(raw)
+                    self.on_message(raw)
         finally:
             task.cancel()
             try:

@@ -13,10 +13,42 @@ sudo cp ops/systemd/doppel-tape.service /etc/systemd/system/ && sudo systemctl d
 sudo systemctl enable --now doppel-tape
 ```
 
+## Authenticated streams (DOPPEL holds no keys)
+Two streams need venue auth. Neither key is stored in this repo, in `/opt/doppel`, or in the tape.
+
+- **`pmus_ws`**: Polymarket US markets WebSocket (`wss://api.polymarket.us/v1/ws/markets`), full book
+  (`SUBSCRIPTION_TYPE_MARKET_DATA`) and trades (`SUBSCRIPTION_TYPE_TRADE`) for the current and next
+  5m/15m window of btc/eth/sol/xrp. The market-data key belongs to the host signer daemon. Before
+  every (re)connect the recorder connects to `/run/pmus-riskd-market-signer/markets.sock`, sends
+  `sign-market-ws\n`, reads one line `access_key\ttimestamp_ms\tsignature` (2 s timeout) and sends
+  those values as the `X-PM-Access-Key`, `X-PM-Timestamp` and `X-PM-Signature` handshake headers.
+  The unit gets socket access through `SupplementaryGroups=pmus-market-data`. Header values are
+  scrubbed from status.json, logs and the tape, and redirects are refused so the headers never reach
+  another host. One subscribe request per (type, horizon, window). A window is dropped with the
+  documented `{"unsubscribe": {"request_id": ...}}` 30 s after it ends. A request answered with
+  `error` is retried 5 s later once its window has started; before the open, 3 s after the open
+  (at most 30 s later), since PM US lists a window a few seconds after it opens. A started window whose book
+  request has not produced data for every slug within 20 s (doubling to 120 s) is unsubscribed and
+  re-sent (`ctl: no_data`). Server `{"heartbeat": {}}` frames keep the stall watchdog (30 s) happy
+  and are not recorded. If the signer is down, `status.json` shows
+  `SignerError: signer connect failed: ...` and the source retries with backoff.
+- **`ref_brti_live`** (`--only` key `kalshi_brti`): Kalshi's CF Benchmarks BRTI passthrough,
+  `GET https://external-api.kalshi.com/trade-api/v2/cfbenchmarks/values?id=BRTI` every 0.5 s,
+  signed with a **read-only** Kalshi profile. systemd hands it in with
+  `LoadCredential=kalshi-profile.json:/etc/edge-engine/riskd/kalshi-production-readonly.json`, and the
+  recorder reads `$CREDENTIALS_DIRECTORY/kalshi-profile.json` (`{"key_id", "private_key_pem"}`, RSA-PSS
+  or Ed25519) at start. Each raw body is recorded with `meta = {status, sent_tw, sent_tm, new}`, where
+  `new` lists the `[time_ms, value]` pairs not seen before. With no credential file (e.g. a dev
+  run) it logs once and idles (`status.json`: `idle: no_credentials` or `bad_credentials`).
+  `ref_*` streams are never touched by the janitor.
+
 ## Health
 - `cat /var/lib/doppel/tape/status.json`: per-source msgs, reconnects, stalls, last-message age.
 - `ls /var/lib/doppel/tape/receipts/YYYYMMDD/`: hourly receipts (built automatically at each hour change).
 - `doppel-tape verify --data /var/lib/doppel/tape`: sha256 and CRC over every closed segment.
+- `pmus_ws`: `heartbeats` should rise, `subscribed` (open requests) should be 8 (2 horizons x current
+  and next window x book and trades), up to 12 while an ended window lingers, and `sub_errors` / `resubscribes` should stay
+  small. `ref_brti_live`: `http_401` / `http_403` mean the profile or the signature is wrong.
 - Alert if any data source's `last_msg_age_s` > 30 s, an hourly receipt is missing, or RTDS `tx_union`
   coverage on both sockets is < 0.99.
 
