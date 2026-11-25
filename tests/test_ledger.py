@@ -38,3 +38,4 @@ def test_g0_compare_days_and_tolerance():
     assert g0_verdict(stats, g0_compare(led, pts)) == "FAIL"
     assert g0_verdict({**stats, "resolved_notional": 100.0}, res) == "NOT_COMPARABLE:resolved_coverage"
     assert g0_verdict({**stats, "censored": 5}, res) == "NOT_COMPARABLE:opening_inventory"
+    assert g0_verdict({**stats, "unresolved_exposure": 900.0}, res) == "NOT_COMPARABLE:unresolved_exposure"

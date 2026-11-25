@@ -138,7 +138,7 @@ def wallet_ledger(rows: list[dict], tmap: TokenMap) -> dict:
         day_notional[d] += usd
     day_pnl = defaultdict(float)
     stats = {"tokens": len(tok), "resolved": 0, "open": 0, "unknown": 0, "censored": 0,
-             "resolved_notional": 0.0, "total_notional": 0.0}
+             "resolved_notional": 0.0, "total_notional": 0.0, "unresolved_exposure": 0.0}
     for k, t in tok.items():
         notional = t["paid"] + t["recv"]
         stats["total_notional"] += notional
@@ -148,6 +148,8 @@ def wallet_ledger(rows: list[dict], tmap: TokenMap) -> dict:
             continue
         stats[info["status"]] += 1
         if info["status"] != "resolved":
+            # payout in [0, 1] -> this token's P&L is uncertain by |net shares|
+            stats["unresolved_exposure"] += abs(t["pos"])
             continue
         stats["resolved_notional"] += notional
         pnl = info["payout"] * t["pos"] + t["recv"] - t["paid"]
@@ -218,6 +220,9 @@ def g0_verdict(stats: dict, g0: dict, min_resolved=0.95, max_censored=0.02, vol_
         return "NOT_COMPARABLE:opening_inventory"
     if g0["volume_ratio"] is None or abs(g0["volume_ratio"] - 1) > vol_tol:
         return "NOT_COMPARABLE:fill_pull_incomplete"
+    tol = max(50.0, 0.02 * abs(g0["totals"]["trade_pnl"]["api"]))
+    if stats.get("unresolved_exposure", 0.0) > tol:
+        return "NOT_COMPARABLE:unresolved_exposure"
     return "PASS" if g0["pnl_ok"] and g0["fees_ok"] else "FAIL"
 
 
