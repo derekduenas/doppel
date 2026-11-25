@@ -26,6 +26,10 @@ Verdict (constants below):
   LEADS_MOVE             no k in PRE_LAGS has pre CI low > ALIGN_MIN, and
                          some k in POST_LAGS: post CI low > ALIGN_MIN
   NO_CLEAR_TIMING        otherwise
+Interpretation (lead review). LEADS_MOVE means "trades before the move shows up in BRTI". BRTI
+is a once-per-second composite of exchange order books, so a wallet acting on faster PUBLIC feeds
+(Coinbase/Binance ticks) also leads BRTI. LEADS_MOVE is therefore NOT evidence of private
+information until it is re-tested against the recorded spot tapes (spot_coinbase/kraken/bitstamp).
 A lag only counts if it has >= --min-fills nonzero (second, direction) groups. Wallets with fewer
 than --min-fills usable fills or groups are labelled TOO_FEW_FILLS and not tested.
 """
