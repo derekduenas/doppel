@@ -10,6 +10,8 @@ attrs==26.1.0
     # via aiohttp
 certifi==2026.11.20
     # via doppel
+duckdb==2.0.1
+    # via doppel
 frozenlist==1.8.0
     # via
     #   aiohttp
@@ -30,6 +32,8 @@ propcache==0.5.4
     # via
     #   aiohttp
     #   yarl
+pyarrow==26.0.1
+    # via doppel
 typing-extensions==4.16.0 ; python_full_version < '3.13'
     # via
     #   aiohttp

@@ -161,22 +161,35 @@ class SegmentWriter:
         return last
 
 
+def _frames(path: Path, read_size: int = 1 << 20):
+    """Decompressed zstd frames of a segment, one at a time, reading the file in ``read_size``
+    chunks (memory is one frame, not the whole file). A truncated or corrupt tail ends it."""
+    dctx = zstandard.ZstdDecompressor()
+    with open(path, "rb") as fh:
+        buf = b""
+        while True:
+            obj = dctx.decompressobj()
+            out: list[bytes] = []
+            while True:
+                if not buf:
+                    buf = fh.read(read_size)
+                    if not buf:
+                        return  # clean end, or a truncated tail frame from a crash
+                try:
+                    out.append(obj.decompress(buf))
+                except zstandard.ZstdError:
+                    return
+                if obj.eof:
+                    buf = obj.unused_data
+                    break
+                buf = b""
+            yield b"".join(out)
+
+
 def read_segment(path: Path, verify: bool = True):
     """Yield records from a segment. Tolerates a truncated final frame. Raises on CRC mismatch
     when ``verify`` is true."""
-    data = Path(path).read_bytes()
-    dctx = zstandard.ZstdDecompressor()
-    off = 0
-    while off < len(data):
-        try:
-            obj = dctx.decompressobj()
-            chunk = obj.decompress(data[off:])
-            used = len(data) - off - len(obj.unused_data)
-            if not obj.eof:
-                return  # truncated tail frame from a crash
-        except zstandard.ZstdError:
-            return
-        off += used
+    for chunk in _frames(Path(path)):
         for line in chunk.splitlines():
             if not line:
                 continue
