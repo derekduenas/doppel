@@ -4,7 +4,7 @@
 # its loaded code; restart only when tape code changed).
 set -eu
 cd "$(dirname "$0")/.."
-[ -z "$(git status --porcelain)" ] || { echo "uncommitted changes; commit first" >&2; exit 1; }
+[ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "uncommitted tracked changes; commit first" >&2; exit 1; }  # release = git archive HEAD
 uv run pytest -q
 uv run pyright src
 uv export --no-dev --no-hashes --no-emit-project -q > ops/requirements.lock
