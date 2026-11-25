@@ -64,3 +64,14 @@ def test_boundary_exposure_counts_only_open_positions():
            "tok_end": {"A": D + 1000, "B": D + 1000, "C": D + 60}}  # C ended at ~block 130
     assert boundary_exposure(led, 200) == 10.0  # A open, B flat, C already ended
     assert boundary_exposure(led, 105) == 0.0
+
+
+def test_g0_compares_realized_not_marked_pnl():
+    led = {"span": [D - 10, D + 2 * DAY + 10], "day_pnl": {D: 100.0}, "day_fees": {D: 0.0},
+           "day_notional": {D: 2000.0}}
+    # API trade_pnl rose 150, but 50 of it is an unrealized mark on a still-open position
+    pts = [{"timestamp": D, "trade_pnl": 0, "unrealized_pnl": 0, "fees_paid": 0, "volume_usdc": 0},
+           {"timestamp": D + DAY, "trade_pnl": 150, "unrealized_pnl": 50, "fees_paid": 0,
+            "volume_usdc": 2000}]
+    res = g0_compare(led, pts)
+    assert res["days"][0]["api"]["trade_pnl"] == 100 and res["pnl_ok"]

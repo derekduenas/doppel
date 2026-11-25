@@ -232,7 +232,11 @@ def g0_compare(led: dict, points: list[dict], tol_abs=50.0, tol_rel=0.02,
         if d + DAY not in by_ts:
             continue
         a, b = by_ts[d], by_ts[d + DAY]
-        api = {"trade_pnl": b["trade_pnl"] - a["trade_pnl"],
+        # Realized gross P&L: the API's trade_pnl marks open positions to market at each snapshot
+        # (unrealized_pnl); our ledger books at resolution. Compare realized with realized.
+        def realized(p: dict) -> float:
+            return p["trade_pnl"] - (p.get("unrealized_pnl") or 0.0)
+        api = {"trade_pnl": realized(b) - realized(a),
                "fees": -(b["fees_paid"] - a["fees_paid"]),
                "volume": b["volume_usdc"] - a["volume_usdc"]}
         sa, sb = a.get("source_block"), b.get("source_block")
@@ -291,8 +295,6 @@ def g0_verdict(stats: dict, g0: dict, min_resolved=0.95, max_censored=0.02, vol_
     tol = max(50.0, 0.02 * abs(g0["totals"]["trade_pnl"]["api"]))
     if stats.get("unresolved_exposure", 0.0) > tol:
         return "NOT_COMPARABLE:unresolved_exposure"
-    if g0.get("boundary_exposure", 0.0) > tol:
-        return "NOT_COMPARABLE:boundary_exposure"
     return "PASS" if g0["pnl_ok"] and g0["fees_ok"] else "FAIL"
 
 
