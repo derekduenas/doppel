@@ -1,0 +1,299 @@
+<title>DOPPEL Blueprint</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: single reading column (~72ch) with full-width bands for the pipeline and tables; ledger/terminal feel, cents as the unit */
+:root{
+  --bg:#f6f7f9; --surface:#ffffff; --fg:#14202e; --muted:#566273; --line:#dde2e8;
+  --accent:#1f5fbf; --accent-soft:#e6eefb; --ok:#1d7a4f; --ok-soft:#e3f3ea; --warn:#a86200; --warn-soft:#fbf0de; --bad:#b3362b; --bad-soft:#f9e4e1;
+  --display:"Space Grotesk",ui-sans-serif,system-ui,sans-serif; --body:"Inter",ui-sans-serif,system-ui,sans-serif; --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f151d; --surface:#161e29; --fg:#e4e9f0; --muted:#97a3b3; --line:#263242;
+  --accent:#7aa7ef; --accent-soft:#1b2a40; --ok:#5cc792; --ok-soft:#14291f; --warn:#e0a54a; --warn-soft:#2c2213; --bad:#ef7f74; --bad-soft:#2f1816; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f151d; --surface:#161e29; --fg:#e4e9f0; --muted:#97a3b3; --line:#263242;
+  --accent:#7aa7ef; --accent-soft:#1b2a40; --ok:#5cc792; --ok-soft:#14291f; --warn:#e0a54a; --warn-soft:#2c2213; --bad:#ef7f74; --bad-soft:#2f1816; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:16px;line-height:1.6;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0 64px}
+.wrap{max-width:980px;margin:0 auto;display:flex;flex-direction:column;gap:56px}
+.prose{max-width:72ch}
+h1,h2,h3{font-family:var(--display);line-height:1.15;text-wrap:balance;margin:0}
+h1{font-size:clamp(2.4rem,6vw,3.6rem);letter-spacing:-.02em}
+h2{font-size:1.65rem;letter-spacing:-.01em}
+h3{font-size:1.1rem}
+p{margin:0}
+.stack{display:flex;flex-direction:column;gap:16px}
+.eyebrow{font-family:var(--mono);font-size:.75rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.lede{font-size:1.2rem;color:var(--fg);max-width:62ch}
+.mono,code{font-family:var(--mono);font-size:.88em}
+code{background:var(--accent-soft);padding:1px 5px;border-radius:4px}
+a{color:var(--accent)}
+header.top{padding-top:48px;display:flex;flex-direction:column;gap:20px;border-bottom:1px solid var(--line);padding-bottom:36px}
+.meta{display:flex;flex-wrap:wrap;gap:8px}
+.chip{font-family:var(--mono);font-size:.75rem;padding:3px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted);background:var(--surface)}
+.chip.live{color:var(--bad);border-color:var(--bad);background:var(--bad-soft)}
+.thesis{border-left:3px solid var(--accent);padding:4px 0 4px 18px;font-size:1.08rem}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.fact{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px 20px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.fact .k{font-family:var(--mono);font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--accent)}
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:.9rem;min-width:720px}
+th,td{text-align:left;vertical-align:top;padding:10px 14px;border-bottom:1px solid var(--line)}
+th{font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);background:var(--bg);font-weight:600}
+tr:last-child td{border-bottom:0}
+td.law{font-weight:600}
+.tag{display:inline-block;font-family:var(--mono);font-size:.72rem;padding:1px 7px;border-radius:5px;white-space:nowrap}
+.y{background:var(--ok-soft);color:var(--ok)} .p{background:var(--warn-soft);color:var(--warn)} .n{background:var(--bad-soft);color:var(--bad)}
+/* clocks */
+.clock{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;border:1px solid var(--line);border-radius:10px;background:var(--surface);overflow:hidden}
+.tick{padding:16px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:6px;min-width:0}
+.tick:last-child{border-right:0}
+.tick .t{font-family:var(--mono);font-weight:600;color:var(--accent)}
+.tick .d{font-family:var(--mono);font-size:.75rem;color:var(--muted)}
+.tick.hot{background:var(--accent-soft)}
+.tick.id{background:var(--warn-soft)}
+@media (max-width:760px){.clock{grid-template-columns:1fr}.tick{border-right:0;border-bottom:1px solid var(--line)}.tick:last-child{border-bottom:0}}
+/* pipeline */
+.plane{border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:18px;display:flex;flex-direction:column;gap:14px}
+.plane .ptitle{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:baseline}
+.layers{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.layer{border:1px solid var(--line);border-radius:8px;padding:12px;background:var(--bg);display:flex;flex-direction:column;gap:6px;min-width:0}
+.layer b{font-family:var(--display);font-size:.98rem}
+.layer .id{font-family:var(--mono);font-size:.7rem;color:var(--accent)}
+.layer span{font-size:.84rem;color:var(--muted);line-height:1.45}
+.bridge{display:flex;align-items:center;gap:12px;justify-content:center;font-family:var(--mono);font-size:.8rem;color:var(--warn);padding:6px 0}
+.bridge::before,.bridge::after{content:"";flex:1;max-width:160px;border-top:2px dashed var(--warn)}
+.agents{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.agent{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:var(--surface);display:flex;flex-direction:column;gap:6px;min-width:0}
+.agent .no{font-size:.82rem;color:var(--bad)}
+.agent .no::before{content:"cannot · ";font-family:var(--mono);font-size:.72rem}
+ol.steps{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:10px}
+.ms{display:grid;grid-template-columns:120px 1fr;gap:12px 20px;align-items:start}
+.ms .when{font-family:var(--mono);font-size:.8rem;color:var(--accent);padding-top:3px}
+@media (max-width:560px){.ms{grid-template-columns:1fr;gap:4px}.ms .when{padding-top:12px}}
+.callout{background:var(--warn-soft);border:1px solid var(--warn);border-radius:10px;padding:16px 18px}
+.decisions{display:flex;flex-direction:column;gap:12px;counter-reset:d}
+.decision{background:var(--surface);border:1px solid var(--accent);border-radius:10px;padding:16px 18px 16px 56px;position:relative}
+.decision::before{counter-increment:d;content:counter(d);position:absolute;left:18px;top:14px;font-family:var(--display);font-size:1.4rem;color:var(--accent);font-weight:700}
+.num{font-variant-numeric:tabular-nums}
+footer{font-size:.82rem;color:var(--muted);border-top:1px solid var(--line);padding-top:20px}
+</style>
+<div class="wrap">
+
+<header class="top">
+  <div class="eyebrow">New project · ~/doppel · system blueprint v2 · 2026-11-25</div>
+  <h1>DOPPEL</h1>
+  <p class="lede">Learn who is right on Polymarket international and why. Then make markets on Polymarket US and Kalshi with that knowledge, in the same seconds, where those operators can't follow.</p>
+  <div class="meta"><span class="chip" style="color:var(--ok);border-color:var(--ok);background:var(--ok-soft)">M0 recording live on Apex since 2026-11-25 17:58Z · 15 streams</span><span class="chip">ground-up repo ~/doppel</span><span class="chip">10 measured findings today</span><span class="chip">US venues only</span><span class="chip live">no live orders without owner arming</span></div>
+</header>
+
+<section class="stack">
+  <div class="eyebrow">The one-of-one edge</div>
+  <h2>A public, role-labeled tape of the deepest market, pointed at the venues it can't reach</h2>
+  <div class="prose stack">
+    <p>Polymarket international publishes every fill with the wallet, its maker or taker role, and the fee, about two seconds after the trade prints. That was measured live today. US persons can't trade there, so the operators trading there mostly can't trade Polymarket US or Kalshi. Those venues list the same 5-minute and 15-minute crypto windows and the same sports.</p>
+    <p class="thesis">v1 asked which wallet to imitate. v2 asks what the entire intl market knows two seconds after it knows it, and where that knowledge isn't yet in a US price.</p>
+  </div>
+  <div class="facts">
+    <div class="fact"><span class="k">Capability 1</span><strong>Flow Atlas</strong><span>Exact ledger of the whole intl market, clustered into operators and scored point-in-time. Every live fill gets labeled informed, neutral or retail within ~2 s.</span></div>
+    <div class="fact"><span class="k">Capability 2</span><strong>Policy inversion</strong><span>For skilled operators that public data can explain, rebuild what they saw and fire the same trigger. Unexplainable ones become toxicity labels.</span></div>
+    <div class="fact"><span class="k">Capability 3</span><strong>5m complex engine</strong><span>One fair-value engine for the same BTC/ETH/SOL/XRP windows across three venues, three settlement indexes and three fee curves. It quotes on the US venues.</span></div>
+  </div>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Measured today</div>
+  <h2>What the live probes found</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>ID</th><th>Finding</th><th>Why it matters</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">E1·E2</td><td>The public RTDS socket streams every match with wallet, side, price, size, fee and tx hash, for both maker and taker rows. Sample: 858 rows, 308 tx and 413 wallets in 25 s. 303 of 308 tx have exactly one fee-paying row, the taker.</td><td>A free, real-time, role-labeled identity tape. v1 assumed identity only came from the chain.</td></tr>
+      <tr><td class="mono">E3</td><td>Implied live taker rates: BTC 5m 0.05, ETH 5m 0.01, sports 0.05.</td><td>Matches the post-Nov-20 docs, so fee models can be pinned.</td></tr>
+      <tr><td class="mono">E4·E5</td><td>Identity arrives about 0.7 s after the block, and 2.2 s (median) after the anonymous order-book print.</td><td>The anonymous print is the trigger. Identity is a label two seconds later, fast enough for a live "who is trading now" state.</td></tr>
+      <tr><td class="mono">E6</td><td>The public RFQ stream is retired. <code>orders_matched</code> is live.</td><td>No public pre-trade intent exists, so we don't design around one.</td></tr>
+      <tr><td class="mono">E7</td><td>Intl BTC 5m settles on a Chainlink BTC/USD TWAP.</td><td>Its settlement differs from the US venues, which creates a basis to model.</td></tr>
+      <tr><td class="mono">E8</td><td>Polymarket US BTC 5m: 141k–220k shares per window, 1¢ ticks, ~1.1k shares at the best bid, fee coefficient 0.095.</td><td>A real, liquid, tradable target. Taking costs ~2.4¢ at 50¢, which favors making.</td></tr>
+      <tr><td class="mono">E9</td><td>REA static pass on the official RTDS client: it uses a 5 s ping/pong with no message watchdog.</td><td>Explains the known silent-stall bug. DOPPEL runs dual sockets, a gap watchdog and chain reconciliation.</td></tr>
+      <tr><td class="mono">E10</td><td>Goldsky <code>order_filled</code> v2 carries role, order hash, counterparty and fee, with backfill.</td><td>History without running our own 9 GiB/day archive.</td></tr>
+    </tbody>
+  </table></div>
+
+  <figure class="stack" style="margin:0">
+    <div class="eyebrow">Live BTC 5m market · identity lag behind the anonymous print · 142 matched taker fills</div>
+    <div class="scroll" style="padding:12px 8px">
+      <svg viewBox="0 0 760 150" width="100%" style="min-width:560px;display:block" role="img" aria-label="Identity lag distribution: p10 1.28 s, median 2.21 s, p90 3.0 s; block to RTDS median 0.7 s">
+        <g font-family="JetBrains Mono, monospace" font-size="11" fill="var(--muted)">
+          <line x1="40" y1="110" x2="720" y2="110" stroke="var(--line)" stroke-width="1"/>
+          <g>
+            <line x1="40" y1="106" x2="40" y2="114" stroke="var(--muted)"/><text x="40" y="128" text-anchor="middle">0 s</text>
+            <line x1="234" y1="106" x2="234" y2="114" stroke="var(--muted)"/><text x="234" y="128" text-anchor="middle">1 s</text>
+            <line x1="429" y1="106" x2="429" y2="114" stroke="var(--muted)"/><text x="429" y="128" text-anchor="middle">2 s</text>
+            <line x1="623" y1="106" x2="623" y2="114" stroke="var(--muted)"/><text x="623" y="128" text-anchor="middle">3 s</text>
+          </g>
+          <rect x="289" y="62" width="334" height="22" rx="4" fill="var(--accent-soft)" stroke="var(--accent)"/>
+          <line x1="470" y1="56" x2="470" y2="90" stroke="var(--accent)" stroke-width="3"/>
+          <text x="289" y="52" text-anchor="middle" fill="var(--fg)">p10 1.28</text>
+          <text x="470" y="44" text-anchor="middle" fill="var(--accent)" font-weight="600">p50 2.21 s</text>
+          <text x="623" y="52" text-anchor="middle" fill="var(--fg)">p90 3.0</text>
+          <circle cx="40" cy="73" r="6" fill="var(--warn)"/><text x="52" y="77" fill="var(--warn)">anon print (CLOB WS)</text>
+          <circle cx="176" cy="96" r="4" fill="var(--muted)"/><text x="186" y="100">block +0.7 s ≈ RTDS emit</text>
+        </g>
+      </svg>
+    </div>
+  </figure>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Three venues, one complex</div>
+  <h2>The same BTC windows priced three ways</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Venue</th><th>Role in DOPPEL</th><th>Settlement</th><th>Taker fee</th><th>Identity</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Polymarket intl</strong> 5m/15m</td><td>Sensor array (read-only)</td><td>Chainlink BTC/USD TWAP</td><td>0.05·p(1−p) BTC; 0.01 others</td><td><span class="tag y">public, ~2 s</span></td></tr>
+      <tr><td><strong>Polymarket US</strong> 1m/5m/15m/1h</td><td>Primary execution</td><td>CF index (prior; verify in M0)</td><td>coef 0.095 (BTC 5m)</td><td><span class="tag n">anonymous</span></td></tr>
+      <tr><td><strong>Kalshi</strong> 15m/hourly</td><td>Second execution venue, hedge</td><td>BRTI, 60 s average</td><td>0.07 taker; lower maker</td><td><span class="tag n">anonymous</span></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Add · remove · improve</div>
+  <h2>What changed from v1</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Change</th><th>v1</th><th>v2</th><th>Reason</th></tr></thead>
+    <tbody>
+      <tr><td><span class="tag y">add</span> Real-time identity tape</td><td>Chain only</td><td>RTDS maker+taker rows, two sockets, reconciled to chain</td><td>E1–E5</td></tr>
+      <tr><td><span class="tag y">add</span> Live operator labels</td><td>Weekly batch</td><td>Per-fill labels and per-window flow state</td><td>Turns the atlas into a sensor</td></tr>
+      <tr><td><span class="tag y">add</span> 5m complex engine</td><td>Implicit</td><td>Three settlement replicas, calibrated per venue</td><td>E7, E8</td></tr>
+      <tr><td><span class="tag p">re-rank</span> First strategy</td><td>Latency-taker clone</td><td>Guarded PM US maker first; clones second</td><td>US taker fee 0.095 pays makers</td></tr>
+      <tr><td><span class="tag y">add</span> Learned simulator</td><td>None</td><td>Inverted operator policies as replay counterparties</td><td>Test makers against cloned adversaries</td></tr>
+      <tr><td><span class="tag y">add</span> Own execution and riskd</td><td>Edge-engine desk</td><td>DOPPEL-native Rust gateway and riskd</td><td>Brand-new project</td></tr>
+      <tr><td><span class="tag y">add</span> Feed integrity</td><td>None</td><td>Gap watchdog, dual sockets, hourly completeness receipts</td><td>E9</td></tr>
+      <tr><td><span class="tag n">remove</span> Graph DB, 8-agent swarm</td><td>Both</td><td>DuckDB tables, 4 batch agents</td><td>No link to profit</td></tr>
+      <tr><td><span class="tag n">remove</span> Copy tests</td><td>Kept as a check</td><td>Replaced by the anticipation test</td><td>Copying is settled negative</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Profit hypotheses</div>
+  <h2>Ranked by distance to the first dollar</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>#</th><th>Hypothesis</th><th>Venue</th><th>What kills it</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">H1</td><td><strong>Guarded US maker.</strong> Quote PM US 5m/15m around a fair value from the index replica, the intl mid and intl informed flow. Pull or widen when labeled informed operators hit intl in the same window.</td><td>PM US, Kalshi 15m</td><td>Negative markouts after the guard; queue too long; US already tracks intl inside our latency</td></tr>
+      <tr><td class="mono">H2</td><td><strong>Cross-venue lead.</strong> Intl moves first and US books lag. Re-quote faster, or take where edge beats the fee near 0 or 1.</td><td>PM US, Kalshi</td><td>Lag shorter than our tick-to-trade</td></tr>
+      <tr><td class="mono">H3</td><td><strong>Latency-taker clone.</strong> Invert the intl snipers and fire the same spot trigger on US windows.</td><td>Kalshi 15m, PM US extremes</td><td>Sensor parity fails; fees</td></tr>
+      <tr><td class="mono">H4</td><td><strong>Endgame and structural.</strong> Near-certain last minutes; ladder consistency.</td><td>PM US, Kalshi</td><td>Thin margin, tail risk</td></tr>
+      <tr><td class="mono">H5</td><td><strong>In-play clones</strong> for esports, tennis and soccer.</td><td>PM US sports</td><td>Needs a paid fast event feed</td></tr>
+    </tbody>
+  </table></div>
+  <p class="prose"><strong>Illustrative capacity, not a forecast:</strong> ~180k shares per BTC 5m window × 288 windows a day is on the order of 50M shares/day on PM US. A maker that captured 0.5¢ per share on 2% of that would earn about $5k/day before adverse selection. M1 and M2 exist to replace this arithmetic with measured markouts.</p>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Architecture</div>
+  <h2>Sensors, two planes, one sealed bridge</h2>
+  <div class="plane">
+    <div class="ptitle"><h3>Sensors and tape</h3><span class="eyebrow">C1 · Rust · append-only, three clocks</span></div>
+    <div class="layers">
+      <div class="layer"><span class="id">INTL</span><b>CLOB WS + RTDS ×2</b><span>Anonymous prints and books, plus the identity tape on two sockets with a message-gap watchdog.</span></div>
+      <div class="layer"><span class="id">US VENUES</span><b>PM US + Kalshi WS</b><span>Books and trades for the 1m to 1h crypto windows, then sports.</span></div>
+      <div class="layer"><span class="id">TRUTH</span><b>Goldsky v2 + chain</b><span>Backfill and finalized-log tail. cryo audits random spans.</span></div>
+      <div class="layer"><span class="id">INDEX</span><b>Spot and settlement</b><span>Coinbase, Kraken, Bitstamp ticks; BRTI replica; Chainlink-TWAP approximation.</span></div>
+    </div>
+  </div>
+  <div class="plane">
+    <div class="ptitle"><h3>Research plane</h3><span class="eyebrow">batch · Python, Polars, DuckDB · research box</span></div>
+    <div class="layers">
+      <div class="layer"><span class="id">C2</span><b>Ledger</b><span>Exact cash-flow P&amp;L by mechanism. G0 reconciles to <code>v2/user-pnl</code>.</span></div>
+      <div class="layer"><span class="id">C3</span><b>Flow Atlas</b><span>Point-in-time skill, operator clusters, mechanism census, counterparty map.</span></div>
+      <div class="layer"><span class="id">C4</span><b>Graph</b><span>Bitemporal DuckDB tables. Any feature replays as of a past decision.</span></div>
+      <div class="layer"><span class="id">C5</span><b>Inversion</b><span>State at t0, policy models, explainability ceiling, anticipation rate.</span></div>
+      <div class="layer"><span class="id">C7</span><b>Foundry</b><span>Strategy genomes, preregistration, an FDR ledger that charges every variant.</span></div>
+      <div class="layer"><span class="id">C8</span><b>Twin</b><span>Queue models ported from hftbacktest, measured latency, pinned fees, fidelity gate.</span></div>
+      <div class="layer"><span class="id">C13</span><b>4 agents</b><span>Profiler, Skeptic, Quartermaster, Coroner. Nightly batch, capped budget, propose only.</span></div>
+    </div>
+  </div>
+  <div class="bridge">sealed genome hash: the only path across</div>
+  <div class="plane">
+    <div class="ptitle"><h3>Hot plane</h3><span class="eyebrow">Rust · trading box near the venues</span></div>
+    <div class="layers">
+      <div class="layer"><span class="id">C3L</span><b>Atlas-live</b><span>Labels each identity row within 50 ms of receipt and keeps per-window flow state.</span></div>
+      <div class="layer"><span class="id">C6</span><b>Fair value</b><span>5m complex: replicas, jump-diffusion, intl mid, informed flow. Outputs fair ± σ.</span></div>
+      <div class="layer"><span class="id">C9</span><b>Runtime</b><span>Paper and live share one code path. Tick-to-intent p99 under 2 ms.</span></div>
+      <div class="layer"><span class="id">C10</span><b>riskd</b><span>Sole key holder: caps, kill file, idempotent IDs, 1 s reconcile. Only the owner promotes.</span></div>
+      <div class="layer"><span class="id">C11</span><b>Sentinel</b><span>Markouts, e-values, changepoints. Demotes automatically within one window.</span></div>
+      <div class="layer"><span class="id">C12</span><b>Desk</b><span>Atlas, Complex, Strategies, Sentinel, Health. Every number links to its source.</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Plan</div>
+  <h2>Six milestones, each with a test that ends it</h2>
+  <div class="ms">
+    <span class="when">M0 · days 1–3</span><p><strong>Recorders.</strong> Intl books, prints and RTDS; PM US and Kalshi windows; spot and index ticks. Done when 24 h of tape shows ≥99.5% hourly completeness and the watchdog drill passes. It comes first because order books can't be backfilled.</p>
+    <span class="when">M1 · wks 1–2</span><div class="stack"><p><strong>Census.</strong> 120-day Goldsky backfill, ledger with G0, atlas, operators, mechanism census.</p><div class="callout"><strong>Program kill line.</strong> If clonable, US-transferable net profit comes in under your line (suggested $500/day) and there is no measurable intl→US lead, DOPPEL stops and keeps the atlas.</div></div>
+    <span class="when">M2 · wks 2–4</span><p><strong>Complex and H1 twin.</strong> Calibrated fair value per venue, live labels, the twin with ported queue models. Done when H1 passes G4 on at least two weeks of PM US tape.</p>
+    <span class="when">M3 · wks 4–6</span><p><strong>Shadow and riskd.</strong> Runtime, riskd and sentinel run paper on live data, with desk v1. Passing G5 (≥14 days, e ≥ 20) leads to your decision on micro-live with $25–100 caps.</p>
+    <span class="when">M4 · wks 5–8</span><p><strong>Inversion to H3.</strong> Top atlas operators, anticipation tests, H2 and H3 genomes through G2–G4.</p>
+    <span class="when">M5 · wks 8+</span><p><strong>Simulator, agents, H5.</strong> Learned multi-agent simulator, batch agents, then sports and esports once G3 passes.</p>
+  </div>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Gates</div>
+  <h2>How a strategy earns money</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Gate</th><th>Pass</th></tr></thead>
+    <tbody>
+      <tr><td><strong>G0</strong> Ledger truth</td><td>≥95% of 200 sampled wallets within max($50, 2%) of <code>v2/user-pnl</code></td></tr>
+      <tr><td><strong>G1</strong> Skill</td><td>Point-in-time top decile beats matched controls in 3 of 4 rolling windows</td></tr>
+      <tr><td><strong>G2</strong> Clonable</td><td>Side AUC ≥ 0.65, timing log-likelihood gain &gt; 0, anticipation ≥ 50%</td></tr>
+      <tr><td><strong>G3</strong> Sensor parity</td><td>Our trigger receipt p90 beats the venue's repricing half-life</td></tr>
+      <tr><td><strong>G4</strong> Twin economics</td><td>Holm-adjusted t ≥ 2.5; positive at 1× and 2× size; positive without the largest window</td></tr>
+      <tr><td><strong>G5</strong> Shadow</td><td>≥14 days on live data; paper ≈ twin; e-value ≥ 20</td></tr>
+      <tr><td><strong>G6</strong> Micro-live</td><td>You arm it; riskd caps $25–100; markouts match paper</td></tr>
+      <tr><td><strong>G7</strong> Scale</td><td>Each size step adds net dollars under stressed fills</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Stack and sources</div>
+  <h2>Open-source pieces and what was ported</h2>
+  <div class="facts">
+    <div class="fact"><span class="k">Use</span><strong>Data and compute</strong><span>Goldsky v2, cryo (Apache-2.0) for chain audits, DuckDB and Polars (MIT), LightGBM, PyTorch only where it beats tabular models.</span></div>
+    <div class="fact"><span class="k">Port or reference</span><strong>Execution modeling</strong><span>hftbacktest queue models (MIT, ported). Nautilus Trader and prediction-market-backtesting are design references only; their adapters don't cover PM US or Kalshi.</span></div>
+    <div class="fact"><span class="k">Bring over</span><strong>From your repos</strong><span>BRTI replica (perelman), riskd pattern and Kalshi fee goldens (Edge-engine), PM US fee rounding, Quinn's preregistration and three clocks. Re-implemented with provenance notes.</span></div>
+  </div>
+  <p class="prose">Rejected: Kuzu (stale since 2025-10), poly_data (GPL, read only), the Hugging Face dumps as a primary source (reported 9–60 h gaps). REA was used for a static pass on the official RTDS client; a direct source read gave the same answer. Craft Anything was not used, because its setup writes into <code>~/.claude</code> and needs your approval.</p>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Cost</div>
+  <h2>About $400–770 a month</h2>
+  <div class="facts">
+    <div class="fact"><span class="k">Compute</span><strong class="num">$140–280</strong><span>Research box (8 vCPU, 32 GB, 1 TB) plus a small trading box near the venues. Apex is untouched.</span></div>
+    <div class="fact"><span class="k">Data</span><strong class="num">$110–340</strong><span>Goldsky (pricing to confirm), a paid Polygon RPC, object storage.</span></div>
+    <div class="fact"><span class="k">Agents</span><strong class="num">$150 cap</strong><span>Batch only, logged per agent, scored by how many proposals survive the gates.</span></div>
+  </div>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Your call</div>
+  <h2>Three decisions to start</h2>
+  <div class="decisions">
+    <div class="decision"><strong>Start M0 recorders on two new boxes</strong> (research and trading), leaving Apex alone. Every day of delay is a day of order-book tape lost for good.</div>
+    <div class="decision"><strong>Approve the budget</strong> of about $400–770 a month, including Goldsky, RPC and capped agents.</div>
+    <div class="decision"><strong>Set venues and the kill line:</strong> Polymarket US and Kalshi only, with the M1 census line at $500/day of clonable, US-transferable net profit, or your number.</div>
+  </div>
+</section>
+
+<footer>
+  Repo: <span class="mono">~/doppel</span> (docs/BLUEPRINT.md, evidence/2026-11-25-probes with SHA256SUMS). Sources: <a href="https://github.com/Polymarket/real-time-data-client">Polymarket real-time-data-client</a> · <a href="https://docs.polymarket.com/market-data/websocket/rtds">RTDS docs</a> · <a href="https://docs.polymarket.com/trading/fees">Polymarket fees</a> · <a href="https://docs.goldsky.com/chains/polymarket">Goldsky Polymarket</a> · <a href="https://github.com/nkaz001/hftbacktest">hftbacktest</a> · <a href="https://github.com/nautechsystems/nautilus_trader">Nautilus Trader</a> · <a href="https://github.com/evan-kolberg/prediction-market-backtesting">prediction-market-backtesting</a> · <a href="https://github.com/paradigmxyz/cryo">cryo</a> · <a href="https://huggingface.co/datasets/SII-WANGZJ/Polymarket_data">SII-WANGZJ Polymarket_data</a> · <a href="https://cryptobriefing.com/polymarket-us-five-minute-crypto-markets/">PM US 5-minute markets</a>. Probe samples were 20–60 s; every measured number gets re-run at scale in M0.
+</footer>
+
+</div>

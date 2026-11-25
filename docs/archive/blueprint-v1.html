@@ -1,0 +1,295 @@
+<title>DOPPEL</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: single reading column (~72ch) with full-width bands for the pipeline and tables; ledger/terminal feel, cents as the unit */
+:root{
+  --bg:#f6f7f9; --surface:#ffffff; --fg:#14202e; --muted:#566273; --line:#dde2e8;
+  --accent:#1f5fbf; --accent-soft:#e6eefb; --ok:#1d7a4f; --ok-soft:#e3f3ea; --warn:#a86200; --warn-soft:#fbf0de; --bad:#b3362b; --bad-soft:#f9e4e1;
+  --display:"Space Grotesk",ui-sans-serif,system-ui,sans-serif; --body:"Inter",ui-sans-serif,system-ui,sans-serif; --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f151d; --surface:#161e29; --fg:#e4e9f0; --muted:#97a3b3; --line:#263242;
+  --accent:#7aa7ef; --accent-soft:#1b2a40; --ok:#5cc792; --ok-soft:#14291f; --warn:#e0a54a; --warn-soft:#2c2213; --bad:#ef7f74; --bad-soft:#2f1816; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f151d; --surface:#161e29; --fg:#e4e9f0; --muted:#97a3b3; --line:#263242;
+  --accent:#7aa7ef; --accent-soft:#1b2a40; --ok:#5cc792; --ok-soft:#14291f; --warn:#e0a54a; --warn-soft:#2c2213; --bad:#ef7f74; --bad-soft:#2f1816; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:16px;line-height:1.6;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0 64px}
+.wrap{max-width:980px;margin:0 auto;display:flex;flex-direction:column;gap:56px}
+.prose{max-width:72ch}
+h1,h2,h3{font-family:var(--display);line-height:1.15;text-wrap:balance;margin:0}
+h1{font-size:clamp(2.4rem,6vw,3.6rem);letter-spacing:-.02em}
+h2{font-size:1.65rem;letter-spacing:-.01em}
+h3{font-size:1.1rem}
+p{margin:0}
+.stack{display:flex;flex-direction:column;gap:16px}
+.eyebrow{font-family:var(--mono);font-size:.75rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.lede{font-size:1.2rem;color:var(--fg);max-width:62ch}
+.mono,code{font-family:var(--mono);font-size:.88em}
+code{background:var(--accent-soft);padding:1px 5px;border-radius:4px}
+a{color:var(--accent)}
+header.top{padding-top:48px;display:flex;flex-direction:column;gap:20px;border-bottom:1px solid var(--line);padding-bottom:36px}
+.meta{display:flex;flex-wrap:wrap;gap:8px}
+.chip{font-family:var(--mono);font-size:.75rem;padding:3px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted);background:var(--surface)}
+.chip.live{color:var(--bad);border-color:var(--bad);background:var(--bad-soft)}
+.thesis{border-left:3px solid var(--accent);padding:4px 0 4px 18px;font-size:1.08rem}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.fact{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px 20px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.fact .k{font-family:var(--mono);font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--accent)}
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:.9rem;min-width:720px}
+th,td{text-align:left;vertical-align:top;padding:10px 14px;border-bottom:1px solid var(--line)}
+th{font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);background:var(--bg);font-weight:600}
+tr:last-child td{border-bottom:0}
+td.law{font-weight:600}
+.tag{display:inline-block;font-family:var(--mono);font-size:.72rem;padding:1px 7px;border-radius:5px;white-space:nowrap}
+.y{background:var(--ok-soft);color:var(--ok)} .p{background:var(--warn-soft);color:var(--warn)} .n{background:var(--bad-soft);color:var(--bad)}
+/* clocks */
+.clock{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;border:1px solid var(--line);border-radius:10px;background:var(--surface);overflow:hidden}
+.tick{padding:16px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:6px;min-width:0}
+.tick:last-child{border-right:0}
+.tick .t{font-family:var(--mono);font-weight:600;color:var(--accent)}
+.tick .d{font-family:var(--mono);font-size:.75rem;color:var(--muted)}
+.tick.hot{background:var(--accent-soft)}
+.tick.id{background:var(--warn-soft)}
+@media (max-width:760px){.clock{grid-template-columns:1fr}.tick{border-right:0;border-bottom:1px solid var(--line)}.tick:last-child{border-bottom:0}}
+/* pipeline */
+.plane{border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:18px;display:flex;flex-direction:column;gap:14px}
+.plane .ptitle{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:baseline}
+.layers{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.layer{border:1px solid var(--line);border-radius:8px;padding:12px;background:var(--bg);display:flex;flex-direction:column;gap:6px;min-width:0}
+.layer b{font-family:var(--display);font-size:.98rem}
+.layer .id{font-family:var(--mono);font-size:.7rem;color:var(--accent)}
+.layer span{font-size:.84rem;color:var(--muted);line-height:1.45}
+.bridge{display:flex;align-items:center;gap:12px;justify-content:center;font-family:var(--mono);font-size:.8rem;color:var(--warn);padding:6px 0}
+.bridge::before,.bridge::after{content:"";flex:1;max-width:160px;border-top:2px dashed var(--warn)}
+.agents{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.agent{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:var(--surface);display:flex;flex-direction:column;gap:6px;min-width:0}
+.agent .no{font-size:.82rem;color:var(--bad)}
+.agent .no::before{content:"cannot · ";font-family:var(--mono);font-size:.72rem}
+ol.steps{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:10px}
+.ms{display:grid;grid-template-columns:120px 1fr;gap:12px 20px;align-items:start}
+.ms .when{font-family:var(--mono);font-size:.8rem;color:var(--accent);padding-top:3px}
+@media (max-width:560px){.ms{grid-template-columns:1fr;gap:4px}.ms .when{padding-top:12px}}
+.callout{background:var(--warn-soft);border:1px solid var(--warn);border-radius:10px;padding:16px 18px}
+.decisions{display:flex;flex-direction:column;gap:12px;counter-reset:d}
+.decision{background:var(--surface);border:1px solid var(--accent);border-radius:10px;padding:16px 18px 16px 56px;position:relative}
+.decision::before{counter-increment:d;content:counter(d);position:absolute;left:18px;top:14px;font-family:var(--display);font-size:1.4rem;color:var(--accent);font-weight:700}
+.num{font-variant-numeric:tabular-nums}
+footer{font-size:.82rem;color:var(--muted);border-top:1px solid var(--line);padding-top:20px}
+</style>
+
+<div class="wrap">
+
+<header class="top">
+  <div class="eyebrow">Polymarket strategy inversion · research + architecture · 2026-11-25</div>
+  <h1>DOPPEL</h1>
+  <p class="lede">Reconstruct what each winning operator saw at the moment they traded. Learn the rule that turned it into orders, prove that rule fires on its own on held-out data, then run it on Polymarket US and Kalshi under one risk system that retires it when the edge decays.</p>
+  <div class="meta"><span class="chip">paper + research only</span><span class="chip">LLM agents propose · code decides</span><span class="chip">riskd holds the only keys</span><span class="chip live">no live orders without owner arming</span></div>
+</header>
+
+<section class="stack">
+  <div class="eyebrow">Verdict</div>
+  <h2>The idea is right. The earlier builds copied the wrong thing.</h2>
+  <div class="prose stack">
+    <p>Every prior attempt that <strong>followed</strong> wallets lost money: a copy 5 seconds late earned <span class="mono">+0.7% [−2.0, +3.6]</span>, the top 20% of leaders copied forward earned <span class="mono">−4.2%</span>, and RN1 single-leg copies ran <span class="mono">−8% to −21%</span> under strict replay. Every attempt that <strong>identified the mechanism</strong> found something real. Latency snipers' fills followed a BTC move in the same direction <span class="mono">89–93%</span> of the time. A LoL taker had <span class="mono">98%</span> of fills within 60 s of a game event. Complete-set makers locked <span class="mono">2–4¢</span> per pair plus rebates.</p>
+    <p class="thesis">So DOPPEL never copies a fill. It clones the <em>policy</em>: the trigger, the price, the size, both legs, and the recovery. Wallet identities are training labels, never triggers.</p>
+  </div>
+  <div class="facts">
+    <div class="fact"><span class="k">New this month</span><strong>Polymarket US lists 5-minute crypto up/down</strong><span>BTC, ETH, SOL, XRP since about Oct 27. The richest bot archetype from the October hunt (5m makers and latency takers, daily Sharpe 10–21) now has a US-legal target.</span></div>
+    <div class="fact"><span class="k">New data source</span><strong>Goldsky <code>order_filled</code> v2</strong><span>Per-fill maker/taker role, order hash, counterparty, fee and builder, with historical backfill. It replaces a self-run archive that would grow about 8.8 GiB a day.</span></div>
+    <div class="fact"><span class="k">Fees changed</span><strong>Taker fee = rate · shares · p(1−p)</strong><span>Rate is 0.05 for sports and BTC 5m/15m, and 0.01 for most other categories. Makers pay 0. Rebates are 0% under $200k of 30-day maker volume. Every earlier result needs recomputing at these rates.</span></div>
+  </div>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Why it didn't work before</div>
+  <h2>Failure ledger and the laws that come out of it</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>#</th><th>What happened</th><th>Root cause</th><th>DOPPEL law</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">F1</td><td>Leaderboard winners didn't persist (rank corr 0.04; leaders ≈ controls)</td><td>Graded on the same history that picked them</td><td class="law">Point-in-time only, vs matched controls, on disjoint future events</td></tr>
+      <tr><td class="mono">F2</td><td>Screen P&amp;L overstated 4–40×; v2 study matched true P&amp;L on 27% of wallet-markets</td><td>Activity feed: taker-only default, 10k truncation, realized-only, no rebates</td><td class="law">Cash-flow-exact ledger from chain, reconciled to <code>v2/user-pnl</code> first</td></tr>
+      <tr><td class="mono">F3</td><td>Copies lost; one-leg RN1 copies −8 to −21%</td><td>Copying output arrives after the move; half a pair is a naked bet</td><td class="law">Clone the whole acquisition policy, never the fill</td></tr>
+      <tr><td class="mono">F4</td><td>Clones lost the race (Riot feed 21 s late; soccer: Kalshi moves first)</td><td>Right trigger, slower sensor</td><td class="law">Sensor-parity gate: our receipt must beat the venue's repricing</td></tr>
+      <tr><td class="mono">F5</td><td>Scoreboard credited 64/85 fills; strict replay found 0</td><td>Stale books, no queue, fills from the print that caused them</td><td class="law">Twin with post-arrival books and a calibrated queue model</td></tr>
+      <tr><td class="mono">F6</td><td>vibing123 failed; weather/US-sports makers were luck + rebates</td><td>Private model or incentive income</td><td class="law">Explainability ceiling: unpredictable = unclonable, use as a toxicity signal</td></tr>
+      <tr><td class="mono">F7</td><td>Three half-systems, 19 services on a 7 GB box, a verdict nobody read</td><td>No single owner of data, replay or verdict</td><td class="law">One stack, one ledger, one registry; heavy research off the trading box</td></tr>
+      <tr><td class="mono">F8</td><td>Gates stuck at "inconclusive forever"</td><td>Gates designed after the data</td><td class="law">Preregistered, powered, futility-bounded gates with an FDR ledger</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">The reframe</div>
+  <h2>Why "same exact time" means cloning</h2>
+  <p class="prose">A wallet's identity first appears on Polygon, at least one block after the price has already moved. No amount of Rust makes a copy faster than that. To trade alongside them, observe what they observed and run the same rule.</p>
+  <div class="clock">
+    <div class="tick hot"><span class="t">t0</span><span>Their signal arrives: spot tick, goal, kill, news</span><span class="d">the thing to clone</span></div>
+    <div class="tick"><span class="t">t1</span><span>Order hits the CLOB</span><span class="d">~ms after t0</span></div>
+    <div class="tick"><span class="t">t2</span><span>Trade on the WebSocket, price and size, no identity</span><span class="d">~100 ms</span></div>
+    <div class="tick id"><span class="t">t3</span><span>Fill settles on-chain with identity, role, fee and order hash</span><span class="d">≥1 block · ~5 s finality</span></div>
+    <div class="tick"><span class="t">t4</span><span>Indexers and the data-api show it</span><span class="d">seconds to ~100 s</span></div>
+  </div>
+  <div class="facts">
+    <div class="fact"><span class="k">Question 1 · skill</span><strong>Is it real?</strong><span>Point-in-time persistence against matched controls on the exact ledger.</span></div>
+    <div class="fact"><span class="k">Question 2 · clonability</span><strong>Can public state explain it?</strong><span>Fit π̂(action | state at t0−δ). The held-out lift over the wallet's base rate is the explainability ceiling.</span></div>
+    <div class="fact"><span class="k">Question 3 · economics</span><strong>Does our clone make money alone?</strong><span>Run π̂ on held-out US-venue tape in the twin, net of fees, queue and latency. Our trades, not theirs.</span></div>
+  </div>
+  <p class="prose"><strong>The anticipation test</strong> is the strongest proof. On held-out weeks, our clone fires before the wallet's on-chain fill, on the same side, at a preregistered rate. That measures "trading like them at the same time" directly.</p>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Mechanism map</div>
+  <h2>Who makes money on Polymarket, and what transfers</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Mechanism</th><th>Prior evidence (re-verify)</th><th>On-chain</th><th>Clonable</th><th>US target</th><th>Main risk</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Latency taker</strong></td><td>BTC moved toward side in 5 s before 89–93% of fills</td><td><span class="tag y">fills, role, fee</span></td><td><span class="tag y">if sensor parity</span></td><td>PM US 5m/15m, KXBTC15M</td><td>Speed race; needs ms-level BRTI (have it)</td></tr>
+      <tr><td><strong>Complete-set maker</strong></td><td>Pair cost 0.96–0.98; rebates 28–45% of profit</td><td><span class="tag p">fills yes, quotes no</span></td><td><span class="tag p">needs own L2 capture</span></td><td>PM US 5m</td><td>Rebate tier floor; queue position</td></tr>
+      <tr><td><strong>In-play two-sided maker</strong></td><td>Pair 0.975, rebates ≈ fees</td><td><span class="tag p">fills only</span></td><td><span class="tag p">partly</span></td><td>PM US sports, Kalshi games</td><td>Adverse selection in-play</td></tr>
+      <tr><td><strong>In-play info taker</strong></td><td>98% of LoL fills ≤60 s after an event, median lag 5 s</td><td><span class="tag y">yes</span></td><td><span class="tag p">with a fast feed</span></td><td>PM US esports, tennis</td><td>Free feed 21 s late</td></tr>
+      <tr><td><strong>Endgame sweep</strong></td><td>Buys 0.99+ in the last ~54 s</td><td><span class="tag y">yes</span></td><td><span class="tag y">yes</span></td><td>PM US 5m/15m</td><td>Tail loss, thin margin</td></tr>
+      <tr><td><strong>Fair-value modeler</strong></td><td>tiger105, weather makers</td><td><span class="tag y">yes</span></td><td><span class="tag p">sometimes</span></td><td>varies</td><td>Usually a private model</td></tr>
+      <tr><td><strong>Structural</strong></td><td>Neg-risk sums, ladders</td><td><span class="tag y">yes</span></td><td><span class="tag y">rules-based</span></td><td>Kalshi, PM US</td><td>Short-dated books were coherent</td></tr>
+      <tr><td><strong>Private info / one-shot</strong></td><td>Theo4, btystu</td><td><span class="tag y">yes</span></td><td><span class="tag n">no</span></td><td>none</td><td>Toxicity label only</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Architecture</div>
+  <h2>Two planes, one sealed bridge</h2>
+  <p class="prose">The research plane can be messy, restartable and LLM-assisted. The execution plane only ever receives a sealed, hashed strategy that passed the foundry. Agents never touch keys, orders or caps.</p>
+
+  <div class="plane">
+    <div class="ptitle"><h3>Research plane</h3><span class="eyebrow">batch · Python + DuckDB + Parquet · separate research box</span></div>
+    <div class="layers">
+      <div class="layer"><span class="id">L0 · INGEST</span><b>Truth sources</b><span>Goldsky v2 fills and positions; own Polygon log tail as auditor; CLOB L2 + trades on a declared universe; BRTI, spot ticks, sports feeds; rules and fee snapshots. Three clocks on everything.</span></div>
+      <div class="layer"><span class="id">L1 · LEDGER</span><b>Exact P&amp;L</b><span>Fills, splits/merges, redemptions, rebates, open marks. Gate G0 reconciles to <code>v2/user-pnl</code>. Decomposed into spread, direction, complete-set lock, rebates and fees.</span></div>
+      <div class="layer"><span class="id">L2 · ATLAS</span><b>Who is skilled</b><span>Weekly point-in-time ranks vs matched controls. Wallets cluster into operators (co-quoting, funding graph). Mechanism census. Counterparty map.</span></div>
+      <div class="layer"><span class="id">L3 · GRAPH</span><b>Bitemporal memory</b><span>Wallet, operator, market, rule, fill, sensor, mechanism, hypothesis, trial, verdict. Valid-time and knowledge-time on every edge. PROV lineage; rule changes invalidate dependents.</span></div>
+      <div class="layer"><span class="id">L4 · INVERSION</span><b>Policy lab</b><span>Rebuild state at t0−δ. Trigger hazard, side, size and inverse-quote models. Explainability ceiling, information horizon, anticipation test. Trigger search across all markets.</span></div>
+      <div class="layer"><span class="id">L5 · FOUNDRY</span><b>Genome + registry</b><span>Universe × Trigger × FairValue × Execution × Sizing × Exit × Risk. Recombining genes is charged to the FDR ledger. Preregistration hash covers the windows, power, futility bound and kill rule.</span></div>
+      <div class="layer"><span class="id">L6 · TWIN</span><b>Honest replay</b><span>Post-arrival books only. A maker fills only after the queue ahead of it is used up, and complementary-token matches count. Latency comes from measured distributions. Fees are pinned per version.</span></div>
+    </div>
+  </div>
+
+  <div class="bridge">sealed StrategySpec hash: the only path across</div>
+
+  <div class="plane">
+    <div class="ptitle"><h3>Execution plane</h3><span class="eyebrow">Edge-engine · Rust · Apex</span></div>
+    <div class="layers">
+      <div class="layer"><span class="id">L7 · BOOK</span><b><code>strategies/clone</code></b><span>Paper and live share one code path. Native PM US and Kalshi feeds. Internal tick-to-decision p99 target under 5 ms. Only riskd signs.</span></div>
+      <div class="layer"><span class="id">L8 · SENTINEL</span><b>Decay watch</b><span>Markouts at 1 s, 10 s, 60 s and settle. Anytime-valid e-values and changepoint detection on edge. Demotion to paper is automatic; promotion needs the owner. Champion and challenger run on the same events.</span></div>
+      <div class="layer"><span class="id">DESK</span><b>Dashboard</b><span>Atlas · Dossiers · Foundry · Book · Sentinel · Health. Every figure traces to a ledger row or a source receipt.</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Persona agents</div>
+  <h2>Eight analysts with narrow jobs and no keys</h2>
+  <p class="prose">They run in nightly batches over sealed dossiers, with a hard monthly token cap logged per agent. A claim without a graph ID is dropped. Each agent is scored by the share of its proposals that survive the gates. They arrive in milestone 5, after the pipeline they feed exists.</p>
+  <div class="agents">
+    <div class="agent"><b>Cartographer</b><span>Coverage, gaps, decoder versions, new market systems</span><span class="no">mark data complete</span></div>
+    <div class="agent"><b>Accountant</b><span>Investigates ledger reconciliation failures</span><span class="no">change ledger rules</span></div>
+    <div class="agent"><b>Profiler</b><span>Operator dossier: mechanism split, timing, cluster</span><span class="no">assert skill</span></div>
+    <div class="agent"><b>Detective</b><span>Proposes the t0 trigger and the sensors it needs</span><span class="no">fit or grade models</span></div>
+    <div class="agent"><b>Strategist</b><span>Drafts genomes, recombinations, US transfer plan</span><span class="no">seal a registration</span></div>
+    <div class="agent"><b>Skeptic</b><span>Argues luck, look-ahead, rebates, crowding; writes falsifiers</span><span class="no">veto a result</span></div>
+    <div class="agent"><b>Quartermaster</b><span>Latency budget, depth, capacity, fee tier</span><span class="no">pass without measurements</span></div>
+    <div class="agent"><b>Coroner</b><span>Post-mortem on every retirement into the failure library</span><span class="no">revive a retired strategy</span></div>
+  </div>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Learning loops</div>
+  <h2>Five loops, each closing on evidence</h2>
+  <ol class="steps prose">
+    <li><strong>Atlas, weekly.</strong> Re-rank point-in-time, update the census, queue new operators for profiling.</li>
+    <li><strong>Inversion, per operator.</strong> Fit the policy, measure explainability and anticipation, send clonable ones to the foundry.</li>
+    <li><strong>Execution, daily.</strong> Our fills plus target makers' fills recalibrate the queue model and score twin fidelity.</li>
+    <li><strong>Allocation, daily.</strong> Capacity-capped Thompson or fractional-Kelly across promoted strategies, gated on calibration.</li>
+    <li><strong>Decay, continuous.</strong> Sentinel demotes; the Coroner records why; the failure library reshapes what gets proposed next. If the original operator's edge fades or they stop trading, the clone's prior drops before our own P&amp;L shows it.</li>
+  </ol>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Gates</div>
+  <h2>Preregistered, numeric, with kill rules</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Gate</th><th>Pass</th><th>Fail means</th></tr></thead>
+    <tbody>
+      <tr><td><strong>G0 Ledger truth</strong></td><td>≥95% of a stratified 200-wallet sample reconcile to <code>v2/user-pnl</code> within max($50, 2%); span receipts gap-free</td><td>Fix the decoder; nothing downstream runs</td></tr>
+      <tr><td><strong>G1 Skill exists</strong></td><td>Top-decile operators beat matched controls on next-4-week net P&amp;L, clustered CI &gt; 0, in ≥3 of 4 rolling windows</td><td>No clones; the census still feeds maker toxicity</td></tr>
+      <tr><td><strong>G2 Clonable</strong></td><td>Held-out side AUC ≥ 0.65, timing log-likelihood gain &gt; 0, anticipation rate ≥ 50%</td><td>Operator becomes a toxicity label</td></tr>
+      <tr><td><strong>G3 Sensor parity</strong></td><td>Our trigger receipt p90 is faster than the venue's repricing half-life</td><td>Buy or build a faster feed, or drop it</td></tr>
+      <tr><td><strong>G4 Clone economics</strong></td><td>Twin on the US venue, Holm-adjusted t ≥ 2.5, positive at 1× and 2× size, positive without the largest event</td><td>Retire; Coroner entry</td></tr>
+      <tr><td><strong>G5 Shadow paper</strong></td><td>≥14 days on live data, paper ≈ twin, e-value for edge &gt; hurdle ≥ 20</td><td>Back to the lab</td></tr>
+      <tr><td><strong>G6 Micro-live</strong></td><td>Owner arms; riskd caps $25–100; clean reconciliation; live markouts ≈ paper</td><td>Automatic demotion</td></tr>
+      <tr><td><strong>G7 Scale</strong></td><td>Each size step adds net dollars under stressed fills</td><td>Hold size</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Build order</div>
+  <h2>Size the prize before building the swarm</h2>
+  <div class="ms">
+    <span class="when">M1 · ~2 wks</span><div class="stack"><p><strong>Census.</strong> 120 days of Goldsky v2 fills into Parquet; Quinn's ingester audits 20 random spans. Ledger and G0. Point-in-time atlas, operator clusters, and a mechanism census: net dollars by mechanism × category × horizon, the clonable share, and the share with a liquid US target. Start a PM US 5m order-book recorder on day one so M2 has tape.</p>
+    <div class="callout"><strong>Program kill line.</strong> If the census finds less than a preset amount of clonable, US-transferable net profit (suggested $500/day), DOPPEL stops at M1 and the census feeds SHADOWBOOK as a toxicity map. That outcome costs two weeks, not two months.</div></div>
+    <span class="when">M2</span><p><strong>First clone: 5m/15m crypto latency taker.</strong> Highest prior evidence, and the sensors exist (PERELMAN BRTI, spot ticks). Inversion, anticipation, twin on PM US 5m tape, gates G2 to G4.</p>
+    <span class="when">M3</span><p><strong>5m complete-set maker.</strong> Needs the queue model and reuses Quinn's maker-pair preregistration. Check the rebate-tier economics first, since the rebate is 0% below $200k of 30-day maker volume.</p>
+    <span class="when">M4</span><p><strong>Book, Sentinel and Desk</strong> in Edge-engine <code>strategies/clone</code>. Shadow paper to G5.</p>
+    <span class="when">M5</span><p><strong>Persona agents and gene recombination.</strong> Then in-play esports and tennis, after G3 says whether a paid low-latency feed is needed.</p>
+  </div>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Infrastructure</div>
+  <h2>What it costs to run</h2>
+  <div class="facts">
+    <div class="fact"><span class="k">Rejected as primary</span><strong class="num">8.8 GiB/day</strong><span>Self-run raw log archive at the pilot's density (64 blocks = 13 MiB) and ~43,200 blocks a day: about 790 GiB per 90 days. Apex has 121 GB free and 7 GB RAM. The ingester stays on as an auditor.</span></div>
+    <div class="fact"><span class="k">Research box</span><strong class="num">~$100–200/mo</strong><span>8 vCPU, 32 GB, 0.5–1 TB NVMe for DuckDB, Parquet and model fitting. Apex stays the execution box (PERELMAN, riskd).</span></div>
+    <div class="fact"><span class="k">Data + LLM</span><strong class="num">~$250–450/mo</strong><span>Goldsky pipeline (pricing to confirm), a paid Polygon RPC tier, and a capped $150/mo agent budget. A paid in-play feed comes only after G3.</span></div>
+  </div>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Consolidation</div>
+  <h2>One stack</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Keep</th><th>New</th><th>Retire</th></tr></thead>
+    <tbody><tr>
+      <td>Quinn's absorption plan: on-chain truth, point-in-time screen, mechanism attribution, fill calibration, one registry with an FDR ledger, three clocks. Edge-engine riskd, WAL, StrategySpec v2. PERELMAN BRTI. Sports-terminal venue knowledge.</td>
+      <td>Goldsky v2 as the archive. Operator clustering. Explainability ceiling and anticipation test. Sensor-parity gate. Strategy genome with charged recombination. Anytime-valid decay sentinel. Census-first kill line. PM US 5m as the first target.</td>
+      <td>Quinn's Python wallet lanes (fast poller, ladder, scoreboard, desk). The data-api as a P&amp;L source. One-leg copying everywhere. copyfwd (its data was deleted in the 11-15 purge before the verdict was read). Edge-engine <code>strategies/copy</code> becomes <code>strategies/clone</code>.</td>
+    </tr></tbody>
+  </table></div>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Expectations</div>
+  <h2>What success looks like</h2>
+  <div class="prose stack">
+    <p>The best operators earned roughly <span class="mono">$400–2,000</span> a day each, with median trades of <span class="mono">$4–10</span>. Capacity is small and contested. The upside is many small clones across mechanisms and markets, not one big one. Some of the best wallets will turn out unclonable. That is still a usable result, because they become the list of flow your makers should not quote against.</p>
+  </div>
+</section>
+
+<section class="stack">
+  <div class="eyebrow">Your call</div>
+  <h2>Three decisions to start M1</h2>
+  <div class="decisions">
+    <div class="decision"><strong>Execution venues.</strong> Polymarket US and Kalshi only, with Polymarket international as read-only intelligence. Recommended, since it is the US-legal route.</div>
+    <div class="decision"><strong>Box and data budget.</strong> A separate research box (~$100–200/mo) plus Goldsky and RPC spend (~$100–300/mo) for M1.</div>
+    <div class="decision"><strong>Consolidation and kill line.</strong> Edge-engine <code>strategies/clone</code> plus one Python research plane becomes the only stack, Quinn's wallet lanes retire, and the M1 census kill line is set (suggested $500/day of clonable, US-transferable net profit).</div>
+  </div>
+</section>
+
+<footer>
+  Sources: <a href="https://docs.polymarket.com/trading/fees">Polymarket fees</a> · <a href="https://docs.polymarket.com/programs/maker-rebates">Maker rebates</a> · <a href="https://docs.goldsky.com/chains/polymarket">Goldsky Polymarket datasets</a> · <a href="https://cryptobriefing.com/polymarket-us-five-minute-crypto-markets/">PM US 5-minute markets</a> · <a href="https://www.polygon.technology/blog/polygon-5-second-fast-finality-upgrade">Polygon fast finality</a> · <a href="https://huggingface.co/datasets/SII-WANGZJ/Polymarket_data/discussions/8">HF dump gap report</a>. Internal: quinn-research WALLET-ABSORPTION-PLAN and FRONTIER docs, Edge-engine strategies/copy SPEC, prior wallet studies 2026-10-16 to 11-24. Prior numbers are leads to re-verify on the new ledger, not evidence.
+</footer>
+
+</div>
