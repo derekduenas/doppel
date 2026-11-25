@@ -21,6 +21,8 @@ import orjson
 from .receipts import build_receipt
 from .segment import SegmentWriter, read_segment
 from .sources.base import RateLimiter
+from .sources.kalshi_brti import KalshiBrti
+from .sources.pmus_ws import PmusMarketsWs
 from .sources.venues import (BitstampTrades, CoinbaseTrades, IntlClobMarket, KalshiBooks,
                              KrakenTrades, PmusBooks, RtdsTrades)
 from .universe import IntlUniverse
@@ -28,7 +30,7 @@ from .universe import IntlUniverse
 ASSETS = ("btc", "eth", "sol", "xrp")
 HZ = ("5m", "15m")
 CLOB_SHARDS = tuple(f"clob_{a}_{h}" for a in ASSETS for h in HZ)  # one socket per shard
-ALL = ("rtds_a", "rtds_b", *CLOB_SHARDS, "pmus_books", "kalshi_books",
+ALL = ("rtds_a", "rtds_b", *CLOB_SHARDS, "pmus_books", "pmus_ws", "kalshi_books", "kalshi_brti",
        "spot_coinbase", "spot_kraken", "spot_bitstamp")
 
 
@@ -43,6 +45,10 @@ def build_sources(data: Path, only: set[str]):
         "rtds_b": lambda: RtdsTrades("rtds_b", w("rtds_b")),
         "pmus_books": lambda: PmusBooks("pmus_books", w("pmus_books"), pmus_lim),
         "kalshi_books": lambda: KalshiBooks("kalshi_books", w("kalshi_books"), kalshi_lim),
+        # auth via the host signer socket; DOPPEL never holds the PM US key
+        "pmus_ws": lambda: PmusMarketsWs("pmus_ws", w("pmus_ws")),
+        # ALL key differs from the stream name on purpose (it is a reference-price stream)
+        "kalshi_brti": lambda: KalshiBrti("ref_brti_live", w("ref_brti_live")),
         "spot_coinbase": lambda: CoinbaseTrades("spot_coinbase", w("spot_coinbase")),
         "spot_kraken": lambda: KrakenTrades("spot_kraken", w("spot_kraken")),
         "spot_bitstamp": lambda: BitstampTrades("spot_bitstamp", w("spot_bitstamp")),

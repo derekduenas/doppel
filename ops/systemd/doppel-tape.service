@@ -1,11 +1,16 @@
 [Unit]
-Description=DOPPEL M0 tape recorders (intl CLOB shards, RTDS x2, PM US, Kalshi, spot)
+Description=DOPPEL M0 tape recorders (intl CLOB shards, RTDS x2, PM US REST+WS, Kalshi books+BRTI, spot)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=doppel
+# pmus_ws: connect to the host signer socket (/run/pmus-riskd-market-signer/markets.sock); the PM US
+# key stays with the signer. kalshi_brti: read-only Kalshi profile handed in as a systemd credential
+# ($CREDENTIALS_DIRECTORY/kalshi-profile.json, readable only by this service).
+SupplementaryGroups=pmus-market-data
+LoadCredential=kalshi-profile.json:/etc/edge-engine/riskd/kalshi-production-readonly.json
 WorkingDirectory=/opt/doppel
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/doppel/.venv/bin/doppel-tape run --data /mnt/volume_nyc1_1793485122853/doppel/tape
