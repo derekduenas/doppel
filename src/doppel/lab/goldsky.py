@@ -127,6 +127,13 @@ def main(argv: list[str] | None = None) -> int:
     w.add_argument("--end", type=int, required=True)
     w.add_argument("--max-rows", type=int, required=True)
     w.add_argument("--job", required=True)
+    c = sub.add_parser("cohort", help="per-wallet history for a frozen cohort file")
+    c.add_argument("--cohort", type=Path, required=True)
+    c.add_argument("--n-candidates", type=int, default=10)
+    c.add_argument("--n-controls", type=int, default=10)
+    c.add_argument("--days", type=float, default=7.0)
+    c.add_argument("--max-rows-per-wallet", type=int, default=20_000)
+    c.add_argument("--execute", action="store_true", help="without this, only print the plan")
     sub.add_parser("budget")
     a = ap.parse_args(argv)
     ledger = Ledger(a.ledger, a.cap_rows)
@@ -137,6 +144,8 @@ def main(argv: list[str] | None = None) -> int:
     if not key:
         print("GOLDSKY_FEEDS_API_KEY not set", file=sys.stderr)
         return 2
+    if a.cmd == "cohort":
+        return _cohort(a, ledger, key)
     if a.end - a.start > 604_800:
         ap.error("Feeds time windows are limited to 7 days")
     writer = SegmentWriter(a.data, "goldsky_activity")
@@ -146,6 +155,37 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         writer.close()
     print(orjson.dumps({"job": a.job, "rows": n, **ledger.summary()}).decode())
+    return 0
+
+
+def _cohort(a, ledger: Ledger, key: str) -> int:
+    doc = orjson.loads(a.cohort.read_bytes())
+    wallets = ([("cand", w) for w in doc["candidates"][:a.n_candidates]]
+               + [("ctrl", w) for w in doc["controls"][:a.n_controls]])
+    worst = len(wallets) * a.max_rows_per_wallet
+    plan = {"cohort_sha256": doc["sha256"], "wallets": len(wallets), "days": a.days,
+            "max_rows_per_wallet": a.max_rows_per_wallet, "worst_case_rows": worst,
+            "worst_case_usd": round(worst * USD_PER_ROW, 2), "ledger_before": ledger.summary()}
+    print(orjson.dumps(plan).decode())
+    if worst > ledger.cap - ledger.total:
+        print("plan exceeds remaining cap; refusing", file=sys.stderr)
+        return 3
+    if not a.execute:
+        return 0
+    end = int(time.time())
+    start = end - int(a.days * 86400)
+    writer = SegmentWriter(a.data, "goldsky_activity")
+    tag = doc["sha256"][:12]
+    try:
+        for role, w in wallets:
+            n = asyncio.run(pull(f"cohort-{tag}-{role}-{w}", {"address": w, "start_time": start,
+                                                              "end_time": end},
+                                 key, ledger, writer, a.max_rows_per_wallet))
+            print(orjson.dumps({"wallet": w, "role": role, "rows": n,
+                                "truncated": n >= a.max_rows_per_wallet}).decode(), flush=True)
+    finally:
+        writer.close()
+    print(orjson.dumps({"done": True, **ledger.summary()}).decode())
     return 0
 
 
