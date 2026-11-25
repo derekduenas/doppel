@@ -124,7 +124,7 @@ def main(argv=None) -> int:
         res["alignment"] = al
         if a.out:
             a.out.parent.mkdir(parents=True, exist_ok=True)
-            a.out.write_bytes(orjson.dumps(res, option=orjson.OPT_INDENT_2, default=str))
+            a.out.write_bytes(orjson.dumps(res, option=orjson.OPT_INDENT_2 | orjson.OPT_NON_STR_KEYS, default=str))
         print(f"btc {a.hz} windows~{res['windows']} lag={lag}")
         for tau, v in res["by_tau"].items():
             print(f"  tau={tau:>4}s n={v['n']:>4} v1_raw brier={v['v1_raw']['brier']:.4f} "
