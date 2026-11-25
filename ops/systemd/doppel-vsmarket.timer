@@ -1,0 +1,9 @@
+[Unit]
+Description=Hourly DOPPEL fair-vs-market scorecard
+
+[Timer]
+OnCalendar=*:20
+Persistent=true
+
+[Install]
+WantedBy=timers.target

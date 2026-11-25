@@ -35,8 +35,13 @@ DAY = 86400
 
 
 # ---------------------------------------------------------------- fills
+KEEP = ("token_id", "side", "amount_shares", "amount_usdc", "fee", "block_timestamp",
+        "block_number", "order_type", "price")
+
+
 def load_fills(root: Path, wallets: set[str] | None = None, job_prefix: str = "cohort-"):
-    """Deduplicated Goldsky TRADE rows (by row id) from the tape, grouped by wallet."""
+    """Deduplicated Goldsky TRADE rows (by row id) from the tape, grouped by wallet.
+    Rows keep only the fields the ledger/census use (memory: ~1.7M rows on a shared 8 GB box)."""
     seen, out = set(), defaultdict(list)
     for f in sorted((root / "goldsky_activity").glob("*/*.dtape.zst")):
         for rec in read_segment(f, verify=True):
@@ -50,7 +55,7 @@ def load_fills(root: Path, wallets: set[str] | None = None, job_prefix: str = "c
                 if wallets is not None and a not in wallets:
                     continue
                 seen.add(r["id"])
-                out[a].append(r)
+                out[a].append({k: r.get(k) for k in KEEP} | {"id": r["id"]})
     for rows in out.values():
         rows.sort(key=lambda r: (r["block_number"], r["id"]))
     return out

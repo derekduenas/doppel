@@ -1,0 +1,10 @@
+[Unit]
+Description=DOPPEL fair-v1 vs PM US live book scorecard (BTC 5m, as-of tape)
+
+[Service]
+Type=oneshot
+User=doppel
+WorkingDirectory=/tmp
+ExecStart=/opt/doppel/.venv/bin/doppel-vsmarket --data /mnt/volume_nyc1_1793485122853/doppel/tape --margin 0.02 --out /mnt/volume_nyc1_1793485122853/doppel/lab/fair/vsmarket-latest.json
+MemoryMax=1500M
+Nice=10
