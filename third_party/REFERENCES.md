@@ -34,6 +34,6 @@
 |---|---|
 | [claude-plugins-official](https://github.com/anthropics/claude-plugins-official) → `pyright-lsp` | **Adopted.** Installed as a Claude Code plugin (live type errors while editing). `pyright` is a dev dependency and `ops/deploy.sh` refuses to ship with type errors (first run found 11 annotation issues, all fixed). Add `rust-analyzer-lsp` when the Rust hot plane starts (M2). |
 | [launch-your-agent](https://github.com/anthropics/launch-your-agent) + [claude-quickstarts/managed-agents](https://github.com/anthropics/claude-quickstarts) | **M5 reference.** Pattern for running the four persona agents (Profiler, Skeptic, Quartermaster, Coroner) as scheduled Claude Managed Agents over sealed dossiers, off the trading box. Not adopted until the census/twin exist. |
-| claude-plugins-official → `external_plugins/telegram` | **Optional, owner decision.** Phone channel to a Claude Code session. Useful for checking DOPPEL from mobile, but it opens a remote path into a session that can reach Apex. Only with the owner's own bot token and an allowlist. |
+| claude-plugins-official → `external_plugins/telegram` | **Declined by owner (2026-11-25).** |
 | [claude-agent-sdk-python](https://github.com/anthropics/claude-agent-sdk-python) | M5 runtime option if agents run on our own box instead of Managed Agents. |
 | skills, knowledge-work-plugins, prompt-eng-interactive-tutorial, playground, receipts, claude-cookbooks | **Not adopted.** No effect on data quality, edge discovery, or execution. |
