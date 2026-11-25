@@ -1,8 +1,9 @@
-"""fair-v1 vs the Polymarket US market price on BTC Up/Down windows (first, coarse test).
+"""fair-v1 vs the Polymarket US market price on BTC Up/Down windows.
 
-Market: ``GET gateway.polymarket.us/v1/price-history`` with fidelity=1 gives ~1-minute display
-points per window: longPrice = Yes best ask, shortPrice = No display price (1 - best bid). Responses
-are cached to tape stream ``pmus_price_history``. At each minute mark tau in the window we score
+Market source: OUR OWN 1 s book tape (``pmus_books``), using the latest book RECEIVED at or before
+each decision second (as-of, no look-ahead). Do NOT use ``/v1/price-history`` for this. Its points
+are not as-of: stamped prices often match the live book 1-3 minutes later (FINDINGS E21). The
+price-history fetch below is kept only to reproduce that finding. At each decision second we score
   - Brier of the market mid ((long + 1 - short) / 2) vs fair-v1
   - a taker rule: buy Up when fair - long > fee(long) + margin, buy Down when
     (1 - fair) - short > fee(short) + margin; settle at the window outcome.
@@ -68,30 +69,55 @@ async def fetch_missing(root: Path, starts: list[int], have: dict, rps: float = 
     w.close()
 
 
-def evaluate(root: Path, margin: float = 0.0, taus=(60, 120, 180, 240)) -> dict:
+def tape_books(root: Path) -> dict[str, list[tuple[int, float, float]]]:
+    """slug -> sorted [(receipt second, best bid, best ask)] from the 1 s PM US book tape."""
+    out: dict[str, list] = {}
+    for f in sorted((root / "pmus_books").glob("*/*.dtape.zst")):
+        for rec in read_segment(f, verify=True):
+            m = rec.get("meta") or {}
+            if m.get("status") != 200 or "cpc-btc-updown-5m" not in m.get("key", ""):
+                continue
+            md = orjson.loads(rec["raw"]).get("marketData") or {}
+            b, o = md.get("bids") or [], md.get("offers") or []
+            if b and o:
+                out.setdefault(m["key"], []).append(
+                    (rec["tw"] // 10**9, float(b[0]["px"]["value"]), float(o[0]["px"]["value"])))
+    for v in out.values():
+        v.sort()
+    return out
+
+
+def asof(rows: list[tuple[int, float, float]], t: int, max_age: int = 3):
+    import bisect
+    i = bisect.bisect_right(rows, (t, 2.0, 2.0)) - 1
+    if i < 0 or t - rows[i][0] > max_age:
+        return None
+    return rows[i][1], rows[i][2]
+
+
+def evaluate(root: Path, margin: float = 0.0, taus=(60, 120, 180, 240, 270)) -> dict:
     raw = load_raw(root)
     ser = load_series(root, "crypto:btc")
     t0, r = to_array(raw)
     lo, hi = max(min(raw), min(ser)) + 400, min(max(raw), max(ser)) - 300
     starts = list(range((lo // 300 + 1) * 300, hi, 300))
-    have = cached(root)
-    asyncio.run(fetch_missing(root, starts, have))
-    res: dict = {"windows": 0, "by_tau": {}}
+    books = tape_books(root)
+    res: dict = {"windows": 0, "by_tau": {}, "source": "pmus_books tape, as-of receipt <= decision, age <= 3 s"}
     acc = {t: {"m": [], "f": [], "y": [], "pnl": [], "trades": 0} for t in taus}
     for st in starts:
         end = st + 300
         po, pc = ser.get(st - 1), ser.get(end - 1)
-        hist = have.get(slug(st))
-        if po is None or pc is None or not hist:
+        bk = books.get(slug(st))
+        if po is None or pc is None or not bk:
             continue
         res["windows"] += 1
         y = 1 if pc >= po else 0
-        pts = {int(p["timestamp"]): p for p in hist}
         for tau in taus:
-            p = pts.get(st + tau)
-            if not p or p.get("longPrice") is None or p.get("shortPrice") is None:
+            q = asof(bk, st + tau)
+            if q is None:
                 continue
-            ask_up, ask_dn = float(p["longPrice"]), float(p["shortPrice"])
+            bid, ask = q
+            ask_up, ask_dn = ask, 1.0 - bid  # buy Up at the ask; buy Down = sell Up at the bid
             if not (0 < ask_up < 1 and 0 < ask_dn < 1):
                 continue
             fv = fair_up_raw(r, t0, po, st + tau, end)
