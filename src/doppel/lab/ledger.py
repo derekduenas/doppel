@@ -260,7 +260,9 @@ def g0_compare(led: dict, points: list[dict], tol_abs=50.0, tol_rel=0.02,
 
         def ok(x, y):
             return abs(x - y) <= max(tol_abs, tol_rel * abs(y))
-        days.append({"day": d, "api": api, "ours": ours,
+        days.append({"day": d, "api": api, "ours": ours, "sa": sa, "sb": sb,
+                     "api_income": {k: (b.get(k) or 0.0) - (a.get(k) or 0.0)
+                                    for k in ("maker_rebate", "taker_rebate", "reward_income")},
                      "pnl_ok": ok(ours["trade_pnl"], api["trade_pnl"]),
                      "fees_ok": ok(ours["fees"], api["fees"]),
                      "volume_ratio": round(ours["volume"] / api["volume"], 4) if api["volume"] else None})
