@@ -25,7 +25,8 @@ from pathlib import Path
 
 import orjson
 
-from .ledger import DAY, TokenMap, api_points, g0_compare, g0_verdict, load_fills, wallet_ledger
+from .fillstore import compact, iter_wallet_fills, wallet_tokens
+from .ledger import DAY, TokenMap, api_points, g0_compare, g0_verdict, wallet_ledger
 
 WINDOW = re.compile(r"^(btc|eth|sol|xrp)-updown-(5m|15m)-(\d+)$")
 LEN = {"5m": 300, "15m": 900}
@@ -114,14 +115,15 @@ def label(fp: dict) -> str:
     return "MIXED"
 
 
-def run(root: Path, lab: Path, cohort_path: Path) -> dict:
+def run(root: Path, lab: Path, cohort_path: Path, store: Path | None = None) -> dict:
     cohort = orjson.loads(cohort_path.read_bytes())
     members = set(cohort["candidates"]) | set(cohort["controls"])
-    fills = load_fills(root, members)
+    store = store or lab / "fills"
+    compact(root, store)
     tmap = TokenMap(lab / "tokens.jsonl")
-    asyncio.run(tmap.ensure({r["token_id"] for rows in fills.values() for r in rows}))
+    asyncio.run(tmap.ensure(wallet_tokens(store, members)))
     out = {"cohort_sha256": cohort["sha256"], "built_tw": time.time_ns(), "wallets": {}}
-    for w, rows in sorted(fills.items()):
+    for w, rows in iter_wallet_fills(store, members):  # one wallet in memory at a time
         led = wallet_ledger(rows, tmap)
         pts = asyncio.run(api_points(w))
         g0 = g0_compare(led, pts)
@@ -168,8 +170,10 @@ def main(argv=None) -> int:
     ap.add_argument("--data", type=Path, required=True)
     ap.add_argument("--lab", type=Path, required=True)
     ap.add_argument("--cohort", type=Path, required=True)
+    ap.add_argument("--store", type=Path, default=None,
+                    help="Parquet fill store (default: <lab>/fills); compacted from the tape first")
     a = ap.parse_args(argv)
-    res = run(a.data, a.lab, a.cohort)
+    res = run(a.data, a.lab, a.cohort, a.store)
     out = a.lab / "census" / f"census-{res['cohort_sha256'][:12]}-{time.strftime('%Y%m%dT%H%MZ', time.gmtime())}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(orjson.dumps(res, option=orjson.OPT_INDENT_2))

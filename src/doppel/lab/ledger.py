@@ -278,14 +278,18 @@ def main(argv=None) -> int:
     ap.add_argument("--data", type=Path, required=True)
     ap.add_argument("--lab", type=Path, required=True)
     ap.add_argument("--cohort", type=Path, required=True)
+    ap.add_argument("--store", type=Path, default=None,
+                    help="Parquet fill store (default: <lab>/fills); compacted from the tape first")
     a = ap.parse_args(argv)
+    from .fillstore import compact, iter_wallet_fills, wallet_tokens
     cohort = orjson.loads(a.cohort.read_bytes())
     members = set(cohort["candidates"]) | set(cohort["controls"])
-    fills = load_fills(a.data, members)
+    store = a.store or a.lab / "fills"
+    print(f"fillstore: {orjson.dumps(compact(a.data, store)).decode()}", flush=True)
     tmap = TokenMap(a.lab / "tokens.jsonl")
-    asyncio.run(tmap.ensure({r["token_id"] for rows in fills.values() for r in rows}))
+    asyncio.run(tmap.ensure(wallet_tokens(store, members)))
     report = {"cohort_sha256": cohort["sha256"], "built_tw": time.time_ns(), "wallets": {}}
-    for w, rows in sorted(fills.items()):
+    for w, rows in iter_wallet_fills(store, members):  # one wallet in memory at a time
         led = wallet_ledger(rows, tmap)
         pts = asyncio.run(api_points(w))
         g0 = g0_compare(led, pts)

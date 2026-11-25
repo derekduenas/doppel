@@ -10,6 +10,8 @@ dependencies = [
   "zstandard>=0.22",
   "certifi>=2024.2.2",
   "numpy>=2.4.6",
+  "pyarrow>=17",
+  "duckdb>=1.1",
 ]
 
 [project.scripts]

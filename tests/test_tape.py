@@ -54,6 +54,23 @@ def test_truncated_tail_frame_is_tolerated(tmp_path):
     assert [r["raw"] for r in read_segment(p)] == ["one"]
 
 
+def test_frames_stream_across_read_chunks(tmp_path):
+    from doppel.tape.segment import _frames
+    w = SegmentWriter(tmp_path, "s")
+    for i in range(40):
+        w.append(f"m{i}" * (i + 1), tw=T0 + i)
+        if i % 3 == 0:
+            w.flush()
+    w.close()
+    p = segment_path(tmp_path, "s", T0)
+    whole = list(_frames(p))
+    assert len(whole) == 14
+    for n in (1, 7, 64):  # frame boundaries land mid-chunk and chunks split frames
+        assert list(_frames(p, read_size=n)) == whole
+    p.write_bytes(p.read_bytes()[:-5])  # truncated tail frame is dropped, whole frames kept
+    assert list(_frames(p, read_size=7)) == whole[:-1]
+
+
 def test_crc_mismatch_raises(tmp_path):
     import zstandard
     p = tmp_path / "bad.dtape.zst"
