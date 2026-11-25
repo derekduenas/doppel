@@ -10,7 +10,8 @@
     one batch, whatever the segment size. DuckDB then rewrites each file sorted by address in small
     row groups (out-of-core sort, spilling to ``<out_dir>/.duckdb_tmp`` past ``memory_limit``), so
     a wallet's read touches only its own row groups. Peak memory is roughly ``memory_limit`` plus
-    ~150 MB. A JSON state file records each
+    ~150 MB. A store written by an older ``STATE_VERSION`` (different schema) is wiped and rebuilt
+    from the tape; readers refuse it until then. A JSON state file records each
     compacted segment's byte size: a re-run only reads segments that are new or have grown (the
     current hour's segment is still being appended to), rewrites that segment's Parquet file
     atomically, and drops output for segments that left the tape. There is no lock: do not run
@@ -54,7 +55,7 @@ from .ledger import KEEP
 
 STREAM = "goldsky_activity"
 STATE = "state.json"
-STATE_VERSION = 1
+STATE_VERSION = 2  # 2: + order_id, counterparty_address, transaction_hash
 BATCH = 50_000  # rows per pyarrow write while streaming a segment
 ROW_GROUP = 16_384  # rows per row group in the final, address-sorted file
 MEMORY_LIMIT = "256MB"  # DuckDB cap for the sort and the reads (shared 8 GB host)
@@ -64,6 +65,7 @@ COLUMNS: dict[str, pa.DataType] = {
     "id": _STR, "address": _STR, "token_id": _STR, "side": _STR,
     "amount_shares": _F64, "amount_usdc": _F64, "fee": _F64,
     "block_timestamp": _I64, "block_number": _I64, "order_type": _STR, "price": _F64,
+    "order_id": _STR, "counterparty_address": _STR, "transaction_hash": _STR,
     "job": _STR,
 }
 SCHEMA = pa.schema([*COLUMNS.items(), ("seg", _STR), ("ord", _I64)])
@@ -103,6 +105,14 @@ def _save_state(out_dir: Path, state: dict) -> None:
     tmp = p.with_suffix(".json.tmp")
     tmp.write_bytes(orjson.dumps(state, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS))
     os.replace(tmp, p)
+
+
+def _wipe(out_dir: Path, state: dict) -> None:
+    """Remove an old-version store's Parquet files and state."""
+    for s in state.get("segments", {}).values():
+        if s.get("file"):
+            (out_dir / s["file"]).unlink(missing_ok=True)
+    (out_dir / STATE).unlink(missing_ok=True)
 
 
 def _out_name(rel: str) -> str:
@@ -202,6 +212,10 @@ def compact(root: Path, out_dir: Path, job_prefix: str = "cohort-", *,
     if state.get("job_prefix") != job_prefix:
         raise ValueError(f"fillstore at {out_dir} was built with job_prefix "
                          f"{state.get('job_prefix')!r}, not {job_prefix!r}; use another out_dir")
+    if state.get("version") != STATE_VERSION:  # schema changed: rebuild every segment
+        _wipe(out_dir, state)
+        state = {"version": STATE_VERSION, "job_prefix": job_prefix, "segments": {}}
+        _save_state(out_dir, state)
     segs: dict = state["segments"]
     stream = root / STREAM
     on_tape = {f.relative_to(stream).as_posix(): f for f in sorted(stream.glob("*/*.dtape.zst"))}
@@ -242,6 +256,9 @@ def _connect(store_dir: Path, memory_limit: str, threads: int):
     state = _load_state(store_dir)
     if state is None:
         raise FileNotFoundError(f"no fillstore at {store_dir} (run compact first)")
+    if state.get("version") != STATE_VERSION:
+        raise ValueError(f"fillstore at {store_dir} has version {state.get('version')}, code expects "
+                         f"{STATE_VERSION}; run compact to rebuild it")
     segs = sorted(state["segments"].items())
     order = {rel: i for i, (rel, _) in enumerate(segs)}
     files = [str(store_dir / s["file"]) for _, s in segs if s["file"]]
@@ -302,5 +319,22 @@ def wallet_tokens(store_dir: Path, wallets: Iterable[str], *, memory_limit: str 
         q = ("SELECT DISTINCT token_id FROM fills WHERE token_id IS NOT NULL "
              "AND address IN (SELECT unnest(?::VARCHAR[]))")
         return {t for (t,) in con.execute(q, [sorted(set(wallets))]).fetchall()}
+    finally:
+        con.close()
+
+
+def wallet_token_notional(store_dir: Path, wallets: Iterable[str], *,
+                          memory_limit: str = MEMORY_LIMIT, threads: int = 2
+                          ) -> list[tuple[str, str, float]]:
+    """(address, token_id, sum of amount_usdc) per wallet and token, deduplicated by row id."""
+    con, _ = _connect(Path(store_dir), memory_limit, threads)
+    if con is None:
+        return []
+    try:
+        q = ("SELECT address, token_id, sum(usd) FROM (SELECT DISTINCT ON (id) id, address, "
+             "token_id, amount_usdc AS usd FROM fills WHERE token_id IS NOT NULL "
+             "AND address IN (SELECT unnest(?::VARCHAR[]))) GROUP BY address, token_id")
+        return [(a, t, float(u or 0.0)) for a, t, u in
+                con.execute(q, [sorted(set(wallets))]).fetchall()]
     finally:
         con.close()

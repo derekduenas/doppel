@@ -36,7 +36,8 @@ DAY = 86400
 
 # ---------------------------------------------------------------- fills
 KEEP = ("token_id", "side", "amount_shares", "amount_usdc", "fee", "block_timestamp",
-        "block_number", "order_type", "price")
+        "block_number", "order_type", "price", "order_id", "counterparty_address",
+        "transaction_hash")
 
 
 def load_fills(root: Path, wallets: set[str] | None = None, job_prefix: str = "cohort-"):
