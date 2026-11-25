@@ -1,6 +1,7 @@
 """fair-v1 vs the Polymarket US market price on BTC Up/Down windows.
 
-Market source: OUR OWN 1 s book tape (``pmus_books``), using the latest book RECEIVED at or before
+Market source: OUR OWN PM US WS book tape (``pmus_ws*``; never the cached REST polls, E22), using the
+latest book RECEIVED at or before
 each decision second (as-of, no look-ahead). Do NOT use ``/v1/price-history`` for this. Its points
 are not as-of: stamped prices often match the live book 1-3 minutes later (FINDINGS E21). The
 price-history fetch below is kept only to reproduce that finding. At each decision second we score
@@ -10,7 +11,7 @@ price-history fetch below is kept only to reproduce that finding. At each decisi
 fee(p) = 0.095 * p * (1 - p) per contract (PM US BTC 5m feeCoefficient, E8).
 This is a SIGNAL check on display prices, not an execution backtest: displayed size, queue and
 latency are not modeled, and minute points are coarse. Positive results only nominate H2 for
-the real tape (pmus_books at 1 s).
+the real tape (PM US WS books, never the cached REST polls).
 """
 
 from __future__ import annotations
@@ -70,21 +71,11 @@ async def fetch_missing(root: Path, starts: list[int], have: dict, rps: float = 
 
 
 def tape_books(root: Path) -> dict[str, list[tuple[int, float, float]]]:
-    """slug -> sorted [(receipt second, best bid, best ask)] from the 1 s PM US book tape."""
-    out: dict[str, list] = {}
-    for f in sorted((root / "pmus_books").glob("*/*.dtape.zst")):
-        for rec in read_segment(f, verify=True):
-            m = rec.get("meta") or {}
-            if m.get("status") != 200 or "cpc-btc-updown-5m" not in m.get("key", ""):
-                continue
-            md = orjson.loads(rec["raw"]).get("marketData") or {}
-            b, o = md.get("bids") or [], md.get("offers") or []
-            if b and o:
-                out.setdefault(m["key"], []).append(
-                    (rec["tw"] // 10**9, float(b[0]["px"]["value"]), float(o[0]["px"]["value"])))
-    for v in out.values():
-        v.sort()
-    return out
+    """slug -> sorted [(receipt second, best bid, best ask)] from the PM US WS book streams.
+    Never REST: `pmus_books` is cached, 8 s stale at the median (FINDINGS E22)."""
+    from .pmus_tape import ws_books
+    return {k: [(int(t), b, a) for t, b, _bq, a, _aq in v]
+            for k, v in ws_books(root, "cpc-btc-updown-5m").items()}
 
 
 def asof(rows: list[tuple[int, float, float]], t: int, max_age: int = 3):
@@ -102,7 +93,7 @@ def evaluate(root: Path, margin: float = 0.0, taus=(60, 120, 180, 240, 270)) -> 
     lo, hi = max(min(raw), min(ser)) + 400, min(max(raw), max(ser)) - 300
     starts = list(range((lo // 300 + 1) * 300, hi, 300))
     books = tape_books(root)
-    res: dict = {"windows": 0, "by_tau": {}, "source": "pmus_books tape, as-of receipt <= decision, age <= 3 s"}
+    res: dict = {"windows": 0, "by_tau": {}, "source": "pmus_ws* tape (WS only), as-of receipt <= decision, age <= 3 s"}
     acc = {t: {"m": [], "f": [], "y": [], "pnl": [], "trades": 0} for t in taus}
     for st in starts:
         end = st + 300

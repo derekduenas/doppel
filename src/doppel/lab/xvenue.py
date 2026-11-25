@@ -12,6 +12,8 @@ YES on one and NO on the other locks $1 per pair, and any price gap beyond both 
    with size = min(top-of-book depths). Fees: PM US taker coef*p*(1-p) per contract (cent half-even,
    approximated per contract here); Kalshi taker ceil-to-cent of 0.07*C*p*(1-p) per order (we
    charge per-contract 0.07*p*(1-p) rounded up at the order size actually available).
+   PM US books come from the WS streams only (REST is cached, E22). Kalshi books are REST polls whose
+   freshness is not yet verified (a Kalshi WS recorder is the fix).
    This is TAKER-TAKER arbitrage on displayed quotes. It is optimistic about simultaneity (two legs, no
    leg risk modelled) and pessimistic about price (no maker improvement). It is a measurement, not a P&L.
 """
@@ -144,7 +146,10 @@ def episodes(series: list[tuple[int, float, float]], persist: int) -> list[dict]
 
 
 def run(root: Path, lab: Path, max_age: float = 1.0, skew: float = 0.5, persist: int = 2) -> dict:
-    pm = load_books(root, "pmus_books", "cpc-btc-updown-15m-")
+    # PM US books from the WS streams only (REST is cached and 8 s stale at the median, E22).
+    from .pmus_tape import ws_books
+    pm = {k: [(t, (b, bq, a, aq)) for t, b, bq, a, aq in v]
+          for k, v in ws_books(root, "cpc-btc-updown-15m-").items()}
     ka = load_books(root, "kalshi_books", "KXBTC15M-")
     km = kalshi_meta(sorted(ka), lab / "xvenue" / "kalshi_meta.json")
     by_open = {v["open"]: t for t, v in km.items()}
@@ -171,7 +176,7 @@ def run(root: Path, lab: Path, max_age: float = 1.0, skew: float = 0.5, persist:
             pt, kt = asof(prow, s, max_age, True), asof(krow, s, max_age, True)
             if pt is None or kt is None or abs(pt[0] - kt[0]) > skew:
                 continue
-            p, k = pmus_top(pt[1]), kalshi_top(kt[1])
+            p, k = pt[1], kalshi_top(kt[1])
             if p is None or k is None:
                 continue
             pb, pbq, pa, paq = p
