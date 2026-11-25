@@ -190,8 +190,35 @@ def g0_compare(led: dict, points: list[dict], tol_abs=50.0, tol_rel=0.02) -> dic
                      "pnl_ok": ok(ours["trade_pnl"], api["trade_pnl"]),
                      "fees_ok": ok(ours["fees"], api["fees"]),
                      "volume_ratio": round(ours["volume"] / api["volume"], 4) if api["volume"] else None})
-    passed = bool(days) and all(x["pnl_ok"] and x["fees_ok"] for x in days)
-    return {"days": days, "n_days": len(days), "pass": passed}
+    tot = {k: {"api": sum(x["api"][k] for x in days), "ours": sum(x["ours"][k] for x in days)}
+           for k in ("trade_pnl", "fees", "volume")}
+
+    def ok(x, y):
+        return abs(x - y) <= max(tol_abs, tol_rel * abs(y))
+    vol_ratio = tot["volume"]["ours"] / tot["volume"]["api"] if tot["volume"]["api"] else None
+    return {"days": days, "n_days": len(days), "totals": tot,
+            "volume_ratio": round(vol_ratio, 4) if vol_ratio is not None else None,
+            "pnl_ok": bool(days) and ok(tot["trade_pnl"]["ours"], tot["trade_pnl"]["api"]),
+            "fees_ok": bool(days) and ok(tot["fees"]["ours"], tot["fees"]["api"])}
+
+
+def g0_verdict(stats: dict, g0: dict, min_resolved=0.95, max_censored=0.02, vol_tol=0.02,
+               min_volume=1000.0) -> str:
+    """PASS / FAIL on comparable wallets; otherwise NOT_COMPARABLE with the reason.
+    Daily rows are diagnostics; the verdict uses span totals, since day edges differ (snapshot
+    time vs block time) and cancel across adjacent days."""
+    if g0["n_days"] == 0:
+        return "NOT_COMPARABLE:no_full_day_in_span"
+    tn = stats["total_notional"] or 0.0
+    if g0["totals"]["volume"]["api"] < min_volume:
+        return "NOT_COMPARABLE:too_little_volume"
+    if tn and stats["resolved_notional"] / tn < min_resolved:
+        return "NOT_COMPARABLE:resolved_coverage"
+    if stats["tokens"] and stats["censored"] / stats["tokens"] > max_censored:
+        return "NOT_COMPARABLE:opening_inventory"
+    if g0["volume_ratio"] is None or abs(g0["volume_ratio"] - 1) > vol_tol:
+        return "NOT_COMPARABLE:fill_pull_incomplete"
+    return "PASS" if g0["pnl_ok"] and g0["fees_ok"] else "FAIL"
 
 
 def main(argv=None) -> int:
@@ -211,17 +238,25 @@ def main(argv=None) -> int:
         pts = asyncio.run(api_points(w))
         g0 = g0_compare(led, pts)
         role = "cand" if w in cohort["candidates"] else "ctrl"
-        report["wallets"][w] = {"role": role, "fills": len(rows), **led["stats"], "g0": g0}
-        s = led["stats"]
-        cov = s["resolved_notional"] / s["total_notional"] if s["total_notional"] else 0
-        print(f"{w[:12]} {role} fills={len(rows):>6} resolved_cov={cov:5.1%} "
-              f"unknown={s['unknown']:>4} censored={s['censored']:>3} g0_days={g0['n_days']} "
-              f"pass={g0['pass']}", flush=True)
+        verdict = g0_verdict(led["stats"], g0)
+        report["wallets"][w] = {"role": role, "fills": len(rows), **led["stats"], "g0": g0,
+                                "verdict": verdict}
+        t = g0.get("totals", {})
+        pnl = t.get("trade_pnl", {})
+        print(f"{w[:12]} {role} days={g0['n_days']} vol_ratio={g0.get('volume_ratio')} "
+              f"pnl api={pnl.get('api', 0):>9.1f} ours={pnl.get('ours', 0):>9.1f} -> {verdict}",
+              flush=True)
     out = a.lab / "g0" / f"g0-{cohort['sha256'][:12]}-{time.strftime('%Y%m%dT%H%MZ', time.gmtime())}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(orjson.dumps(report, option=orjson.OPT_INDENT_2))
-    scored = [v for v in report["wallets"].values() if v["g0"]["n_days"] > 0]
-    print(f"G0: {sum(v['g0']['pass'] for v in scored)}/{len(scored)} wallets with comparable days pass -> {out}")
+    vs = [v["verdict"] for v in report["wallets"].values()]
+    comp = [v for v in vs if not v.startswith("NOT_COMPARABLE")]
+    npass = sum(v == "PASS" for v in comp)
+    report["summary"] = {"comparable": len(comp), "pass": npass,
+                         "pass_rate": round(npass / len(comp), 4) if comp else None,
+                         "gate": "G0 needs pass_rate >= 0.95 on >= 50 comparable wallets"}
+    out.write_bytes(orjson.dumps(report, option=orjson.OPT_INDENT_2))
+    print(f"G0: {npass}/{len(comp)} comparable wallets pass ({len(vs) - len(comp)} not comparable) -> {out}")
     return 0
 
 

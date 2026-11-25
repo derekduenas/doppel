@@ -1,4 +1,4 @@
-from doppel.lab.ledger import DAY, TokenMap, g0_compare, wallet_ledger
+from doppel.lab.ledger import DAY, TokenMap, g0_compare, g0_verdict, wallet_ledger
 
 D = 1795046400  # a UTC midnight
 
@@ -31,8 +31,10 @@ def test_g0_compare_days_and_tolerance():
     pts = [{"timestamp": D + k * DAY, "trade_pnl": [0, 120, 1121][k], "fees_paid": [0, -10, -10][k],
             "volume_usdc": [0, 500, 1400][k]} for k in range(3)]
     res = g0_compare(led, pts)
-    assert res["n_days"] == 2
-    assert res["days"][0]["pnl_ok"] and res["days"][1]["pnl_ok"]  # 100 vs 120 within $50; 1000 vs 1001
-    assert res["pass"]
-    pts[1]["trade_pnl"] = 400
-    assert not g0_compare(led, pts)["pass"]
+    assert res["n_days"] == 2 and res["pnl_ok"] and res["fees_ok"] and res["volume_ratio"] == 1.0
+    stats = {"tokens": 10, "censored": 0, "total_notional": 1400.0, "resolved_notional": 1400.0}
+    assert g0_verdict(stats, res) == "PASS"
+    pts[2]["trade_pnl"] = 1500  # span total 1100 vs 1500 -> fail
+    assert g0_verdict(stats, g0_compare(led, pts)) == "FAIL"
+    assert g0_verdict({**stats, "resolved_notional": 100.0}, res) == "NOT_COMPARABLE:resolved_coverage"
+    assert g0_verdict({**stats, "censored": 5}, res) == "NOT_COMPARABLE:opening_inventory"
