@@ -32,6 +32,7 @@ doppel-anticipation = "doppel.lab.anticipation:main"
 doppel-dossier = "doppel.lab.dossier:main"
 doppel-genome = "doppel.strategy.cli:main"
 doppel-twin = "doppel.twin.cli:main"
+doppel-flow = "doppel.lab.flow:main"
 
 [dependency-groups]
 dev = [

@@ -70,17 +70,25 @@ async def run(root: Path, state_path: Path, assets: list[str], backfill_days: fl
     return done
 
 
-def load_series(root: Path, asset: str) -> dict[int, float]:
-    """timestamp -> close, deduplicated across chunks."""
+def load_series(root: Path, asset: str, lo: int | None = None,
+                hi: int | None = None) -> dict[int, float]:
+    """timestamp -> close, deduplicated across chunks. Optional ``lo``/``hi`` (inclusive, unix s)
+    bound memory: chunks whose requested span lies outside are skipped, candles outside dropped."""
     out: dict[int, float] = {}
     for f in sorted((root / "ref_prices").glob("*/*.dtape.zst")):
         for rec in read_segment(f, verify=True):
             m = rec.get("meta") or {}
             if m.get("asset") != asset or m.get("status") != 200:
                 continue
+            if lo is not None and m.get("to") is not None and int(m["to"]) < lo:
+                continue
+            if hi is not None and m.get("from") is not None and int(m["from"]) > hi:
+                continue
             for ser in orjson.loads(rec["raw"]).get("series", []):
                 for c in ser.get("candles") or []:
-                    out[int(c["timestamp"])] = float(c["close"])
+                    t = int(c["timestamp"])
+                    if (lo is None or t >= lo) and (hi is None or t <= hi):
+                        out[t] = float(c["close"])
     return out
 
 

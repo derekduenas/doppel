@@ -245,20 +245,29 @@ def build_index(root: Path, markets: set[str] | None = None, txs: set[str] | Non
                 streams: Iterable[str] = STREAMS) -> BookIndex:
     """Stream the CLOB tape one segment at a time; keep only the wanted markets' best quotes and
     the wanted transactions' prints."""
+    files = ((s, f) for s in streams for f in sorted((Path(root) / s).glob("*/*.dtape.zst")))
+    return build_index_files(files, markets, txs)
+
+
+def build_index_files(files: Iterable[tuple[str, Path]], markets: set[str] | None = None,
+                      txs: set[str] | None = None) -> BookIndex:
+    """``build_index`` over explicit (stream, segment path) pairs, e.g. one hour of one stream.
+    Missing files are skipped."""
     idx = BookIndex()
-    for s in streams:
-        for f in sorted((Path(root) / s).glob("*/*.dtape.zst")):
-            for rec in read_segment(f, verify=True):
-                raw = rec.get("raw") or ""
-                if not raw or raw[0] not in "[{":
-                    continue  # ctl records, PONGs
-                try:
-                    obj = orjson.loads(raw)
-                except orjson.JSONDecodeError:
-                    idx.counts["bad_json"] += 1
-                    continue
-                for m in obj if isinstance(obj, list) else [obj]:
-                    ingest_message(idx, m, int(rec["tw"]), s, markets, txs)
+    for s, f in files:
+        if not Path(f).exists():
+            continue
+        for rec in read_segment(Path(f), verify=True):
+            raw = rec.get("raw") or ""
+            if not raw or raw[0] not in "[{":
+                continue  # ctl records, PONGs
+            try:
+                obj = orjson.loads(raw)
+            except orjson.JSONDecodeError:
+                idx.counts["bad_json"] += 1
+                continue
+            for m in obj if isinstance(obj, list) else [obj]:
+                ingest_message(idx, m, int(rec["tw"]), s, markets, txs)
     return idx.finalize()
 
 
