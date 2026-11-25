@@ -151,3 +151,22 @@ def test_ledger_main_uses_store(tmp_path, monkeypatch):
     assert ledger.main(["--data", str(tmp_path), "--lab", str(lab), "--cohort", str(cohort)]) == 0
     rep = orjson.loads(next((lab / "g0").glob("g0-*.json")).read_bytes())
     assert {w: v["fills"] for w, v in rep["wallets"].items()} == {"0xaa": 5, "0xbb": 1}
+
+
+def test_old_version_store_is_rebuilt(tmp_path):
+    import doppel.lab.fillstore as fs
+    _tape(tmp_path)
+    store = tmp_path / "fills"
+    compact(tmp_path, store)
+    st = orjson.loads((store / "state.json").read_bytes())
+    st["version"] = 1
+    (store / "state.json").write_bytes(orjson.dumps(st))
+    with pytest.raises(ValueError, match="version"):
+        _store_rows(store)
+    res = compact(tmp_path, store)
+    assert res["compacted"] == 2  # every segment recompacted, not treated as up to date
+    assert orjson.loads((store / "state.json").read_bytes())["version"] == fs.STATE_VERSION
+    assert _store_rows(store) == sorted(load_fills(tmp_path).items())
+    rows = dict(_store_rows(store))
+    assert rows["0xaa"][0]["transaction_hash"] == "0x1"
+    assert {"order_id", "counterparty_address", "transaction_hash"} <= set(rows["0xaa"][0])

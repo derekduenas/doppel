@@ -12,6 +12,7 @@ dependencies = [
   "numpy>=2.4.6",
   "pyarrow>=17",
   "duckdb>=1.1",
+  "scikit-learn>=1.9.1",
 ]
 
 [project.scripts]
@@ -26,6 +27,7 @@ doppel-fair = "doppel.lab.fair:main"
 doppel-brti-import = "doppel.lab.brti_import:main"
 doppel-vsmarket = "doppel.lab.vsmarket:main"
 doppel-anticipation = "doppel.lab.anticipation:main"
+doppel-dossier = "doppel.lab.dossier:main"
 
 [dependency-groups]
 dev = [
