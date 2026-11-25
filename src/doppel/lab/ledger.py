@@ -117,6 +117,7 @@ def wallet_ledger(rows: list[dict], tmap: TokenMap) -> dict:
     tok = defaultdict(lambda: {"bought": 0.0, "sold": 0.0, "paid": 0.0, "recv": 0.0, "fees": 0.0,
                                "pos": 0.0, "censored": False, "first": None})
     day_fees, day_notional = defaultdict(float), defaultdict(float)
+    fills_b: list[tuple[int, float, float]] = []  # (block, fee, notional) for block-exact G0
     for r in rows:
         t = tok[r["token_id"]]
         sh, usd = float(r["amount_shares"]), float(r["amount_usdc"])
@@ -136,7 +137,9 @@ def wallet_ledger(rows: list[dict], tmap: TokenMap) -> dict:
         d = r["block_timestamp"] // DAY * DAY
         day_fees[d] += f
         day_notional[d] += usd
+        fills_b.append((int(r["block_number"]), f, usd))
     day_pnl = defaultdict(float)
+    tok_pnl: list[tuple[int, float]] = []  # (realization ts ~ market end, pnl)
     stats = {"tokens": len(tok), "resolved": 0, "open": 0, "unknown": 0, "censored": 0,
              "resolved_notional": 0.0, "total_notional": 0.0, "unresolved_exposure": 0.0}
     for k, t in tok.items():
@@ -155,9 +158,27 @@ def wallet_ledger(rows: list[dict], tmap: TokenMap) -> dict:
         pnl = info["payout"] * t["pos"] + t["recv"] - t["paid"]
         end = _end_ts(info.get("end")) or t["first"]
         day_pnl[end // DAY * DAY] += pnl
+        tok_pnl.append((end, pnl))
+    bt = sorted({(int(r["block_number"]), int(r["block_timestamp"])) for r in rows})
     return {"stats": stats, "day_pnl": dict(day_pnl), "day_fees": dict(day_fees),
-            "day_notional": dict(day_notional),
-            "span": [rows[0]["block_timestamp"], rows[-1]["block_timestamp"]] if rows else None}
+            "day_notional": dict(day_notional), "fills_b": fills_b, "tok_pnl": tok_pnl, "bt": bt,
+            "span": [rows[0]["block_timestamp"], rows[-1]["block_timestamp"]] if rows else None,
+            "span_blocks": [bt[0][0], bt[-1][0]] if bt else None}
+
+
+def _ts_to_block(bt: list[tuple[int, int]], ts: int) -> float:
+    """Interpolate a block number for a timestamp from observed (block, ts) pairs."""
+    import bisect
+    tss = [t for _, t in bt]
+    i = bisect.bisect_left(tss, ts)
+    if i <= 0:
+        b, t = bt[0]
+    elif i >= len(bt):
+        b, t = bt[-1]
+    else:
+        (b0, t0), (b1, t1) = bt[i - 1], bt[i]
+        return b0 + (b1 - b0) * ((ts - t0) / (t1 - t0) if t1 != t0 else 0)
+    return b + (ts - t) / 2.0  # ~2 s blocks outside the observed range
 
 
 # ---------------------------------------------------------------- G0
@@ -172,19 +193,36 @@ async def api_points(wallet: str, interval: str = "1w") -> list[dict]:
 
 
 def g0_compare(led: dict, points: list[dict], tol_abs=50.0, tol_rel=0.02) -> dict:
-    """Compare every UTC day [d, d+1) fully inside our pulled span and bracketed by API points."""
+    """Compare each interval between consecutive API snapshots that lies inside our pulled span.
+
+    API points are snapshots at ``source_block`` (not exactly at the labeled midnight), so when
+    available, fees and notional are summed over fills with a.source_block < block <= b.source_block
+    and P&L over tokens whose market end maps into that block range. Falls back to UTC days when a
+    point has no source_block (synthetic tests)."""
     by_ts = {p["timestamp"]: p for p in points}
     lo, hi = led["span"]
+    blo, bhi = (led.get("span_blocks") or [None, None])
     days = []
     for d in sorted(by_ts):
-        if d + DAY not in by_ts or d < lo or d + DAY > hi:
+        if d + DAY not in by_ts:
             continue
         a, b = by_ts[d], by_ts[d + DAY]
         api = {"trade_pnl": b["trade_pnl"] - a["trade_pnl"],
                "fees": -(b["fees_paid"] - a["fees_paid"]),
                "volume": b["volume_usdc"] - a["volume_usdc"]}
-        ours = {"trade_pnl": led["day_pnl"].get(d, 0.0), "fees": led["day_fees"].get(d, 0.0),
-                "volume": led["day_notional"].get(d, 0.0)}
+        sa, sb = a.get("source_block"), b.get("source_block")
+        if sa is not None and sb is not None and led.get("fills_b") is not None and blo is not None:
+            if sa < blo or sb > bhi:
+                continue
+            fee = sum(f for blk, f, _ in led["fills_b"] if sa < blk <= sb)
+            vol = sum(u for blk, _, u in led["fills_b"] if sa < blk <= sb)
+            pnl = sum(p for ts, p in led["tok_pnl"] if sa < _ts_to_block(led["bt"], ts) <= sb)
+            ours = {"trade_pnl": pnl, "fees": fee, "volume": vol}
+        else:
+            if d < lo or d + DAY > hi:
+                continue
+            ours = {"trade_pnl": led["day_pnl"].get(d, 0.0), "fees": led["day_fees"].get(d, 0.0),
+                    "volume": led["day_notional"].get(d, 0.0)}
 
         def ok(x, y):
             return abs(x - y) <= max(tol_abs, tol_rel * abs(y))

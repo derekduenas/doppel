@@ -39,3 +39,18 @@ def test_g0_compare_days_and_tolerance():
     assert g0_verdict({**stats, "resolved_notional": 100.0}, res) == "NOT_COMPARABLE:resolved_coverage"
     assert g0_verdict({**stats, "censored": 5}, res) == "NOT_COMPARABLE:opening_inventory"
     assert g0_verdict({**stats, "unresolved_exposure": 900.0}, res) == "NOT_COMPARABLE:unresolved_exposure"
+
+
+def test_g0_uses_snapshot_blocks_when_available():
+    led = {"span": [D - 10, D + 2 * DAY], "span_blocks": [100, 400],
+           "day_pnl": {}, "day_fees": {}, "day_notional": {},
+           "fills_b": [(150, 1.0, 100.0), (210, 2.0, 50.0), (260, 0.5, 10.0)],
+           "tok_pnl": [(D + 50, 7.0)], "bt": [(100, D), (400, D + 600)]}
+    # snapshot taken at block 200 (not at midnight): fills at 210 and 260 belong to the next interval
+    pts = [{"timestamp": D, "source_block": 120, "trade_pnl": 0, "fees_paid": 0, "volume_usdc": 0},
+           {"timestamp": D + DAY, "source_block": 200, "trade_pnl": 7, "fees_paid": -1, "volume_usdc": 100},
+           {"timestamp": D + 2 * DAY, "source_block": 300, "trade_pnl": 7, "fees_paid": -3.5, "volume_usdc": 160}]
+    res = g0_compare(led, pts)
+    assert res["n_days"] == 2
+    assert res["days"][0]["ours"] == {"trade_pnl": 7.0, "fees": 1.0, "volume": 100.0}
+    assert res["days"][1]["ours"]["volume"] == 60.0 and res["volume_ratio"] == 1.0
