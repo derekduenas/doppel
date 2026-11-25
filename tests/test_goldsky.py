@@ -55,3 +55,24 @@ async def test_pull_pages_ledgers_and_stops_at_cap(tmp_path):
         assert len(seen_keys) == before
     finally:
         await runner.cleanup()
+
+
+def test_completeness_compare(tmp_path):
+    from doppel.lab.completeness import compare
+    g = SegmentWriter(tmp_path, "goldsky_activity")
+    rows = [{"id": f"r{i}", "block_timestamp": 100, "event_type": "TRADE", "transaction_hash": tx,
+             "address": addr, "order_type": role}
+            for i, (tx, addr, role) in enumerate([("0xA", "w1", "taker"), ("0xA", "w2", "maker"),
+                                                  ("0xB", "w3", "taker"), ("0xC", "w4", "taker")])]
+    g.append(orjson.dumps({"data": rows}).decode(), meta={"status": 200})
+    g.close()
+    a = SegmentWriter(tmp_path, "rtds_a")
+    for tx, w in (("0xA", "W1"), ("0xA", "w2"), ("0xB", "w3")):
+        a.append(orjson.dumps({"payload": {"transactionHash": tx, "proxyWallet": w,
+                                           "timestamp": 100}}).decode())
+    a.close()
+    res = compare(tmp_path, 0, 200)
+    assert res["goldsky"]["trade_tx"] == 3 and res["goldsky"]["roles"] == {"taker": 3, "maker": 1}
+    assert res["rtds_a"]["tx_coverage_of_chain"] == round(2 / 3, 5)
+    assert res["rtds_a"]["pair_coverage_of_chain"] == 0.75
+    assert res["rtds_b"]["tx"] == 0
