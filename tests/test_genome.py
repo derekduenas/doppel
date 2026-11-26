@@ -64,3 +64,20 @@ def test_fee_and_describe():
     text = describe(_taker())
     assert "TAKE UP 5 when edge_buy_up_c > 3.0 AND tte_s between 10..120" in text
     assert "Kill: after 300 windows" in text
+
+
+def test_spread_mode_logit_and_sealed_ids_unchanged():
+    import glob, orjson
+    from doppel.strategy.genome import Genome, MakerRule, Source, Universe, from_dict
+    reg = [orjson.loads(l) for l in open("registry/genomes.jsonl", "rb") if l.strip()]
+    ids = {r.get("genome_id") or r.get("id") for r in reg}
+    on_disk = {from_dict(orjson.loads(open(f, "rb").read())).id for f in glob.glob("genomes/h*/*.json")}
+    assert on_disk <= ids
+    base = dict(name="m", mode="maker", universe=Universe(venue="pmus"), source=Source(kind="manual"))
+    flat = Genome(**base, maker=MakerRule(half_spread_c=2.0, min_edge_vs_fair_c=0.0))
+    lg = Genome(**base, maker=MakerRule(half_spread_c=2.0, min_edge_vs_fair_c=0.0, spread_mode="logit"))
+    x = {"fair_up": 0.5, "inventory_up": 0.0, "tau_s": 100, "tte_s": 100}
+    assert flat.maker_quotes(x) == lg.maker_quotes(x) == (48, 52)
+    x["fair_up"] = 0.9
+    assert lg.maker_quotes(x) == (89, 91) and flat.maker_quotes(x) == (88, 92)
+    assert flat.id != lg.id

@@ -129,6 +129,10 @@ class MakerRule:
     max_quote_age_s: int = 30
     pause_when: tuple[Condition, ...] = ()  # any holds -> pull quotes (toxicity guard)
     min_edge_vs_fair_c: float = 0.0       # never quote a price worse than fair by less than this
+    # "cents": flat half_spread_c. "logit" (Carbon C4): half-spread = half_spread_c * 4 p (1 - p), equal
+    # at 50c and narrowing toward 0/1 like the p (1 - p) fees. Omitted from the id when "cents", so
+    # genomes sealed before this field existed keep their ids.
+    spread_mode: Literal["cents", "logit"] = "cents"
 
 
 @dataclass(frozen=True)
@@ -195,6 +199,8 @@ class Genome:
         d = to_dict(self)
         for k in ("status", "created_tw", "notes"):
             d.pop(k, None)
+        if d.get("maker") and d["maker"].get("spread_mode") == "cents":
+            d["maker"].pop("spread_mode")
         return orjson.dumps(d, option=orjson.OPT_SORT_KEYS)
 
     @property
@@ -222,8 +228,12 @@ class Genome:
         if ref is None or ref != ref:
             return None, None
         skew = m.skew_c_per_contract * x.get("inventory_up", 0.0)
-        bid = ref - m.half_spread_c - skew
-        ask = ref + m.half_spread_c - skew
+        h = m.half_spread_c
+        if m.spread_mode == "logit":
+            p = min(max(ref / 100.0, 0.01), 0.99)
+            h = m.half_spread_c * 4.0 * p * (1.0 - p)
+        bid = ref - h - skew
+        ask = ref + h - skew
         fair_c = 100 * x["fair_up"]
         bid = min(bid, fair_c - m.min_edge_vs_fair_c)
         ask = max(ask, fair_c + m.min_edge_vs_fair_c)
