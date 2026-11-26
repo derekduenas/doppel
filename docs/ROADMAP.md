@@ -64,6 +64,25 @@ Sometimes that is posting, keeping queue, cancelling, hedging, or sitting out.
 | A8 | Re-price every taker path at real API fees (E25: Θ 0.0695, 70% rebate to 12-31); structural scanner + xvenue on `kalshi_ws` books | xvenue done; scanner default fee + kalshi_ws reader next |
 | A6 | Commercial hurdle replaces "$ > 0": lower bound $/day after operating cost, best-day share, ex-incentives | **in twin verdict** |
 
+## Carbon review (2026-11-26): what we take
+
+Verified before adopting: PM US API fees (E25, already fixed); Kalshi KXBTC15M/KXBTCD/KXBTC `fee_type=quadratic` (taker-only, makers pay 0). Census figures in the review are pre-correction (directional makers are $21.8k/day, not $24.2k). E24 measures other makers' fills, not ours. Cited papers are leads until read.
+
+| # | Take | Why | When |
+|---|---|---|---|
+| C1 | **Passive-Kalshi → IOC PM US bridge** (Kalshi maker 0 fee, PM US API taker ≈0.021 net) | Breakeven falls from ~4.1c to ~0.5c at 50c. NOT riskless: the Kalshi resting fill arrives exactly when PM US has moved (legging risk); must be scored on `kalshi_ws` with the hedge price after the fill, and the rebate ends 12-31 | genome H5 once `kalshi_ws` is cut over (scanner + A3b) |
+| C2 | **Shadow-BRTI from constituent L2** (Coinbase, Kraken, Bitstamp, Gemini, LMAX…) | Disseminated BRTI is 1 Hz; constituents lead. PERELMAN already has a CF v17 replica (`~/perelman/brti.py`, `books.py`): port it to Rust; needs spot **L2** streams (we record trades only) | W6, next after cutover |
+| C3 | **Pre-identity toxicity prior ("clock 0")**: predict a print's eventual wallet informedness from anonymous CLOB features (size, sweep depth, burst, deviation from fair) at receive time; RTDS identity then updates it | Closes most of the 2.2 s identity gap; we already join CLOB prints to RTDS by tx hash, so labels exist | lab study now; H3's anonymous arm is the baseline it must beat |
+| C4 | **Logit-scaled spreads** (half-spread ∝ p(1−p)) as a genome option | Fees are ∝ p(1−p); flat cents over-widen near 0/1 and under-widen near 50c | genome v1.1 field (new families only; sealed ids unchanged) |
+| C5 | **PM US single-instrument netting / capital velocity** in the twin and allocator | Selling YES against long YES frees collateral at once, so intra-window round trips recycle capital; cross-venue pairs lock it until settlement | twin `capital_locked_usd_s` + shadow cost in the allocator (W9) |
+| C6 | **Anytime-valid e-processes** for shadow/paper gates, Romano-Wolf for batch | Lets us monitor every window and kill early without p-hacking (also our open "early KILL" item) | registry v2, before G5 shadow paper |
+| C7 | **Execution safety**: GTD expiry on every resting quote (now + 15 s, refreshed), mass-cancel on ≥3 adverse fills in 800 ms, clock-drift kill | Orders die on their own if Apex drops | W7 design requirement |
+| C8 | **Reverted-fill check**: share of RTDS/CLOB matches whose tx reverts on chain | If material, flow features must use confirmed fills only (ledger/G0 already chain-only) | one-off measurement |
+| C9 | **Directional-maker extraction with fill-hazard deconvolution** | Fills are only where takers hit the maker; weight by inverse fill propensity estimated from market-wide books | after G1 persistence; start with inverse-propensity weighting, not IRL |
+| C10 | Typed `cpc` metadata instead of slug parsing | Slugs are documented as non-contractual | hygiene, with cutover |
+
+Deferred: self-hosted Polygon Bor node + mempool decoding (disk is the binding constraint; measure the lead with a public RPC first), KXBTCPERP delta hedging of binaries (binary gamma near expiry makes a perp hedge noisy; M6), Hawkes/RL-sniper twin stages and MAP-Elites search (after a first genome passes). Not adopted: KANFormer + Wasserstein IRL as a first step, and Sharpe > 3.5 as a gate (the commercial hurdle and drawdown are the gates).
+
 ## M6: Perps expansion (PM intl perps as the lab, Kalshi perps as the venue)
 
 **Why.** The crypto-window census says the money goes to makers. Perps are the deepest continuous
