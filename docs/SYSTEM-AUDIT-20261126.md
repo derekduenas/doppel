@@ -1,5 +1,8 @@
 # DOPPEL system audit and replay validation
 
+The [follow-up system audit](DEEP-AUDIT-20261126.md) records the reference recovery,
+recorder and evaluator repairs, chain coverage check, release rehearsal and remaining delivery risks.
+
 ## Baseline and scope
 
 Audit of the recovered integration tree, 2026-11-26. GitHub and Apex independently returned main

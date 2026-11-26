@@ -68,11 +68,26 @@ Two streams need venue auth. Neither key is stored in this repo, in `/opt/doppel
 At ~17 GB/day, keep 14 days hot on local disk and ship closed segments (with manifest lines) to object
 storage nightly. Parquet compaction lands in M1.
 
-`python3 ops/archive_tape.py --source TAPE --destination ARCHIVE --through YYYYMMDD/HH --streams STREAM ...`
-copies segments before the exclusive UTC hour on an independent filesystem. It checks each sealed
-segment's SHA-256, carries its manifest and any hourly receipts, and checks free space before
-copying. The script reports manifest entries that have already disappeared from the source.
-A copy on Apex's root filesystem survives the tape-volume janitor and still shares Apex's host.
+For a primary evaluation tape, archive a bounded range after the hourly receipt appears.
+
+```sh
+python3 ops/archive_tape.py --source TAPE --destination ARCHIVE \
+  --from YYYYMMDD/HH --through YYYYMMDD/HH --require-receipts --streams STREAM ...
+```
+
+The first UTC hour is inclusive and the end is exclusive. The copy requires a separate
+filesystem and defaults to a 35 GiB free-space reserve. It preserves historical manifest rows,
+checks each segment's SHA-256, and selects the published generation named in a v2 receipt.
+A missing receipt, a receipt discrepancy or a missing segment yields a nonzero exit. Inspect
+both `missing` and `receipt_issues` in its JSON. A legacy file whose final bytes exceed its
+receipt can still be retained for investigation. Keep any reconstructed input in a separate
+directory and retain its evidence classification. The Rust shadow currently has no hourly
+receipts of its own. Omit `--require-receipts` when archiving shadow-only data.
+The Apex archive survives the tape-volume janitor. Both filesystems share the host.
+The reviewed janitor uses the exact free-byte count and prunes valid past UTC days from
+the allowed high-volume streams, shadow first. The ten-minute timer invokes the script in
+`/opt/doppel` directly. Before releasing the corrected job, verify that required scoring
+inputs from candidate days have been preserved.
 
 ## Deployment log
 - **2026-11-25 ~17:58Z**: deployed 20fd3f6 to Apex (atlas-do) as a stopgap host. Code in `/opt/doppel`

@@ -3,14 +3,18 @@
 ## Where to resume
 
 Open `/Users/derekduenas/doppel-integration`. The integration worktree now uses the review branch
-`review/system-audit-20261126`, based on `3cff434`. Run `git status --short` to include
-new files in the review. The original checkout is `/Users/derekduenas/doppel`; its working
+`review/system-audit-20261126`, based on `3cff434`. The first audit status baseline is
+`3c24fbb`. The original checkout is `/Users/derekduenas/doppel`; its working
 tree and the three published pods are separate from this integration.
 
-For the whole build, start with the [project status and milestone board](BUILD-STATUS-20261126.md).
-The first project-wide action is to reconcile the twelve Nov 26 raw-BRTI receipt discrepancies
-and protect the registered H1–H4 inputs on Apex. The [preflight receipt](../evidence/2026-11-26-h1-input-preflight.json)
-records exactly which hours failed. The independent queue-calibration track can proceed in parallel.
+For the whole build, start with the [milestone board](BUILD-STATUS-20261126.md) and
+[deep audit and release handoff](DEEP-AUDIT-20261126.md). Twelve raw Bitcoin reference
+discrepancies were reproduced and investigated. Two byte ranges match their original seals.
+Ten match the upstream readings and original receipt summaries but lack a contemporaneous hash.
+The evaluator rejects those ten for a binding decision. Keep the frozen recovery view for diagnosis.
+The immediate operations tasks are to secure capacity for the remaining H1–H4 inputs on Apex
+and for the lead to review and release the recorder/importer repair. The audit lists the
+acceptance checks and evidence locations. Queue calibration can proceed independently.
 
 For queue calibration, start with the [paired quote-expiry trial](../evidence/2026-11-26-quote-expiry/RESULTS.md).
 The protocol was frozen at `b787e7a` and candidate `2688f00` recovered both fills lost to
