@@ -7,7 +7,12 @@ Open `/Users/derekduenas/doppel-integration`. The integration worktree now uses 
 new files in the review. The original checkout is `/Users/derekduenas/doppel`; its working
 tree and the three published pods are separate from this integration.
 
-Start with the [paired quote-expiry trial](../evidence/2026-11-26-quote-expiry/RESULTS.md).
+For the whole build, start with the [project status and milestone board](BUILD-STATUS-20261126.md).
+The first project-wide action is to reconcile the twelve Nov 26 raw-BRTI receipt discrepancies
+and protect the registered H1–H4 inputs on Apex. The [preflight receipt](../evidence/2026-11-26-h1-input-preflight.json)
+records exactly which hours failed. The independent queue-calibration track can proceed in parallel.
+
+For queue calibration, start with the [paired quote-expiry trial](../evidence/2026-11-26-quote-expiry/RESULTS.md).
 The protocol was frozen at `b787e7a` and candidate `2688f00` recovered both fills lost to
 inverted timestamps. Delivery on the original 16 orders rose from 30/32 to 32/32. The
 two-minute holdout contained six screened wallet orders and zero eligible BTC 5m orders.
