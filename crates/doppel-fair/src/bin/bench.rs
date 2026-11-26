@@ -110,6 +110,6 @@ fn main() {
         black_box(rep.calculate(black_box(&deep), 0).map(|o| o.value).ok());
     });
     if let Ok(o) = Replica::default().calculate(&recorded, 0) {
-        println!("recorded value {:.6} levels_used {} spacing {:.6}", o.value, o.index.levels_used, o.index.spacing);
+        println!("recorded value {:?} levels_used {} spacing {:?} cap {:?}", o.value, o.index.levels_used, o.index.spacing, o.index.cap);
     }
 }

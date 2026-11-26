@@ -93,8 +93,18 @@ def test_replica_outputs_match_perelman_brti(replica_fx):
         for st in s["steps"]:
             st.pop("expect")
     gen.replica_outputs(scenarios, index, brti)
-    assert scenarios == replica_fx["scenarios"]
-    assert index == replica_fx["index_cases"]
+    # Bit-exact on the generating machine; tolerances (as in parity.rs) allow another libm/CPython.
+    got = [st for s in scenarios for st in s["steps"]] + index
+    want = [st for s in replica_fx["scenarios"] for st in s["steps"]] + replica_fx["index_cases"]
+    for g, w in zip(got, want, strict=True):
+        ge, we = g["expect"], w["expect"]
+        assert set(ge) == set(we) and ge.get("error") == we.get("error")
+        assert g.get("excluded_after") == w.get("excluded_after")
+        if "value" in we:
+            assert _close(ge["value"], we["value"], 1e-9)
+            for k in ("cap", "spacing", "utilized_depth"):
+                assert _close(ge[k], we[k], 1e-12 * max(1.0, abs(float(we[k]))))
+            assert ge["levels_used"] == we["levels_used"] and ge.get("venues") == we.get("venues")
     valued = [st["expect"] for s in scenarios for st in s["steps"] if "value" in st["expect"]]
     assert len(valued) >= 18
     assert {"all books delayed or erroneous", "all books potentially erroneous"} <= {
