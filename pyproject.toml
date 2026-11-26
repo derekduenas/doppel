@@ -35,6 +35,7 @@ doppel-twin = "doppel.twin.cli:main"
 doppel-flow = "doppel.lab.flow:main"
 doppel-adverse = "doppel.lab.adverse:main"
 doppel-clock0 = "doppel.lab.clock0:main"
+doppel-tape-compare = "doppel.tape.compare:main"
 doppel-structural = "doppel.lab.structural:main"
 doppel-desk = "doppel.desk.cli:main"
 
