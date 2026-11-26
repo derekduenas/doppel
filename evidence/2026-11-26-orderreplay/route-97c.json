@@ -1,0 +1,91 @@
+{
+  "order_id": "ffbbd936b81e2c75c5beda62834a8785786e546555ae611e4448541167941836",
+  "transaction": "0x17f47ab641cdf8a7e781e7a7a968397b5f412be4a73e8551366ef119a22fed3a",
+  "token_id": "56309084475058052347073243507166410713832612599997091400073130353157683326397",
+  "maker": "0x0cb038487586d1119b165466072e9baf666f3a90",
+  "price": 0.97,
+  "side": "BUY",
+  "observed_order_shares": 100.0,
+  "placed_venue_ms": 1795629771632,
+  "baseline": {
+    "fills_seen": 1,
+    "fills_routed": 0,
+    "fills_delivered": 0,
+    "queue_ahead": 342.0,
+    "pessimistic": {
+      "filled": 100.0,
+      "error": 0.0,
+      "first_fill_ms": 1795629772332,
+      "by_source": {
+        "trade": 100.0
+      },
+      "missed": false,
+      "phantom_shares": 0.0,
+      "fills": [
+        [
+          1795629772332,
+          100.0,
+          "trade"
+        ]
+      ]
+    },
+    "optimistic": {
+      "filled": 100.0,
+      "error": 0.0,
+      "first_fill_ms": 1795629772332,
+      "by_source": {
+        "trade": 100.0
+      },
+      "missed": false,
+      "phantom_shares": 0.0,
+      "fills": [
+        [
+          1795629772332,
+          100.0,
+          "trade"
+        ]
+      ]
+    }
+  },
+  "sources_sha256": {
+    "segment": {
+      "/var/backups/doppel-sealed-20261126/tape/clob_btc_5m/20261125/18.dtape.zst": "9691cd2cc196e6d9e5a36dedf10eba79a9d4cfbacb3146aa6bcda53dc83de883"
+    },
+    "order_parts": {
+      "day=2026-11-25/part-000014.parquet": "7ba1334e4f3bd2041d9e1a1b1e346512e99d622cfc75ad7288895f1bec171ba6"
+    },
+    "baseline_replay": "b9bb0bf5ede8bc2e23d6140bcd60b08e01f82714151f4f55b889d88915e83153",
+    "baseline_orders": "573a0abd16cc51fca69ae99fa42e272c2d50e88a776a2a4138871b1d770e34c0"
+  },
+  "matching_public_frames": [
+    {
+      "seq": 62502,
+      "tw": 1795629775699583189,
+      "message": {
+        "market": "0x54960a36107b4c53431898bcf2d991af3038ca75ffe9b266ea0f54fbd0007204",
+        "asset_id": "26573549377964720488352327783145014153434918240677129399684144995785340448937",
+        "price": "0.04",
+        "size": "1005.14",
+        "fee_rate_bps": "0",
+        "side": "BUY",
+        "timestamp": "1795629772332",
+        "event_type": "last_trade_price",
+        "transaction_hash": "0x17f47ab641cdf8a7e781e7a7a968397b5f412be4a73e8551366ef119a22fed3a"
+      }
+    }
+  ],
+  "decoded_makers": 40,
+  "maker_shares": [
+    {
+      "side": "BUY",
+      "price": 0.96,
+      "shares": 585.69
+    },
+    {
+      "side": "BUY",
+      "price": 0.97,
+      "shares": 419.45
+    }
+  ],
+  "maker_shares_total": 1005.14
+}

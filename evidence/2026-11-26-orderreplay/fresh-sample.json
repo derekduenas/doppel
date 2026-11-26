@@ -1,0 +1,12 @@
+{
+  "selection": "First two minutes immediately following the prior 13-minute reconstruction. Frozen before reading the fresh results.",
+  "wallet": "0x0cb038487586d1119b165466072e9baf666f3a90",
+  "stream": "clob_btc_5m",
+  "warmup_from": 1795630380,
+  "sample_from": 1795630500,
+  "sample_to": 1795630620,
+  "size_tol_rel": 0.02,
+  "population": "All screened verified maker orders for this wallet signed in the interval on BTC 5-minute markets. Include every matched order and report missing placement, unknown end and missing token mappings. Block-time chain reconciliation is separate.",
+  "identification": "A unique anonymous L2 increase is a candidate. Independent identity requires an order-id-bearing placement acknowledgement. None is supplied.",
+  "pipeline": {"from": 1795629720, "to": 1795630500, "chunk_minutes": 15, "wallet_batch": 1, "mem_budget_mb": 1800, "max_requests": 0}
+}
