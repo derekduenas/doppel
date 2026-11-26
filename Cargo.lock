@@ -215,6 +215,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "doppel-fair"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "serde_json",
+]
+
+[[package]]
 name = "doppel-tape"
 version = "0.1.0"
 dependencies = [

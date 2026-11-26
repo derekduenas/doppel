@@ -1,0 +1,15 @@
+[package]
+name = "doppel-fair"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "DOPPEL fast fair: BRTI constituent replica (port of PERELMAN brti.py) + fair-v1 (port of doppel.lab.fair.fair_up_raw)"
+
+[[bin]]
+name = "doppel-fair-bench"
+path = "src/bin/bench.rs"
+
+# Versions are pinned exactly; Cargo.lock is committed. No networking crates.
+[dependencies]
+libm = "=0.2.16"
+serde_json = "=1.0.154"
