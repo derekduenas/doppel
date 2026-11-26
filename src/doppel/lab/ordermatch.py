@@ -313,10 +313,12 @@ def classify(o: Order, key: Key, i0: int, tape: LevelTape, claimed: set[tuple[Ke
     level = set(tape.sides(o.token, o.price))
     assets = {a for a, _ in level}
     located: list[int] = []
+    fills_at: list[list] = []  # [tx, venue ms of its earliest print or None, shares]
     late = place.venue_ms  # after this every fill has certainly happened
     n_price_ok = n_size_ok = 0
     for tx, (sh, bts) in o.fills.items():
         ps = [q for q in tape.prints_tx.get(tx, ()) if q.asset in assets]
+        fills_at.append([tx, min(q.venue_ms for q in ps) if ps else None, round(sh, 6)])
         if ps:
             t = min(q.venue_ms for q in ps)
             located.append(t)
@@ -334,7 +336,8 @@ def classify(o: Order, key: Key, i0: int, tape: LevelTape, claimed: set[tuple[Ke
            "placed_venue_ms": place.venue_ms, "placed_tw_ns": place.tw_ns, "placed_src": place.src,
            "sign_to_book_ms": place.venue_ms - o.created_ms,
            "filled": round(o.filled, 6), "remainder": round(r, 6), "n_fills": len(o.fills),
-           "fills_located": len(located), "print_price_ok": n_price_ok, "print_size_ok": n_size_ok}
+           "fills_located": len(located), "print_price_ok": n_price_ok, "print_size_ok": n_size_ok,
+           "fills_at": fills_at}
     if r <= p.tol(o.size):
         res = {"outcome": "filled", "reason": "chain" if all_located else "chain_block_time",
                "end_ms": late}
