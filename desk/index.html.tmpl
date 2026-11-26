@@ -62,7 +62,9 @@ th { background: var(--head); font-weight: 600; font-size: 11.5px; white-space: 
 th.grp { text-align: center; border-left: 1px solid var(--line); }
 table.num td { white-space: nowrap; }
 table.find td:nth-child(2) { white-space: normal; }
-table.reg td .src { white-space: normal; min-width: 180px; }
+table.reg td { white-space: normal; }
+.nw { white-space: nowrap; }
+table.reg td .src { min-width: 200px; max-width: 320px; overflow-wrap: anywhere; }
 tbody tr:hover { background: var(--head); }
 .pill { display: inline-block; padding: 0 6px; border-radius: 9px; font-size: 11px; line-height: 17px; background: var(--muted-bg); }
 .pill.good { background: var(--good-bg); color: var(--good); }
@@ -130,8 +132,11 @@ if (typeof document !== "undefined") {
   if (ps) ps.addEventListener("change", function () {
     var o = ps.options[ps.selectedIndex];
     if (!o.value) { $("calc-src").textContent = ""; return; }
-    $("calc-net").value = o.dataset.net; $("calc-vol").value = o.dataset.vol; $("calc-op").value = o.dataset.op;
-    $("calc-src").textContent = "preset from " + o.dataset.src;
+    /* a preset sets only the fields it has (E24 sets net c/contract only) */
+    if (o.dataset.net) $("calc-net").value = o.dataset.net;
+    if (o.dataset.vol) $("calc-vol").value = o.dataset.vol;
+    if (o.dataset.op) $("calc-op").value = o.dataset.op;
+    $("calc-src").textContent = "preset from " + o.dataset.src + (o.dataset.note ? " (" + o.dataset.note + ")" : "");
     recalc();
   });
   /* Countdowns are as of the build (phase is computed then too); the tooltip gives the live value. */

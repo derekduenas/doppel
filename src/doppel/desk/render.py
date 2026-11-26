@@ -45,6 +45,12 @@ def dur(s: Any) -> str:
     return "-" + out if neg else out
 
 
+def short(ts: Any) -> str:
+    """'2026-11-27T00:00:00Z' -> '11-27 00:00' (UTC); compact for table cells."""
+    t = "" if ts is None else str(ts)
+    return esc(t[5:16].replace("T", " ")) if len(t) >= 16 else esc(t)
+
+
 def src(s: dict | None) -> str:
     if not s:
         return ""
@@ -138,18 +144,24 @@ def _countdown(g: dict) -> str:
 
 
 def _twin_cells(t: dict | None) -> list[str]:
+    """verdict (+ replay range and source underneath), net c/window, net c/contract, windows, commercial."""
     if not t:
-        return ['<span class="notyet">not yet</span>', "–", "–", "–", "–", ""]
+        return ['<span class="notyet">not yet</span>', "–", "–", "–", "–"]
     c = t.get("commercial") or {}
     lb = c.get("net_usd_per_day_lower_bound_after_ops")
     hurdle = "" if lb is None else (pill("clears", "good") if c.get("clears_hurdle") else pill("below", "bad"))
     fit = t.get("window_fit")
     fitk = {"prereg": "good", "partial": "warn"}.get(fit or "", "bad")
     dec = t.get("decision") or "?"
-    return [pill(dec, DECISION_KIND.get(dec, "muted")) + " " + pill(fit or "?", fitk),
+    rng = t.get("range_iso") or [None, None]
+    bds = c.get("best_day_share_of_total")
+    best = f"{100 * bds:.0f}%" if isinstance(bds, (int, float)) else "–"
+    comm = (f'{num(lb, 2, sign=True)} {hurdle}<div class="sub">{num(c.get("days"), 0)} d · best day {best} of total'
+            f' · break-even {num(c.get("breakeven_contracts_per_day"), 0)} ct/day</div>') if c else "–"
+    return [pill(dec, DECISION_KIND.get(dec, "muted")) + " " + pill(fit or "?", fitk)
+            + f'<div class="sub">replay {short(rng[0])} → {short(rng[1])}</div>' + src(t.get("src")),
             ci(t.get("net_c_per_window")), ci(t.get("net_c_per_contract"), "value"),
-            f'{num(t.get("windows_evaluated"), 0)} / {num(t.get("windows_traded"), 0)}',
-            f"{num(lb, 2, sign=True)} {hurdle}", src(t.get("src"))]
+            f'{num(t.get("windows_evaluated"), 0)} / {num(t.get("windows_traded"), 0)}', comm]
 
 
 def section_strategies(st: dict) -> str:
@@ -171,12 +183,12 @@ def section_strategies(st: dict) -> str:
             if g.get("p_holm") is not None:
                 reg_cell += f' <span class="ci">p {num(g.get("p_value"), 3)} · Holm {num(g.get("p_holm"), 3)}</span>'
             rows.append([f'<span class="mono">{esc(g.get("name"))}</span><div class="sub mono">{esc((g.get("genome_id") or "")[:12])}</div>',
-                         f'{esc((ew.get("start") or "")[:16])} → {esc((ew.get("end") or "")[:16])}',
+                         f'<span class="nw">{short(ew.get("start"))} →</span> <span class="nw">{short(ew.get("end"))}</span>',
                          pill(g.get("phase") or "?", PHASE_KIND.get(g.get("phase") or "", "muted")),
                          _countdown(g), reg_cell] + _twin_cells(g.get("twin")))
-        head = ["genome", "eval window (UTC)", "phase", "time", "registry", "twin verdict",
+        head = ["genome", "eval window (UTC)", "phase", "time", "registry", "twin verdict · replay range · source",
                 "net c/window [95% CI]", "net c/contract [CI]", "windows eval / traded",
-                "commercial LB $/day", "source"]
+                "commercial LB $/day"]
         out.append(f'<h3 class="fam">{esc(fam.get("family"))} <span class="sub">{num(fam.get("m"), 0)} variants · '
                    f'{num(fam.get("tested"), 0)} tested · {num(fam.get("pending"), 0)} pending</span></h3>'
                    f'<p class="hyp">{esc(fam.get("hypothesis"))}</p>' + table(head, rows, "num reg"))
@@ -189,8 +201,8 @@ def section_strategies(st: dict) -> str:
         rows = [[f'<span class="mono">{esc(t.get("name"))}</span>'] + _twin_cells({**t, "window_fit": "off-window"})
                 for t in st["unregistered_twin_runs"]]
         out.append('<h3 class="fam">Twin runs of unregistered genomes</h3>'
-                   + table(["genome", "twin verdict", "net c/window [95% CI]", "net c/contract [CI]",
-                            "windows eval / traded", "commercial LB $/day", "source"], rows, "num"))
+                   + table(["genome", "twin verdict · replay range · source", "net c/window [95% CI]",
+                            "net c/contract [CI]", "windows eval / traded", "commercial LB $/day"], rows, "num reg"))
     return "".join(out)
 
 
@@ -209,18 +221,18 @@ def _h3(h: dict) -> str:
         else:
             delta = '<span class="muted">reference</span>'
         dec = r.get("decision") or "?"
-        rows.append([f'<b>{esc(r.get("arm"))}</b><div class="sub mono">{esc(r.get("name"))}</div>',
+        rows.append([f'<b>{esc(r.get("arm"))}</b><div class="sub mono">{esc(r.get("name"))}</div>{src(r.get("src"))}',
                      pill(dec, DECISION_KIND.get(dec, "muted")), ci(r.get("net_c_per_window")), delta,
                      num(r.get("total_net_usd"), 2, sign=True), num(r.get("contracts"), 0),
                      num(r.get("max_drawdown_usd"), 2), num(r.get("commercial_lb_usd_day"), 2, sign=True),
-                     f'{num(r.get("windows_evaluated"), 0)} / {num(r.get("windows_traded"), 0)}', src(r.get("src"))])
+                     f'{num(r.get("windows_evaluated"), 0)} / {num(r.get("windows_traded"), 0)}'])
     rng = h.get("range_iso") or [None, None]
     fit = h.get("window_fit")
     out = (title + f'<p class="meta">replay range {esc(rng[0])} → {esc(rng[1])} · registered window '
            f'{esc((h.get("eval_window") or [None, None])[0])} → {esc((h.get("eval_window") or [None, None])[1])} '
            f'{pill(fit or "?", {"prereg": "good", "partial": "warn"}.get(fit or "", "bad"))}</p>'
-           + table(["arm", "verdict", "net c/window [95% CI]", "Δ vs base c/window [95% CI]", "net $",
-                    "contracts", "max DD $", "commercial LB $/day", "windows eval / traded", "source"], rows, "num"))
+           + table(["arm · source", "verdict", "net c/window [95% CI]", "Δ vs base c/window [95% CI]", "net $",
+                    "contracts", "max DD $", "commercial LB $/day", "windows eval / traded"], rows, "num reg"))
     if h.get("delay_sweep"):
         srows = []
         for r in h["delay_sweep"]:
@@ -336,11 +348,14 @@ def section_calculator(c: dict) -> str:
     ex = c.get("example") or {}
     opts = "".join(
         f'<option value="{i}" data-net="{esc(p.get("net_c_per_contract"))}" data-vol="{esc(p.get("contracts_per_day"))}" '
-        f'data-op="{esc(p.get("op_usd_month"))}" data-src="{esc((p.get("src") or {}).get("file"))}">'
+        f'data-op="{esc(p.get("op_usd_month"))}" data-src="{esc((p.get("src") or {}).get("file"))}" '
+        f'data-note="{esc(p.get("note"))}" title="{esc(p.get("note"))}">'
         f'{esc(p.get("label"))} ({num(p.get("net_c_per_contract"), 2, sign=True)} c)</option>'
         for i, p in enumerate(c.get("presets") or []))
     preset = (f'<label>preset <select id="calc-preset"><option value="">manual</option>{opts}</select></label>'
               if opts else '<p class="sub">no presets yet (twin verdicts with contracts fill this list)</p>')
+    notes = "".join(f'<li>{esc(p.get("label"))}: {esc(p.get("note"))}</li>' for p in c.get("presets") or [] if p.get("note"))
+    notes = f'<ul class="note">{notes}</ul>' if notes else ""
     be = ex.get("breakeven_contracts_per_day")
     return f"""
 <form id="calc" class="calc" onsubmit="return false">
@@ -355,7 +370,7 @@ def section_calculator(c: dict) -> str:
   <div><span class="k">net $/day</span><span class="v big" id="calc-net-day">{num(ex.get("net_usd_per_day"), 2, sign=True)}</span></div>
   <div><span class="k">break-even contracts/day</span><span class="v big" id="calc-be">{num(be, 0) if be is not None else "never (net ≤ 0)"}</span></div>
 </div>
-<div class="src" id="calc-src"></div>
+<div class="src" id="calc-src"></div>{notes}
 <p class="note">{esc(c.get("formula"))}. Same arithmetic as the twin's commercial block (A6). Incentives and
 rebates are not included; the PM US 70% API-taker rebate ends 2026-12-31 (E25).</p>"""
 

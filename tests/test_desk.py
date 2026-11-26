@@ -222,6 +222,35 @@ def test_h3_not_yet_when_an_arm_is_missing_or_ranges_differ(world):
     assert not h["ready"] and "different ranges" in h["why_not"]
 
 
+def test_newer_offwindow_runs_do_not_displace_prereg(world):
+    """A later, wider-range replay (doppel-twin without --from/--to) must not replace the prereg run,
+    neither in the registry row nor in the H3 table; another family's 'base' arm is ignored."""
+    g = world["h3"]["ident"]
+    wide = [win(i, 9.0) for i in range(N_WIN + 12)]
+    put(world["lab"] / "twin" / "zz-ident-wide.json", twin_doc(g, wide, (H3_S, H3_E + 86400)), 1796099999)
+    root = world["root"]
+    od = orjson.loads((REPO / "genomes" / "h3" / "h3-base.json").read_bytes())
+    other = from_dict({**od, "name": "other-base", "evidence": {**od["evidence"], "family": "zz-other"}})
+    Registry(root, now=lambda: REG_NOW + 1, code={"sha": "f" * 40, "dirty": False}).register(
+        other, "zz-other", "fixture: unrelated family with an arm label", ("2026-11-27T00:00:00Z", "2026-11-30T00:00:00Z"))
+    d = run(world)
+    h = d["strategies"]["h3"]
+    assert h["ready"] and h["family"] == "h3-flowguard-4arm-v1" and h["window_fit"] == "prereg"
+    rows = {r["arm"]: r for r in h["rows"]}
+    assert rows["ident"]["src"]["file"] == "lab:twin/h3/ident.json"
+    assert rows["ident"]["vs_base"]["delta_c_per_window"] == pytest.approx(0.5, abs=1e-4)
+    fam = next(f for f in d["strategies"]["families"] if f["family"] == "h3-flowguard-4arm-v1")
+    ident = next(x for x in fam["genomes"] if x["arm"] == "ident")
+    assert ident["twin"]["src"]["file"] == "lab:twin/h3/ident.json" and ident["twin_runs"] == 3
+    # with ONLY the off-window run left, it is shown, but labelled as such
+    (world["lab"] / "twin" / "h3" / "ident.json").unlink()
+    (world["lab"] / "twin" / "h3" / "ident-d5.json").unlink()
+    d = run(world)
+    ident = next(x for f in d["strategies"]["families"] for x in f["genomes"] if x["name"] == "h3-ident")
+    assert ident["twin"]["window_fit"] == "off-window"
+    assert not d["strategies"]["h3"]["ready"] and "different ranges" in d["strategies"]["h3"]["why_not"]
+
+
 def test_evidence_sections(world):
     ev = run(world)["evidence"]
     f = ev["findings"]
@@ -274,10 +303,11 @@ def test_breakeven_matches_twin_commercial():
 def test_calculator_presets(world):
     calc = run(world)["calculator"]
     by = {p["label"]: p for p in calc["presets"]}
-    h1 = by["twin h1-maker-h1"]
-    assert h1["net_c_per_contract"] == pytest.approx(0.375) and h1["contracts_per_day"] == 96.0
+    h1 = by["twin h1-maker-h1 (partial)"]
+    assert h1["net_c_per_contract"] == pytest.approx(0.375) and h1["contracts_per_day"] == 96.0  # 96 ct over 1 day
     e24 = next(p for k, p in by.items() if k.startswith("E24"))
     assert e24["net_c_per_contract"] == 4.6 and e24["src"]["file"] == "lab:adverse/adverse-btc5m.json"
+    assert e24["contracts_per_day"] is None and e24["op_usd_month"] is None and "not ours" in e24["note"]
     assert calc["example"] == B.breakeven(**{k: calc["defaults"][k] for k in
                                              ("net_c_per_contract", "contracts_per_day")},
                                           op_usd_month=calc["defaults"]["op_usd_month"])

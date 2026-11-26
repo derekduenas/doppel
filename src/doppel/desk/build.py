@@ -212,8 +212,8 @@ def _registry_records(ctx: Ctx) -> tuple[list[dict], dict]:
 
 
 def _twin_docs(ctx: Ctx) -> list[dict]:
-    """Every twin output under <lab>/twin/** reduced to its verdict summary (windows kept apart
-    for H3 pairing). Ordered by (range end, mtime, path) so 'latest' is the last one."""
+    """Every twin output under <lab>/twin/** reduced to its verdict summary plus a slim per-window
+    list for H3 pairing. Ordered by (range end, mtime, path)."""
     out = []
     for p in ctx.jsons("twin", recursive=True):
         d = ctx.load(p)
@@ -225,7 +225,7 @@ def _twin_docs(ctx: Ctx) -> list[dict]:
         v, tw = d["verdict"], d.get("twin") or {}
         r0 = d.get("range")
         rng: list = r0 if isinstance(r0, list) and len(r0) == 2 else [None, None]
-        out.append({"path": p, "mtime": _mtime(p), "windows": d.get("windows") if isinstance(d.get("windows"), list) else [],
+        out.append({"path": p, "mtime": _mtime(p), "windows": _slim(d.get("windows")),
                     "summary": {
                         "src": ctx.src(p), "genome_id": d["genome"]["id"], "name": d["genome"].get("name"),
                         "range": [_num(rng[0]), _num(rng[1])], "range_iso": [iso(_num(rng[0])), iso(_num(rng[1]))],
@@ -242,11 +242,32 @@ def _twin_docs(ctx: Ctx) -> list[dict]:
     return out
 
 
-def _primary(docs: list[dict]) -> dict | None:
-    """Latest run that is evidence: not DIAGNOSTIC and no flow delay."""
-    ok = [d for d in docs if not d["summary"]["diagnostic"] and d["summary"]["decision"] != "DIAGNOSTIC"
-          and not d["summary"]["flow_delay_s"]]
-    return ok[-1] if ok else None
+def _slim(ws: Any) -> list[dict]:
+    """Keep only what H3 pairing needs per window (twin outputs carry fills and inventory paths)."""
+    if not isinstance(ws, list):
+        return []
+    return [{"slug": w.get("slug"), "eligible": bool(w.get("eligible")), "net_c": w.get("net_c"), "end": w.get("end")}
+            for w in ws if isinstance(w, dict)]
+
+
+def _evidence_runs(docs: list[dict], delay: int | None = 0) -> list[dict]:
+    """Runs that count as evidence: not DIAGNOSTIC, and (by default) no flow delay."""
+    return [d for d in docs if not d["summary"]["diagnostic"] and d["summary"]["decision"] != "DIAGNOSTIC"
+            and (delay is None or int(d["summary"]["flow_delay_s"] or 0) == delay)]
+
+
+FIT_RANK = {"prereg": 3, "partial": 2}
+
+
+def _rank(d: dict, ew: dict) -> tuple:
+    """Best run first by window fit (prereg > partial > off-window), then recency."""
+    s = d["summary"]
+    return (FIT_RANK.get(_window_fit(s["range"], ew), 1), s["range"][1] or 0.0, d["mtime"], str(d["path"]))
+
+
+def _primary(docs: list[dict], ew: dict) -> dict | None:
+    ok = _evidence_runs(docs)
+    return max(ok, key=lambda d: _rank(d, ew)) if ok else None
 
 
 def _window_fit(rng: list, ew: dict) -> str:
@@ -303,7 +324,7 @@ def strategies(ctx: Ctx) -> dict:
             tested = gid in results
             phase, to_start, to_end = _phase(ew, ctx.now, tested)
             ev = ((r.get("genome") or {}).get("evidence") or {}) if isinstance(r.get("genome"), dict) else {}
-            prim = _primary(by_gid.get(gid, []))
+            prim = _primary(by_gid.get(gid, []), ew)
             twin = None
             if prim is not None:
                 twin = {**prim["summary"], "window_fit": _window_fit(prim["summary"]["range"], ew)}
@@ -361,34 +382,45 @@ def _paired(base_w: list[dict], arm_w: list[dict]) -> dict:
             "ci95": [_r(lo), _r(hi)], "delta_usd_total": round(sum(d) / 100.0, 4)}
 
 
-def h3_table(ctx: Ctx, regs: list[dict], by_gid: dict[str, list[dict]]) -> dict:
-    """The H3 four-arm comparison: one row per arm (latest delay-0 non-diagnostic run), all four on
-    the same range, deltas vs base on identical windows. Arms are found by genome.evidence.arm."""
-    arms: dict[str, dict] = {}
-    family = None
+def _h3_family(regs: list[dict]) -> tuple[str | None, dict[str, dict]]:
+    """The family whose registered genomes carry evidence.arm for all four H3 arms (grouped by
+    family, so another family's 'base' cannot replace H3's). Else the family with the most arms."""
+    fams: dict[str, dict[str, dict]] = {}
     for r in regs:
         ev = (r.get("genome") or {}).get("evidence") if isinstance(r.get("genome"), dict) else None
         arm = ev.get("arm") if isinstance(ev, dict) else None
         if arm in H3_ARMS:
-            arms[arm] = r
-            family = r.get("family")
+            fams.setdefault(str(r.get("family")), {}).setdefault(arm, r)
+    if not fams:
+        return None, {}
+    best = max(sorted(fams), key=lambda f: (len(fams[f]) == len(H3_ARMS), len(fams[f])))
+    return best, fams[best]
+
+
+def h3_table(ctx: Ctx, regs: list[dict], by_gid: dict[str, list[dict]]) -> dict:
+    """The H3 four-arm comparison: one row per arm on a replay range all four arms share (the
+    registered window if they all have it), latest delay-0 non-diagnostic run per arm on that range,
+    deltas vs base on identical windows. Arms are found by genome.evidence.arm within one family."""
+    family, arms = _h3_family(regs)
     out: dict = {"family": family, "arms": list(H3_ARMS), "ready": False, "rows": [], "delay_sweep": []}
     if set(arms) != set(H3_ARMS):
         out["why_not"] = f"registry has arms {sorted(arms)}; need all of {list(H3_ARMS)}"
         return out
     ew = arms["base"].get("eval_window") or {}
     out["eval_window"] = [ew.get("start"), ew.get("end")]
-    prim = {a: _primary(by_gid.get(arms[a]["genome_id"], [])) for a in H3_ARMS}
-    missing = [a for a in H3_ARMS if prim[a] is None]
+    runs = {a: _evidence_runs(by_gid.get(arms[a]["genome_id"], [])) for a in H3_ARMS}
+    missing = [a for a in H3_ARMS if not runs[a]]
     if missing:
         out["why_not"] = f"no twin result yet for arm(s) {missing}"
         return out
-    got = {a: d for a, d in prim.items() if d is not None}
-    ranges = {a: tuple(got[a]["summary"]["range"]) for a in H3_ARMS}
-    if len(set(ranges.values())) != 1:
+    shared = set.intersection(*({tuple(d["summary"]["range"]) for d in runs[a]} for a in H3_ARMS))
+    if not shared:
         out["why_not"] = "arms were replayed on different ranges: " + ", ".join(
-            f"{a}={list(ranges[a])}" for a in H3_ARMS)
+            f"{a}={sorted({tuple(d['summary']['range']) for d in runs[a]}, key=str)}" for a in H3_ARMS)
         return out
+    rng = max(sorted(shared, key=str), key=lambda r: (FIT_RANK.get(_window_fit(list(r), ew), 1), r[1] or 0.0))
+    got = {a: max((d for d in runs[a] if tuple(d["summary"]["range"]) == rng),
+                  key=lambda d: (d["mtime"], str(d["path"]))) for a in H3_ARMS}
     base = got["base"]
     for a in H3_ARMS:
         d = got[a]
@@ -403,14 +435,15 @@ def h3_table(ctx: Ctx, regs: list[dict], by_gid: dict[str, list[dict]]) -> dict:
         out["rows"].append(row)
     out["ready"] = True
     out["range_iso"] = base["summary"]["range_iso"]
-    out["window_fit"] = _window_fit(base["summary"]["range"], ew)
-    # Preregistered delay sweep on the ident arm (twin --flow-delay-s), same range as base.
-    sweep = {}
-    for d in by_gid.get(arms["ident"]["genome_id"], []):
-        s = d["summary"]
-        if s["diagnostic"] or s["decision"] == "DIAGNOSTIC" or tuple(s["range"]) != ranges["base"]:
+    out["window_fit"] = _window_fit(list(rng), ew)
+    # Preregistered delay sweep on the ident arm (twin --flow-delay-s), same range as the table.
+    sweep: dict[int, dict] = {}
+    for d in _evidence_runs(by_gid.get(arms["ident"]["genome_id"], []), delay=None):
+        if tuple(d["summary"]["range"]) != rng:
             continue
-        sweep[int(s["flow_delay_s"])] = d  # sorted input: later replaces earlier
+        k = int(d["summary"]["flow_delay_s"] or 0)
+        if k not in sweep or (d["mtime"], str(d["path"])) > (sweep[k]["mtime"], str(sweep[k]["path"])):
+            sweep[k] = d
     for k in sorted(sweep):
         s = sweep[k]["summary"]
         out["delay_sweep"].append({"flow_delay_s": k, "src": s["src"], "decision": s["decision"],
@@ -568,21 +601,22 @@ def calculator(strat: dict, adv: list[dict]) -> dict:
             if not t:
                 continue
             pc = _num((t.get("net_c_per_contract") or {}).get("value"))
-            days = _num((t.get("commercial") or {}).get("days")) or 0.0
+            a, b = t.get("range") or [None, None]
             ctr = _num(t.get("contracts"))
-            if pc is None or not ctr or not days:
+            if pc is None or not ctr or a is None or b is None or b <= a:
                 continue
-            op = DEFAULT_OP_USD_MONTH
-            presets.append({"label": f"twin {g['name']}", "net_c_per_contract": round(pc, 4),
-                            "contracts_per_day": round(ctr / days, 1), "op_usd_month": op,
-                            "src": t["src"]})
+            # per day over the replay range (commercial.days counts calendar days by window end, which
+            # counts a midnight-ending window as an extra day)
+            presets.append({"label": f"twin {g['name']} ({t.get('window_fit')})", "net_c_per_contract": round(pc, 4),
+                            "contracts_per_day": round(ctr / ((b - a) / 86400.0), 1),
+                            "op_usd_month": DEFAULT_OP_USD_MONTH, "src": t["src"]})
     for a in adv:
         cell = (a.get("by_model_edge") or {}).get("2..5c")
         if isinstance(cell, dict) and _num(cell.get("maker_pnl_c")) is not None:
             presets.append({"label": f"E24 maker fills, fair edge 2..5c ({a.get('hz')})",
-                            "net_c_per_contract": cell["maker_pnl_c"], "contracts_per_day": 10000.0,
-                            "op_usd_month": DEFAULT_OP_USD_MONTH, "src": a["src"],
-                            "note": "public prints, other makers' fills; contracts/day is a placeholder"})
+                            "net_c_per_contract": cell["maker_pnl_c"], "contracts_per_day": None,
+                            "op_usd_month": None, "src": a["src"],
+                            "note": "other makers' public fills, not ours; sets net c/contract only"})
     d = {"net_c_per_contract": 0.5, "contracts_per_day": 10000.0, "op_usd_month": DEFAULT_OP_USD_MONTH}
     return {"defaults": d, "example": breakeven(d["net_c_per_contract"], d["contracts_per_day"], d["op_usd_month"]),
             "presets": presets,
