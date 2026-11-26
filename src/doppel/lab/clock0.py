@@ -97,9 +97,13 @@ def rtds_takers(root: Path, hours: list[int]) -> dict[tuple[str, str], dict]:
     return out
 
 
-def build(root: Path, lab: Path, as_of: int, until: int) -> tuple[list[dict], dict]:
+def build(root: Path, lab: Path, as_of: int, until: int, fetch: bool = False) -> tuple[list[dict], dict]:
     hours = [h for h in tape_hours(root, CLOB_STREAMS) if as_of - HOUR < h <= until]
-    tmap = TokenMap(Path(lab) / "tokens.jsonl")
+    if fetch:   # resolve outcomes from Gamma; scores still use only windows ended before as_of
+        from .flow import _tmap
+        tmap = _tmap(Path(lab), root, until, True)
+    else:
+        tmap = TokenMap(Path(lab) / "tokens.jsonl")
     outcomes = window_outcomes(tmap)
     t0 = time.time()
     scores = informedness(root, tmap, as_of)
@@ -254,10 +258,11 @@ def main(argv=None) -> int:
     ap.add_argument("--as-of", required=True, help="score instant, ISO UTC; only later txs are used")
     ap.add_argument("--until", help="ISO UTC (default now)")
     ap.add_argument("--out", type=Path)
+    ap.add_argument("--fetch", action="store_true", help="refresh token outcomes from Gamma first")
     a = ap.parse_args(argv)
     as_of = _iso(a.as_of)
     until = _iso(a.until) if a.until else int(time.time())
-    rows, meta = build(a.data, a.lab, as_of, until)
+    rows, meta = build(a.data, a.lab, as_of, until, a.fetch)
     res = {"meta": meta, "eval": evaluate(rows), "features": FEATURES, "built_tw": time.time_ns()}
     if a.out:
         a.out.parent.mkdir(parents=True, exist_ok=True)
