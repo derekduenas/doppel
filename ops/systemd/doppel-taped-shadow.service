@@ -1,0 +1,31 @@
+[Unit]
+Description=DOPPEL Rust tape recorder (doppel-taped) SHADOW run beside doppel-tape.service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=doppel
+# Same access as doppel-tape.service: the PM US signer socket via the group, and the read-only
+# Kalshi profile as a systemd credential ($CREDENTIALS_DIRECTORY/kalshi-profile.json).
+# NOTE: ref_brti_live and kalshi_ws use the same shared Kalshi key as the Python recorder,
+# PERELMAN and btc-window; the shadow doubles BRTI polling on that key while it runs.
+SupplementaryGroups=pmus-market-data
+LoadCredential=kalshi-profile.json:/etc/edge-engine/riskd/kalshi-production-readonly.json
+WorkingDirectory=/opt/doppel
+# Shadow root, NOT the live tape root. Create it (owned by doppel) before the first start.
+ExecStart=/opt/doppel/bin/doppel-taped run --data /mnt/volume_nyc1_1793485122853/doppel/tape-rust
+Restart=always
+RestartSec=3
+CPUQuota=150%
+MemoryHigh=512M
+MemoryMax=1G
+Nice=5
+NoNewPrivileges=true
+ProtectSystem=strict
+# Narrower than the Python unit: the shadow can write only its own root, never the live tape.
+ReadWritePaths=/mnt/volume_nyc1_1793485122853/doppel/tape-rust
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

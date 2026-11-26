@@ -1,0 +1,35 @@
+[package]
+name = "doppel-tape"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "DOPPEL tape recorder (Rust port of src/doppel/tape), byte-compatible segments"
+
+[[bin]]
+name = "doppel-taped"
+path = "src/main.rs"
+
+# Versions are pinned exactly; Cargo.lock is committed.
+[dependencies]
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
+tokio-tungstenite = { version = "=0.26.2", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
+futures-util = { version = "=0.3.34", default-features = false, features = ["sink", "std"] }
+async-trait = "=0.1.92"
+reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls"] }
+# ring only: no aws-lc (the build host has no cmake)
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+zstd = "=0.13.6"
+crc32fast = "=1.5.6"
+sha2 = "=0.10.9"
+hex = "=0.4.3"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.154", features = ["preserve_order"] }
+ed25519-dalek = { version = "=2.2.0", features = ["pkcs8", "pem"] }
+rsa = { version = "=0.9.10", features = ["sha2", "pem"] }
+base64 = "=0.22.1"
+rand = "=0.8.8"
+libc = "=0.2.191"
+toml = "=0.8.23"
+
+[dev-dependencies]
+tempfile = "=3.27.0"
