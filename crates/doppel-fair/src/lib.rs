@@ -5,6 +5,8 @@
 //!   curve with exponential depth weighting), with per-venue diagnostics. [`book`] is the
 //!   in-memory book container from PERELMAN `books.py`.
 //! - [`fair`]: fair-v1, an exact port of `doppel.lab.fair.fair_up_raw`.
+//! - [`venue`]: per-venue L2 frame decoders (the `books.py` WebSocket handlers) that rebuild
+//!   books from the recorder's raw `spot_l2_<venue>` tape.
 //!
 //! Parity with the Python references is checked against `tests/fixtures_fair/` (see
 //! `docs/fast-fair.md`). Not wired into any recorder or service.
@@ -14,3 +16,4 @@ pub mod book;
 pub mod brti;
 pub mod fair;
 pub mod pymath;
+pub mod venue;

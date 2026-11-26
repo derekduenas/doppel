@@ -12,6 +12,7 @@ use tokio::sync::watch;
 use crate::clock::wall_ns;
 use crate::http::RateLimiter;
 use crate::kalshi::{KalshiBooks, KalshiBrti, KalshiWs};
+use crate::l2::{SpotL2, L2_VENUES};
 use crate::pmus::PmusMarketsWs;
 use crate::recorder::{spawn_writer, stats_map, Recorder, Stats, WriterThread, DEFAULT_QUEUE};
 use crate::universe::{IntlUniverse, ASSETS, HZ};
@@ -32,10 +33,18 @@ pub fn all_streams() -> Vec<String> {
     v
 }
 
+/// Spot L2 book streams (`spot_l2_<venue>`). Opt-in only: `all` does not include them, so a unit
+/// without `--only` keeps recording exactly what it did before.
+pub fn l2_streams() -> Vec<String> {
+    L2_VENUES.iter().map(|v| format!("spot_l2_{v}")).collect()
+}
+
 /// Resolve `--only` names: `clob_intl` = every CLOB shard, `kalshi_brti` = `ref_brti_live`
-/// (the Python key). `pmus_books` is deliberately not ported (the PM US REST book is CDN-stale).
+/// (the Python key), `spot_l2` = every spot L2 book stream. `pmus_books` is deliberately not
+/// ported (the PM US REST book is CDN-stale).
 pub fn resolve_streams(only: &[String]) -> Result<Vec<String>, String> {
     let all = all_streams();
+    let l2 = l2_streams();
     let mut want = BTreeSet::new();
     for raw in only {
         let n = raw.trim();
@@ -46,14 +55,15 @@ pub fn resolve_streams(only: &[String]) -> Result<Vec<String>, String> {
             "kalshi_brti" => {
                 want.insert("ref_brti_live".to_string());
             }
+            "spot_l2" => want.extend(l2.iter().cloned()),
             "pmus_books" => return Err("pmus_books is not ported (PM US REST book is CDN-stale)".into()),
-            n if all.iter().any(|s| s == n) => {
+            n if all.iter().chain(&l2).any(|s| s == n) => {
                 want.insert(n.to_string());
             }
             n => return Err(format!("unknown stream: {n}")),
         }
     }
-    Ok(all.into_iter().filter(|s| want.contains(s)).collect())
+    Ok(all.into_iter().chain(l2).filter(|s| want.contains(s)).collect())
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -120,6 +130,10 @@ fn spawn_source(name: &str, rec: Recorder, stop: watch::Receiver<bool>, kalshi_l
         "spot_coinbase" => tokio::spawn(run_ws(CoinbaseTrades, rec, stop, o())),
         "spot_kraken" => tokio::spawn(run_ws(KrakenTrades, rec, stop, o())),
         "spot_bitstamp" => tokio::spawn(run_ws(BitstampTrades, rec, stop, o())),
+        n if n.starts_with("spot_l2_") => {
+            let v = SpotL2::new(&n["spot_l2_".len()..]).unwrap_or_else(|| panic!("no source for {n}"));
+            tokio::spawn(run_ws(v, rec, stop, o()))
+        }
         n if n.starts_with("clob_") => {
             let mut p = n.splitn(3, '_').skip(1);
             let (a, h) = (p.next().unwrap_or(""), p.next().unwrap_or(""));
@@ -208,6 +222,12 @@ mod tests {
         assert_eq!(resolve_streams(&s(&["kalshi_brti", "rtds_b"])).unwrap(), s(&["rtds_b", "ref_brti_live"]));
         assert!(resolve_streams(&s(&["pmus_books"])).is_err());
         assert!(resolve_streams(&s(&["nope"])).is_err());
+        // spot L2 books are opt-in: `all` (the default) does not start them
+        assert!(resolve_streams(&s(&["all"])).unwrap().iter().all(|n| !n.starts_with("spot_l2")));
+        assert_eq!(resolve_streams(&s(&["spot_l2"])).unwrap(), l2_streams());
+        assert_eq!(l2_streams().len(), 6);
+        assert_eq!(resolve_streams(&s(&["spot_l2_kraken", "spot_kraken"])).unwrap(), s(&["spot_kraken", "spot_l2_kraken"]));
+        assert_eq!(resolve_streams(&s(&["all", "spot_l2"])).unwrap().len(), 18 + 6);
     }
 
     #[test]

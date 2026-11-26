@@ -7,6 +7,7 @@ Two engines in Rust. Both are pure and deterministic, with no I/O and no clock, 
 | `fair` | `doppel.lab.fair.fair_up_raw` (fair-v1) | P(settle ≥ ptb) at decision second `d`, from the raw 1 Hz BRTI received so far. The samples already received count as-is; the remaining ones are modelled as a zero-drift walk with variance taken from the trailing `vol_window` s. |
 | `brti` | PERELMAN `brti.py` (CF RTI methodology v17.0) | Index value from constituent L2 books: staleness (> 10 s), erroneous-book and 5 % outlier filters, re-instatement hysteresis below 2.5 %, a dynamic order-size cap (trimmed mean + 5σ, not a fixed 100 BTC; 100 is the target level count), uncrossing, spacing (static/100 levels vs KDE mode), and the mid-price-volume curve with exponential depth weights. |
 | `book` | the `Book` container in PERELMAN `books.py` | An in-memory L2 book (`put`, `replace`, `reset`, `best`) that produces a `BookSnapshot` stamped with the last update in ns. |
+| `venue` | the WebSocket handlers in `books.py` | Rebuilds one venue's `L2Book` from the recorder's raw `spot_l2_<venue>` tape records (see below). |
 
 The replica's output also says why each venue was or was not used: `Used`, `Reinstated`, `Delayed{lag_ns}`, `EmptySide`, `Crossed`, `Outlier{dev}` or `HeldOut{dev}`. The hysteresis set is explicit state: `brti::calculate(books, calc_ns, &excluded)` returns the next set, and `Replica` wraps it.
 
@@ -74,5 +75,19 @@ Against BLUEPRINT C6's ≤ 1 ms compute budget, fair-v1 is well inside it and **
 
 - **No validation against published BRTI.** W6's acceptance is $0.01 p99.
 - **AMBIGUITY points unresolved.** The points `brti.py` marks as AMBIGUITY (the KDE grid, which book the spacing is taken from) are not settled.
-- **No venue frame decoders.** These are the `books.py` WebSocket handlers.
-- **No wiring.**
+- **No wiring.** The decoders exist (below) but nothing runs the replica over the tape yet.
+
+## Constituent books: `spot_l2_<venue>` streams and `venue` decoders
+
+`doppel-taped` records BTC-USD L2 for six of the seven constituents as raw frames, using the channels from PERELMAN `recorder.py`: `coinbase` (Advanced Trade `level2` + `heartbeats`), `kraken` (v2 `book`, depth 1000), `bitstamp` (`order_book_btcusd`, a full top-100 book per change), `gemini` (v1 market data), `cryptocom` (`book.BTC_USD.150`, a full 150-level book about 2.3 times a second; its delta mode exists only at depth 50 and rejects 150), `bullish` (`l2Orderbook`, full snapshots). LMAX Digital has no public WebSocket, so it is not recorded; PERELMAN polls its REST book.
+
+These streams are opt-in: `--only spot_l2` starts all six, `spot_l2_<venue>` starts one, and `all` (the default) starts none. No systemd unit runs them.
+
+Continuity:
+
+- **Sequence numbers.** Coinbase `sequence_num` and Gemini `socket_sequence` count every frame on the connection, heartbeats included, so heartbeats are recorded. Crypto.com deltas carry `pu`, which must equal the previous `u`. On a jump the recorder writes `ctl: seq_gap {expected, got}` and reconnects; the new connection brings a fresh snapshot and restarts the sequence.
+- **Kraken checksum.** Kraken has no sequence number, only a CRC32 over the top 10 levels per side. The decoder checks it offline, so the recorder holds no book state.
+- **Backpressure.** A backpressure drop leaves a hole in the tape even while the socket is healthy. The delta venues therefore reconnect when `backpressure_drops` increases.
+- **No data.** Recorded heartbeats keep the stall watchdog quiet, so a subscription the venue rejected could otherwise look healthy forever (seen live with Crypto.com delta mode at depth 150). Each venue must deliver a book frame at least every 30 s, or the recorder writes `ctl: no_data` and reconnects.
+
+`venue::VenueBook::apply_record(raw, tw, meta)` replays a stream. Any control record (connect, disconnect, seq_gap, backpressure_drop, ...) resets the book, and so does an integrity failure. Either way the book stays invalid until the next snapshot. `retrieved_ns` is the record's receive time `tw`, never a venue timestamp. Gemini's WebSocket lagged about 5 s on 2026-11-24, which is why PERELMAN switched to its REST book; check `tw` against `venue_ts_ns` before trusting it.

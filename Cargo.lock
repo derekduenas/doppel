@@ -229,6 +229,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "crc32fast",
+ "doppel-fair",
  "ed25519-dalek",
  "futures-util",
  "hex",
