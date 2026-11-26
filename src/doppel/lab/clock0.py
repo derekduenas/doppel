@@ -3,8 +3,8 @@ the wallet (~2.2 s later)?
 
 Unit: one taker transaction (all ``last_trade_price`` prints sharing a tx hash in one asset).
 Labels come from RTDS, joined by tx hash, and are NEVER features:
-  * ``informed``: the taker wallet's point-in-time score as of ``as_of`` (``flow.informedness``,
-    windows ended before as_of only) has excess >= flow.INFORMED_EXCESS_C.
+  * ``informed`` (reported only): excess >= flow.INFORMED_EXCESS_C. The MODELLED label is relative:
+    the taker wallet is in the top decile of point-in-time excess (threshold from training rows).
   * ``weight``: flow.weight of that score (continuous, -1..1).
   * ``m_c``: the tx's own settlement markout, cents/share = 100 * dir * (payout_token - price).
 Only transactions RECEIVED after ``as_of`` are used, so scores never saw them.
@@ -126,11 +126,12 @@ def build(root: Path, lab: Path, as_of: int, until: int, fetch: bool = False) ->
         elif tw - u["tw"] <= 500_000_000:      # prints of one tx arrive together
             u["px"].append(px); u["usd"] += px * sz; u["size"] += sz; u["n"] += 1
         info = takers.get((tx, asset))
-        updir = None
+        updir = up_px = None
         if info is not None:
             updir = (1 if side == "BUY" else -1) * (1 if info["idx"] == 0 else -1)
+            up_px = px if info["idx"] == 0 else 1.0 - px   # audit A1-F5: compare Up prices only
         dq = market_hist[mk]
-        dq.append((tw, px * sz, updir, px))
+        dq.append((tw, px * sz, updir, up_px))
         while dq and dq[0][0] < tw - 5 * NS:
             dq.popleft()
     for u in units.values():
@@ -147,7 +148,7 @@ def build(root: Path, lab: Path, as_of: int, until: int, fetch: bool = False) ->
         h1 = [x for x in hist if x[0] >= u["tw"] - NS]
         usd5 = sum(x[1] for x in hist)
         same = sum(x[1] for x in hist if x[2] is not None and x[2] == d * up)
-        old = [x for x in hist if x[0] <= u["tw"] - 4 * NS]
+        old = [x for x in hist if x[0] <= u["tw"] - 4 * NS and x[3] is not None]
         vwap = sum(u["px"]) / len(u["px"])
         pay_up = outcomes.get(info["slug"])
         m_c = None
@@ -164,7 +165,8 @@ def build(root: Path, lab: Path, as_of: int, until: int, fetch: bool = False) ->
             "coin": COINS.get(info["coin"], -1), "buy_up": 1.0 if d * up > 0 else 0.0,
             "burst_1s": len(h1), "burst_5s": len(hist), "usd_5s": math.log1p(usd5),
             "same_dir_5s": same / usd5 if usd5 > 0 else 0.5,
-            "dmove_5s_c": 100.0 * (vwap - old[-1][3]) * (1 if d * up > 0 else -1) if old else 0.0,
+            "dmove_5s_c": (100.0 * ((vwap if info["idx"] == 0 else 1.0 - vwap) - old[-1][3])
+                           * (1 if d * up > 0 else -1)) if old else 0.0,
         })
     counts["units"] = len(units)
     counts["labelled"] = len(rows)

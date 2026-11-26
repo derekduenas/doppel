@@ -33,7 +33,7 @@ Two streams need venue auth. Neither key is stored in this repo, in `/opt/doppel
   and are not recorded. If the signer is down, `status.json` shows
   `SignerError: signer connect failed: ...` and the source retries with backoff.
 - **`ref_brti_live`** (`--only` key `kalshi_brti`): Kalshi's CF Benchmarks BRTI passthrough,
-  `GET https://external-api.kalshi.com/trade-api/v2/cfbenchmarks/values?id=BRTI` every 0.5 s,
+  `GET https://external-api.kalshi.com/trade-api/v2/cfbenchmarks/values?id=BRTI` every 5 s,
   signed with a **read-only** Kalshi profile. systemd hands it in with
   `LoadCredential=kalshi-profile.json:/etc/edge-engine/riskd/kalshi-production-readonly.json`, and the
   recorder reads `$CREDENTIALS_DIRECTORY/kalshi-profile.json` (`{"key_id", "private_key_pem"}`, RSA-PSS

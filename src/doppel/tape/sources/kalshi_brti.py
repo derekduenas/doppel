@@ -6,7 +6,7 @@ loaded in ``run`` (never in ``__init__``), so the recorder builds without it; a 
 profile is logged once and the source idles. Auth headers are never recorded, and exceptions on the
 signed path are reduced to their type name (no ``str(exc)``).
 
-Every ``interval_s`` (0.5 s): GET ``/trade-api/v2/cfbenchmarks/values?id=BRTI``, signed over
+Every ``interval_s`` (5 s, set to share the Kalshi key politely): GET ``/trade-api/v2/cfbenchmarks/values?id=BRTI``, signed over
 ``timestamp_ms + "GET" + path`` (path without the query). The raw body is recorded with
 ``meta = {status, sent_tw, sent_tm, new}``; ``new`` lists the ``[time_ms, value]`` pairs not seen
 before (bounded memory).

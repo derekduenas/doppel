@@ -31,7 +31,10 @@ SRC = Path(__file__).resolve().parent
 
 def code_sha256() -> str:
     """sha256 over the twin package, the genome contract and fair-v1 sources."""
-    files = sorted(SRC.glob("*.py")) + [SRC.parent / "strategy" / "genome.py", SRC.parent / "lab" / "fair.py"]
+    lab, tape = SRC.parent / "lab", SRC.parent / "tape"
+    files = sorted(SRC.glob("*.py")) + [SRC.parent / "strategy" / "genome.py", lab / "fair.py",
+                                        lab / "flow.py", lab / "ledger.py", lab / "brti_import.py",
+                                        tape / "segment.py", tape / "universe.py"]  # audit A3-3
     h = hashlib.sha256()
     for f in files:
         h.update(f.name.encode() + b"\0" + f.read_bytes())
@@ -50,21 +53,31 @@ def parse_ts(s: str) -> int:
 
 
 def run_twin(root: Path, g: Genome, t_from: int, t_to: int, cfg: SimConfig = SimConfig(),
-             allow_stale_rest: bool = False, lab: Path | None = None, flow_delay_s: int = 0) -> list[dict]:
+             allow_stale_rest: bool = False, lab: Path | None = None, flow_delay_s: int = 0,
+             meta: dict | None = None) -> list[dict]:
     if g.universe.venue != "pmus":
         raise ValueError(f"the twin replays PM US only (genome venue {g.universe.venue})")
     store = RefStore(root)
     for a in g.universe.assets:
         store.load_boundaries(a, t_from - 1, t_to)
+    from .flowfeat import rtds_hours_present, uses_intl
+    need_rtds = uses_intl(g)
+
+    def tag(wt):
+        if need_rtds and not rtds_hours_present(root, wt.start - 120, wt.end):
+            wt.stats["rtds_missing"] = True
+        return wt
     items = ((wt, store.window_ref(wt.asset, wt.start, wt.end, g.fair.vol_window_s))
-             for wt in iter_windows(root, g.universe.assets, g.universe.horizons, t_from, t_to,
-                                    cfg.depth_levels, allow_stale_rest))
+             for wt in map(tag, iter_windows(root, g.universe.assets, g.universe.horizons, t_from, t_to,
+                                             cfg.depth_levels, allow_stale_rest)))
     from .flowfeat import FlowFeatures, ScoreCache, uses_intl
     factory = None
     if uses_intl(g):
         if lab is None:
             raise ValueError("genome uses intl_* features: pass --lab (token map for informedness)")
         cache = ScoreCache(root, lab)
+        if meta is not None:
+            meta["flow_scores"] = cache.headers   # filled as days are scored
 
         def make(gg, ref, c, cache=cache):
             return FlowFeatures(gg, ref, c.feature_config(), root, cache, flow_delay_s)
@@ -113,7 +126,8 @@ def main(argv=None) -> int:
             return 2
     cfg = SimConfig(latency_ms=a.latency_ms, brti_delay_s=a.brti_delay_s, fair_lag_s=a.fair_lag_s,
                     depth_levels=a.depth_levels, min_trade_coverage=a.min_trade_coverage)
-    results = run_twin(a.data, g, t_from, t_to, cfg, a.allow_stale_rest, a.lab, a.flow_delay_s)
+    meta: dict = {}
+    results = run_twin(a.data, g, t_from, t_to, cfg, a.allow_stale_rest, a.lab, a.flow_delay_s, meta)
     v = verdict(g, results, a.block, a.boot, a.seed, a.op_cost_usd_month)
     base = SimConfig()
     diagnostic = (a.allow_stale_rest or a.min_trade_coverage < base.min_trade_coverage
@@ -123,6 +137,7 @@ def main(argv=None) -> int:
         v["decision"] = "DIAGNOSTIC"
         v["reason"] = "relaxed data-quality gates: not evidence for or against the genome"
     doc = {"twin": {"code_sha256": code_sha256(), "config": asdict(cfg), "allow_stale_rest": a.allow_stale_rest, "flow_delay_s": a.flow_delay_s,
+                     "flow_scores": {str(k): v for k, v in (meta.get("flow_scores") or {}).items()},
                     "diagnostic": diagnostic},
            "genome": {"id": g.id, "name": g.name, "status": g.status, "describe": describe(g)},
            "range": [t_from, t_to], "verdict": v, "windows": results}

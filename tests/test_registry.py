@@ -198,3 +198,18 @@ def test_cli_register_ledger_verify(tmp_path, capsys):
     assert len(rec["code_sha"] or "") in (0, 40)                 # git SHA of this checkout when available
     assert cli(["register", "--genome", str(p), "--family", "f2", "--hypothesis", "h", "--start",
                 "2020-01-01T00:00:00Z", "--end", "2020-01-02T00:00:00Z", "--root", str(tmp_path / "r2")]) == 2
+
+
+def test_registry_append_does_not_mark_code_dirty(tmp_path):
+    """Audit A4-F3: only code changes count as dirty, not the registry's own append."""
+    import subprocess
+    from doppel.strategy.registry import git_sha
+    run = lambda *a: subprocess.run(["git", *a], cwd=tmp_path, check=True, capture_output=True)
+    run("init", "-q"); run("config", "user.email", "t@t"); run("config", "user.name", "t")
+    (tmp_path / "registry").mkdir(); (tmp_path / "src").mkdir()
+    (tmp_path / "registry" / "genomes.jsonl").write_text("a\n"); (tmp_path / "src" / "m.py").write_text("x=1\n")
+    run("add", "."); run("commit", "-qm", "init")
+    (tmp_path / "registry" / "genomes.jsonl").write_text("a\nb\n")
+    assert git_sha(tmp_path / "src")["dirty"] is False
+    (tmp_path / "src" / "m.py").write_text("x=2\n")
+    assert git_sha(tmp_path / "src")["dirty"] is True

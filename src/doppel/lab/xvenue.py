@@ -53,7 +53,8 @@ def _iso(s: str) -> int:
 
 def pmus_fee(p: float, n: float = 1.0) -> float:
     """Dollars for n contracts at price p, cent half-even (Python round = banker's)."""
-    return round(round(PMUS_COEF * n * p * (1 - p), 2) * (1 - PMUS_REBATE), 4)
+    from ..twin.engine import fee_usd
+    return round(fee_usd(PMUS_COEF, p, n) * (1 - PMUS_REBATE), 4)
 
 
 def kalshi_fee(p: float, n: float = 1.0) -> float:
@@ -133,15 +134,17 @@ def asof(rows: list, t: float, max_age: float = 3.0, with_time: bool = False):
 
 def episodes(series: list[tuple[int, float, float]], persist: int) -> list[dict]:
     """Contiguous runs of positive net edge lasting >= ``persist`` consecutive seconds. Each episode
-    is valued ONCE at its first second's edge x size (no re-counting of the same liquidity)."""
+    is valued ONCE at the second it qualifies (the ``persist``-th second: before that it could not be
+    confirmed), edge x size, so no liquidity is re-counted (audit A1-F4: it used the first second)."""
     out, run = [], []
     for s, e, q in series + [(10**12, -1.0, 0.0)]:
         if e > 0 and (not run or s == run[-1][0] + 1):
             run.append((s, e, q))
             continue
         if len(run) >= persist:
-            out.append({"start": run[0][0], "secs": len(run), "edge_c": round(100 * run[0][1], 2),
-                        "size": run[0][2], "dollars": round(run[0][1] * run[0][2], 2)})
+            q0 = run[persist - 1]
+            out.append({"start": run[0][0], "secs": len(run), "edge_c": round(100 * q0[1], 2),
+                        "size": q0[2], "dollars": round(q0[1] * q0[2], 2)})
         run = [(s, e, q)] if e > 0 else []
     return out
 

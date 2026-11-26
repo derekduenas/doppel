@@ -17,6 +17,14 @@ from .features import Features, FeatureConfig, WindowRef
 DAY = 86400
 
 
+def rtds_hours_present(root: Path, lo: int, hi: int) -> bool:
+    """True when every hour covering [lo, hi] has an RTDS segment on at least one socket."""
+    from ..lab.flow import HOUR, NS, RTDS_STREAMS
+    from ..tape.segment import segment_path
+    return all(any(segment_path(Path(root), s, h * NS).exists() for s in RTDS_STREAMS)
+               for h in range(lo // HOUR * HOUR, hi + 1, HOUR))
+
+
 def uses_intl(g: Genome) -> bool:
     names = {c.feature for r in g.taker for c in r.when}
     if g.maker is not None:
@@ -31,11 +39,14 @@ class ScoreCache:
         self.flow, self.root = flow, Path(root)
         self.tmap = TokenMap(Path(lab) / "tokens.jsonl")
         self._by_day: dict[int, dict] = {}
+        self.headers: dict[int, dict] = {}   # day -> snapshot header (provenance, audit A2-7)
 
     def scores(self, t: int) -> dict:
         day = t // DAY * DAY
         if day not in self._by_day:
-            self._by_day[day] = self.flow.informedness(self.root, self.tmap, day)
+            doc = self.flow.informedness_doc(self.root, self.tmap, day)
+            self._by_day[day] = doc["wallets"]
+            self.headers[day] = {k: v for k, v in doc.items() if k != "wallets"}
         return self._by_day[day]
 
 

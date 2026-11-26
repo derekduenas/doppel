@@ -573,3 +573,16 @@ def test_brti_seconds_are_unknown_until_received():
     assert x["brti_move_1s"] != x["brti_move_1s"]          # NaN: not known yet
     x = f.at(late + 5, None, 0.0)          # received by now
     assert x["brti_move_1s"] == 1.0
+
+
+def test_flow_genome_windows_without_rtds_are_excluded(tmp_path):
+    """Audit A3-2: a missing RTDS hour must not silently look like zero intl flow."""
+    from doppel.lab.flow import NS
+    from doppel.tape.segment import segment_path
+    from doppel.twin.flowfeat import rtds_hours_present
+    h = 1795651200
+    p = segment_path(tmp_path, "rtds_a", h * NS)
+    p.parent.mkdir(parents=True)
+    p.write_bytes(b"")
+    assert rtds_hours_present(tmp_path, h + 10, h + 3000)
+    assert not rtds_hours_present(tmp_path, h + 3000, h + 3700)   # next hour missing

@@ -618,6 +618,8 @@ def exclusion(g: Genome, wt: WindowTape, ref: WindowRef, min_cov: float = MIN_TR
         return "no_ws_coverage"
     if ref.outcome is None:
         return "unsettled"
+    if wt.stats.get("rtds_missing"):
+        return "no_rtds"   # audit A3-2: a missing intl identity hour must not look like zero flow
     if g.mode == "maker":
         if not wt.has_trade_feed:
             return "no_trade_feed"

@@ -96,7 +96,7 @@ async def run(data: Path, only: set[str], seconds: float | None) -> int:
                 for s in sources:
                     s.writer.close_if_stale()
                 try:
-                    build_receipt(data, time.strftime("%Y%m%d", prev), prev.tm_hour)
+                    await asyncio.to_thread(build_receipt, data, time.strftime("%Y%m%d", prev), prev.tm_hour)
                 except Exception as exc:  # noqa: BLE001
                     logging.warning("receipt failed: %s", exc)
                 last_hour = h

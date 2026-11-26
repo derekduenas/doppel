@@ -95,7 +95,9 @@ def git_sha(cwd: Path | None = None) -> dict:
     try:
         sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True,
                              timeout=10, check=True).stdout.strip()
-        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=cwd,
+        # the registry's own append is not a code change (audit A4-F3: it flagged 11/20 genomes dirty)
+        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no", "--", ":(top)",
+                                ":(top,exclude)registry"], cwd=cwd,
                                capture_output=True, text=True, timeout=30, check=True).stdout.strip() != ""
         return {"sha": sha or None, "dirty": dirty}
     except (OSError, subprocess.SubprocessError):
@@ -329,6 +331,7 @@ class Registry:
         decision, reason = seq.decide(stats, p_holm[me], n_traded, g.kill.min_windows, alpha)
         twin = results.get("twin") or {}
         src = {"twin_code_sha256": twin.get("code_sha256"), "twin_diagnostic": bool(twin.get("diagnostic")),
+               "twin_config": twin.get("config"), "flow_delay_s": twin.get("flow_delay_s"),
                "range": results.get("range"), **(source or {})}
         return {"genome_id": genome_id, "name": reg["name"], "family": reg["family"],
                 "eval_window": [w["start"], w["end"]], "window_closed": now >= w["end_s"],

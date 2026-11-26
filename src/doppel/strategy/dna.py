@@ -37,7 +37,7 @@ import orjson
 
 from .genome import FEATURES, FairModel, Genome, from_dict, to_dict, validate
 
-PROBE_VERSION = 2   # v2: placebo_block_u (2026-11-26)
+PROBE_VERSION = 3   # v2: placebo_block_u; v3: missing values (NaN) like real feeds (2026-11-26)
 PROBE_SEED = 20261126
 PROBE_N = 4000
 EXPRESSION_FILE = "registry/expression.json"
@@ -81,6 +81,10 @@ def probes(n: int = PROBE_N, seed: int = PROBE_SEED) -> list[dict[str, float]]:
             x[f"intl_informed_flow_{k}s"] = f
             x[f"intl_informed_share_{k}s"] = rng.random()
         x["intl_mid_up_c"] = 100 * min(0.99, max(0.01, fair + rng.gauss(0, 0.03)))
+        # real feature vectors have gaps (no book, no fair off-BTC, no intl rows): pin NaN behaviour too
+        for k in list(x):
+            if k not in ("tau_s", "tte_s", "inventory_up", "placebo_u", "placebo_block_u") and rng.random() < 0.04:
+                x[k] = float("nan")
         missing = set(FEATURES) - set(x)
         if missing:  # a new feature must be added to the probe set (and PROBE_VERSION bumped)
             raise AssertionError(f"probe set lacks features {sorted(missing)}")

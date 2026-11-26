@@ -245,6 +245,8 @@ class Genome:
         bid = ref - h - skew
         ask = ref + h - skew
         fair_c = 100 * x["fair_up"]
+        if fair_c != fair_c:      # no fair value: the minimum edge cannot be enforced, so do not quote
+            return None, None
         # Round to the cent tick FIRST, then enforce the minimum edge on the tick price (audit A2-3:
         # clamping before rounding let quotes sit up to 0.5 c inside fair +/- min_edge).
         bid = min(round(bid), math.floor(round(fair_c - m.min_edge_vs_fair_c, 6)))

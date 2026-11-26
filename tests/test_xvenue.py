@@ -25,4 +25,5 @@ def test_episodes_count_once_and_need_persistence():
     from doppel.lab.xvenue import episodes
     ser = [(10, 0.03, 100), (11, 0.02, 80), (12, -0.01, 50), (20, 0.05, 10), (30, 0.04, 5), (31, 0.04, 5)]
     eps = episodes(ser, persist=2)
-    assert [(e["start"], e["secs"], e["dollars"]) for e in eps] == [(10, 2, 3.0), (30, 2, 0.2)]
+    # valued at the second the run qualifies (2nd second here): 0.02 x 80, 0.04 x 5 (audit A1-F4)
+    assert [(e["start"], e["secs"], e["dollars"]) for e in eps] == [(10, 2, 1.6), (30, 2, 0.2)]

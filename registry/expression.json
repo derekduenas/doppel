@@ -1,233 +1,233 @@
 {
   "genomes": {
     "013ea369906e9b859b573d550678bff454d13d88ec7cedd5cdc0fc3f65668ffc": {
-      "expression_sha256": "30ad43dd147e36bf27b92ff77ac9adb3e466c17d9f06d0fc1ac6a8a3eb1f3c61",
+      "expression_sha256": "8daf057b412d524b07fae5df720ef34840536dc70831e99018cd0869cb406266",
       "n": 4000,
       "name": "h1-maker-h2-guard30",
       "stats": {
-        "paused": 2180,
-        "quote_both": 1169,
-        "quote_one": 651,
+        "paused": 2128,
+        "quote_both": 1226,
+        "quote_one": 571,
         "takes": 0
       }
     },
     "0bb14d76313d905c32c4d8751a1eb50d23e411bce3e7bdda73c882e284f5c058": {
-      "expression_sha256": "91956257beb6dc129f0f22d83627a0e7fef5aec3fefec2a31350a481837d49b8",
+      "expression_sha256": "a22ffffc6f13090d99bef08610fec7d25f696e524c1029819c6dabaa13be151d",
       "n": 4000,
       "name": "h3-placebo-block",
       "stats": {
-        "paused": 2493,
-        "quote_both": 970,
-        "quote_one": 537,
+        "paused": 2441,
+        "quote_both": 1032,
+        "quote_one": 468,
         "takes": 0
       }
     },
     "0f6ca81ce041c4b54ff758f2db83d2457c0b4d6a2a3d45af82d06a19ae2d717a": {
-      "expression_sha256": "ddf9a589c8e4c2282e44c27242ddd037e740f1997f87ad03ea3c4312051934b0",
+      "expression_sha256": "59db18f2fa3bf4e0f56d626583f33626aebd0fb7b31846d73414c8affffe2cd9",
       "n": 4000,
       "name": "h4-edge2-h2-skip60to120",
       "stats": {
-        "paused": 3530,
-        "quote_both": 312,
-        "quote_one": 158,
+        "paused": 3491,
+        "quote_both": 319,
+        "quote_one": 168,
         "takes": 0
       }
     },
     "1778b9382553afce0d2e64d02cc2c58950d4be8b27c6629763bb2b18c3da971e": {
-      "expression_sha256": "e70b335129ffdb693ce13c639587310fd212755fcd6da91ecd78a4ff4a279515",
+      "expression_sha256": "0b186435eb821fc31585232ae2db894f91fcc5808ed3b4e740b5ea54549a9422",
       "n": 4000,
       "name": "h2-maker-h1-flow300",
       "stats": {
-        "paused": 2974,
-        "quote_both": 654,
-        "quote_one": 372,
+        "paused": 2933,
+        "quote_both": 681,
+        "quote_one": 343,
         "takes": 0
       }
     },
     "19ad0b7685b27fffe4263c6d31d4ef5c21a5eebbe95463e15585f562cda01e47": {
-      "expression_sha256": "10389d96b825b7cc795c9847505cf98f477c7881c588a6c45266f077a1bc6bde",
+      "expression_sha256": "24cc6d9f8b6a13de8d2285621774a6c40d9ed4735629b14d5774b2bf18e256ee",
       "n": 4000,
       "name": "h1-maker-h1",
       "stats": {
-        "paused": 583,
-        "quote_both": 2222,
-        "quote_one": 1195,
+        "paused": 641,
+        "quote_both": 2154,
+        "quote_one": 1075,
         "takes": 0
       }
     },
     "2ef1045272e8ec043211e705ba994199b6c0892212647bf8e62e79122d775ff2": {
-      "expression_sha256": "08922bf0e37c12dcf23c1691b92064d8c824984dc11697d4649b421c2c6269ad",
+      "expression_sha256": "9b320e70ea2330d8f50992e7588f622603e44aa060c8b86787b4f192b3364402",
       "n": 4000,
       "name": "h2-maker-h3-flow300",
       "stats": {
-        "paused": 2974,
-        "quote_both": 654,
-        "quote_one": 372,
+        "paused": 2933,
+        "quote_both": 681,
+        "quote_one": 343,
         "takes": 0
       }
     },
     "3ffe3cfcd1669837ad343b49598d4cd3c7c1d722f5e7e9baf333d518bada11a0": {
-      "expression_sha256": "7860fdfe011570f495db83c1ca812b01305d4dbf90484aa995812eefc89f8c66",
+      "expression_sha256": "928c89f31f87a33e4eff48339db662ef8985e12c605e9edbea06dd494483e477",
       "n": 4000,
       "name": "h3-ident",
       "stats": {
-        "paused": 3391,
-        "quote_both": 402,
-        "quote_one": 207,
+        "paused": 3359,
+        "quote_both": 408,
+        "quote_one": 208,
         "takes": 0
       }
     },
     "4b760e60252d86b12681c1966de80dbaa5c1a04b913c40c462c9dcf3cbe559ad": {
-      "expression_sha256": "159b0eb807609c291ca2da5bae2c816d432c2fe2546ce046e789ce27122c039b",
+      "expression_sha256": "ae3181ac78a4f4501f425ffb14915755ccfa8c395c6653d43e1fb004e07bfb93",
       "n": 4000,
       "name": "h4-edge2-h3",
       "stats": {
-        "paused": 3391,
-        "quote_both": 402,
-        "quote_one": 207,
+        "paused": 3359,
+        "quote_both": 408,
+        "quote_one": 208,
         "takes": 0
       }
     },
     "4f8c4eb5852951d4308b712aee1b213f5d00ea083216732836a08ae3a3b37734": {
-      "expression_sha256": "e7eb71c63dfb6e6a62df09c04a4eeeb372a319215eb103f682fc7cb51492927a",
+      "expression_sha256": "dfc4620d7e9e363f6031d5bb096ee1291747d7f22c2d7b0779d39e41cbe1b67a",
       "n": 4000,
       "name": "h4-edge2-h2",
       "stats": {
-        "paused": 3391,
-        "quote_both": 402,
-        "quote_one": 207,
+        "paused": 3359,
+        "quote_both": 408,
+        "quote_one": 208,
         "takes": 0
       }
     },
     "5476cbacf9629621b9f5a8423be3ee0f1e2f30744f399de2f6c2b6e928aeb230": {
-      "expression_sha256": "f7d5e565252a50e60ee468fe33d634ebdeb6df5135b5b18643fb5825f02e3082",
+      "expression_sha256": "b0b49b22774fb5d99622140ada41cdc583578dfdfc7d934105310583a5ced531",
       "n": 4000,
       "name": "h1-maker-h2",
       "stats": {
-        "paused": 583,
-        "quote_both": 2222,
-        "quote_one": 1195,
+        "paused": 641,
+        "quote_both": 2154,
+        "quote_one": 1075,
         "takes": 0
       }
     },
     "71c8858724b4558f2c1cbd29204becb5238a16b444e0f76b7cefbbf77fb65044": {
-      "expression_sha256": "4159803e6ccf515b65b8ac42ca91646938de5372113066537698e6daa133339b",
+      "expression_sha256": "44dc958853cbb3c58ca6d70de426f03af11c908ba502cd8cfa859162ac58691e",
       "n": 4000,
       "name": "h2-maker-h2-flow300",
       "stats": {
-        "paused": 2974,
-        "quote_both": 654,
-        "quote_one": 372,
+        "paused": 2933,
+        "quote_both": 681,
+        "quote_one": 343,
         "takes": 0
       }
     },
     "791528470fda04482d60b8f25b6383867b6cdde3c37b29d458a9abc4501c2f83": {
-      "expression_sha256": "5ff95445384e4f863964061e5e7f4fb4bf786d9b23ed5808f1f21b7d671555fd",
+      "expression_sha256": "1e275aa02f6a7747e44a9be311eadf18d3d639dc7d271027d51241204974bc65",
       "n": 4000,
       "name": "h3-placebo",
       "stats": {
-        "paused": 2520,
-        "quote_both": 944,
-        "quote_one": 536,
+        "paused": 2456,
+        "quote_both": 1011,
+        "quote_one": 471,
         "takes": 0
       }
     },
     "7b0a851e6d7bac63cd19afaadf8f27d59e67381df269f706749e579be0ca6171": {
-      "expression_sha256": "0e9ab061143047c34591167f86c6962a2e015b05569cc70ac2e961b5ab96d188",
+      "expression_sha256": "f672f9c8753ef60f7286b459bc776d45d51ca05173f3fa5d42be3eb12a0d78db",
       "n": 4000,
       "name": "h4-edge2-h3-skip60to120",
       "stats": {
-        "paused": 3530,
-        "quote_both": 312,
-        "quote_one": 158,
+        "paused": 3491,
+        "quote_both": 319,
+        "quote_one": 168,
         "takes": 0
       }
     },
     "7d2be20eb56f531aec9a1eb1f98101ce72d0919ec616f15a5103cb9aa5c23cbf": {
-      "expression_sha256": "dad689a3da095f3812dfe24de2622b42bfccb5525d7f40a4d82a99c94670061d",
+      "expression_sha256": "0c82cdcdc5b7f0b7842f9c9a5d157225b7cc5c5adecb62c0211f8b8462f73bdb",
       "n": 4000,
       "name": "h2-maker-h3-flow100",
       "stats": {
-        "paused": 3391,
-        "quote_both": 402,
-        "quote_one": 207,
+        "paused": 3359,
+        "quote_both": 408,
+        "quote_one": 208,
         "takes": 0
       }
     },
     "92ae794efd21bb6b70666932009ef080bef270b3dd22a01b938dffd0e0fa04fd": {
-      "expression_sha256": "ea64e167023e4a5a8840ac6c130514cdfa7bfafb3c8ffbd4aa1fed37cdac732f",
+      "expression_sha256": "90bfa7894e2dc6d46758b36b92ba6766a6c12a7620bee130126f69bbec0924bc",
       "n": 4000,
       "name": "h2-maker-h1-flow100",
       "stats": {
-        "paused": 3391,
-        "quote_both": 402,
-        "quote_one": 207,
+        "paused": 3359,
+        "quote_both": 408,
+        "quote_one": 208,
         "takes": 0
       }
     },
     "a75c244842463b0efc15793172f86764cc07f62d3c7183fee4e6a1abefd56891": {
-      "expression_sha256": "7860fdfe011570f495db83c1ca812b01305d4dbf90484aa995812eefc89f8c66",
+      "expression_sha256": "928c89f31f87a33e4eff48339db662ef8985e12c605e9edbea06dd494483e477",
       "n": 4000,
       "name": "h2-maker-h2-flow100",
       "stats": {
-        "paused": 3391,
-        "quote_both": 402,
-        "quote_one": 207,
+        "paused": 3359,
+        "quote_both": 408,
+        "quote_one": 208,
         "takes": 0
       }
     },
     "b099fad46f3e8ee61c799cd51c787496f6062a68cf1e77fcbe1af2dd4dfb5f1c": {
-      "expression_sha256": "117db933a3513b9bcb2204ce2df833605e36b70f84b34caf2aec136f65c53f25",
+      "expression_sha256": "bac6bb6f88c433f697cb34483649c267e64427d627e78ba1264b3be2be6e593e",
       "n": 4000,
       "name": "h1-maker-h3",
       "stats": {
-        "paused": 583,
-        "quote_both": 2222,
-        "quote_one": 1195,
+        "paused": 641,
+        "quote_both": 2154,
+        "quote_one": 1075,
         "takes": 0
       }
     },
     "bc0c6811771f2b860df14e4182b8e0806482d00883c76a12ff7cc3e41bef8271": {
-      "expression_sha256": "ec6cd24b8d9a24b730b1a631c20e9d3ac82930cf7df8128a60f0a6ae1e07b8b7",
+      "expression_sha256": "b908b93d82bf6866cae354cdd4b9daae295160e02ec229ab4794db6d9e8ac7dc",
       "n": 4000,
       "name": "h1-maker-h3-guard30",
       "stats": {
-        "paused": 2180,
-        "quote_both": 1169,
-        "quote_one": 651,
+        "paused": 2128,
+        "quote_both": 1226,
+        "quote_one": 571,
         "takes": 0
       }
     },
     "c3bbcae71a37f3b84cb28bbc1eb31ff71152ba67d26f54387be3f4d7a37c8188": {
-      "expression_sha256": "30ad43dd147e36bf27b92ff77ac9adb3e466c17d9f06d0fc1ac6a8a3eb1f3c61",
+      "expression_sha256": "8daf057b412d524b07fae5df720ef34840536dc70831e99018cd0869cb406266",
       "n": 4000,
       "name": "h3-base",
       "stats": {
-        "paused": 2180,
-        "quote_both": 1169,
-        "quote_one": 651,
+        "paused": 2128,
+        "quote_both": 1226,
+        "quote_one": 571,
         "takes": 0
       }
     },
     "ccac263997c649f58a82ad41d19991212683fd722157f95b6091654edee26c4f": {
-      "expression_sha256": "c08717da629bde63e9c277cb607e45ee65efdebf9a395dd8d1617ff0be5187fa",
+      "expression_sha256": "61865072fc5347e95471261d97b6d9f8db2421b7d58820a221da17d3154523fc",
       "n": 4000,
       "name": "h3-anon",
       "stats": {
-        "paused": 2970,
-        "quote_both": 653,
-        "quote_one": 377,
+        "paused": 2944,
+        "quote_both": 684,
+        "quote_one": 327,
         "takes": 0
       }
     },
     "d4b3f9a54831eb9082811e97c9c1638f1c35b22d13e0fa4de7155c23af3c2cc7": {
-      "expression_sha256": "f08c7e597305a71a37bf123476ee8c6b135896c266155b63267047f3edd6e5ac",
+      "expression_sha256": "340798bab38f0ba79f810e60f7ee8e0a5ce02a7dab1b5cee575efa25857c5e13",
       "n": 4000,
       "name": "h1-maker-h1-guard30",
       "stats": {
-        "paused": 2180,
-        "quote_both": 1169,
-        "quote_one": 651,
+        "paused": 2128,
+        "quote_both": 1226,
+        "quote_one": 571,
         "takes": 0
       }
     }
@@ -339,10 +339,122 @@
       "probe_version": 2,
       "reason": "audit 2026-11-26: (A2-3) min_edge_vs_fair_c enforced after rounding to the tick, so quotes honour their declared minimum edge; (A2-2) probe v2 adds placebo_block_u",
       "semantics": "3439b010663a3be6160b27462918b76a321fc5d11d62da62656eb96d4d108e42"
+    },
+    {
+      "changed": [
+        {
+          "genome_id": "d4b3f9a54831eb9082811e97c9c1638f1c35b22d13e0fa4de7155c23af3c2cc7",
+          "new": "340798bab38f0ba79f810e60f7ee8e0a5ce02a7dab1b5cee575efa25857c5e13",
+          "old": "f08c7e597305a71a37bf123476ee8c6b135896c266155b63267047f3edd6e5ac"
+        },
+        {
+          "genome_id": "19ad0b7685b27fffe4263c6d31d4ef5c21a5eebbe95463e15585f562cda01e47",
+          "new": "24cc6d9f8b6a13de8d2285621774a6c40d9ed4735629b14d5774b2bf18e256ee",
+          "old": "10389d96b825b7cc795c9847505cf98f477c7881c588a6c45266f077a1bc6bde"
+        },
+        {
+          "genome_id": "013ea369906e9b859b573d550678bff454d13d88ec7cedd5cdc0fc3f65668ffc",
+          "new": "8daf057b412d524b07fae5df720ef34840536dc70831e99018cd0869cb406266",
+          "old": "30ad43dd147e36bf27b92ff77ac9adb3e466c17d9f06d0fc1ac6a8a3eb1f3c61"
+        },
+        {
+          "genome_id": "5476cbacf9629621b9f5a8423be3ee0f1e2f30744f399de2f6c2b6e928aeb230",
+          "new": "b0b49b22774fb5d99622140ada41cdc583578dfdfc7d934105310583a5ced531",
+          "old": "f7d5e565252a50e60ee468fe33d634ebdeb6df5135b5b18643fb5825f02e3082"
+        },
+        {
+          "genome_id": "bc0c6811771f2b860df14e4182b8e0806482d00883c76a12ff7cc3e41bef8271",
+          "new": "b908b93d82bf6866cae354cdd4b9daae295160e02ec229ab4794db6d9e8ac7dc",
+          "old": "ec6cd24b8d9a24b730b1a631c20e9d3ac82930cf7df8128a60f0a6ae1e07b8b7"
+        },
+        {
+          "genome_id": "b099fad46f3e8ee61c799cd51c787496f6062a68cf1e77fcbe1af2dd4dfb5f1c",
+          "new": "bac6bb6f88c433f697cb34483649c267e64427d627e78ba1264b3be2be6e593e",
+          "old": "117db933a3513b9bcb2204ce2df833605e36b70f84b34caf2aec136f65c53f25"
+        },
+        {
+          "genome_id": "92ae794efd21bb6b70666932009ef080bef270b3dd22a01b938dffd0e0fa04fd",
+          "new": "90bfa7894e2dc6d46758b36b92ba6766a6c12a7620bee130126f69bbec0924bc",
+          "old": "ea64e167023e4a5a8840ac6c130514cdfa7bfafb3c8ffbd4aa1fed37cdac732f"
+        },
+        {
+          "genome_id": "1778b9382553afce0d2e64d02cc2c58950d4be8b27c6629763bb2b18c3da971e",
+          "new": "0b186435eb821fc31585232ae2db894f91fcc5808ed3b4e740b5ea54549a9422",
+          "old": "e70b335129ffdb693ce13c639587310fd212755fcd6da91ecd78a4ff4a279515"
+        },
+        {
+          "genome_id": "a75c244842463b0efc15793172f86764cc07f62d3c7183fee4e6a1abefd56891",
+          "new": "928c89f31f87a33e4eff48339db662ef8985e12c605e9edbea06dd494483e477",
+          "old": "7860fdfe011570f495db83c1ca812b01305d4dbf90484aa995812eefc89f8c66"
+        },
+        {
+          "genome_id": "71c8858724b4558f2c1cbd29204becb5238a16b444e0f76b7cefbbf77fb65044",
+          "new": "44dc958853cbb3c58ca6d70de426f03af11c908ba502cd8cfa859162ac58691e",
+          "old": "4159803e6ccf515b65b8ac42ca91646938de5372113066537698e6daa133339b"
+        },
+        {
+          "genome_id": "7d2be20eb56f531aec9a1eb1f98101ce72d0919ec616f15a5103cb9aa5c23cbf",
+          "new": "0c82cdcdc5b7f0b7842f9c9a5d157225b7cc5c5adecb62c0211f8b8462f73bdb",
+          "old": "dad689a3da095f3812dfe24de2622b42bfccb5525d7f40a4d82a99c94670061d"
+        },
+        {
+          "genome_id": "2ef1045272e8ec043211e705ba994199b6c0892212647bf8e62e79122d775ff2",
+          "new": "9b320e70ea2330d8f50992e7588f622603e44aa060c8b86787b4f192b3364402",
+          "old": "08922bf0e37c12dcf23c1691b92064d8c824984dc11697d4649b421c2c6269ad"
+        },
+        {
+          "genome_id": "ccac263997c649f58a82ad41d19991212683fd722157f95b6091654edee26c4f",
+          "new": "61865072fc5347e95471261d97b6d9f8db2421b7d58820a221da17d3154523fc",
+          "old": "c08717da629bde63e9c277cb607e45ee65efdebf9a395dd8d1617ff0be5187fa"
+        },
+        {
+          "genome_id": "c3bbcae71a37f3b84cb28bbc1eb31ff71152ba67d26f54387be3f4d7a37c8188",
+          "new": "8daf057b412d524b07fae5df720ef34840536dc70831e99018cd0869cb406266",
+          "old": "30ad43dd147e36bf27b92ff77ac9adb3e466c17d9f06d0fc1ac6a8a3eb1f3c61"
+        },
+        {
+          "genome_id": "3ffe3cfcd1669837ad343b49598d4cd3c7c1d722f5e7e9baf333d518bada11a0",
+          "new": "928c89f31f87a33e4eff48339db662ef8985e12c605e9edbea06dd494483e477",
+          "old": "7860fdfe011570f495db83c1ca812b01305d4dbf90484aa995812eefc89f8c66"
+        },
+        {
+          "genome_id": "791528470fda04482d60b8f25b6383867b6cdde3c37b29d458a9abc4501c2f83",
+          "new": "1e275aa02f6a7747e44a9be311eadf18d3d639dc7d271027d51241204974bc65",
+          "old": "5ff95445384e4f863964061e5e7f4fb4bf786d9b23ed5808f1f21b7d671555fd"
+        },
+        {
+          "genome_id": "0f6ca81ce041c4b54ff758f2db83d2457c0b4d6a2a3d45af82d06a19ae2d717a",
+          "new": "59db18f2fa3bf4e0f56d626583f33626aebd0fb7b31846d73414c8affffe2cd9",
+          "old": "ddf9a589c8e4c2282e44c27242ddd037e740f1997f87ad03ea3c4312051934b0"
+        },
+        {
+          "genome_id": "4f8c4eb5852951d4308b712aee1b213f5d00ea083216732836a08ae3a3b37734",
+          "new": "dfc4620d7e9e363f6031d5bb096ee1291747d7f22c2d7b0779d39e41cbe1b67a",
+          "old": "e7eb71c63dfb6e6a62df09c04a4eeeb372a319215eb103f682fc7cb51492927a"
+        },
+        {
+          "genome_id": "7b0a851e6d7bac63cd19afaadf8f27d59e67381df269f706749e579be0ca6171",
+          "new": "f672f9c8753ef60f7286b459bc776d45d51ca05173f3fa5d42be3eb12a0d78db",
+          "old": "0e9ab061143047c34591167f86c6962a2e015b05569cc70ac2e961b5ab96d188"
+        },
+        {
+          "genome_id": "4b760e60252d86b12681c1966de80dbaa5c1a04b913c40c462c9dcf3cbe559ad",
+          "new": "ae3181ac78a4f4501f425ffb14915755ccfa8c395c6653d43e1fb004e07bfb93",
+          "old": "159b0eb807609c291ca2da5bae2c816d432c2fe2546ce046e789ce27122c039b"
+        },
+        {
+          "genome_id": "0bb14d76313d905c32c4d8751a1eb50d23e411bce3e7bdda73c882e284f5c058",
+          "new": "a22ffffc6f13090d99bef08610fec7d25f696e524c1029819c6dabaa13be151d",
+          "old": "91956257beb6dc129f0f22d83627a0e7fef5aec3fefec2a31350a481837d49b8"
+        }
+      ],
+      "probe_version": 3,
+      "reason": "audit 2026-11-26 A3-8: probe v3 adds missing (NaN) feature values; maker with no fair value does not quote",
+      "semantics": "49083cf45e1423c5ecbc588769d7fc6b155270ea02588ffa8a73e5b2904bba85"
     }
   ],
   "semantics": {
-    "digest": "3439b010663a3be6160b27462918b76a321fc5d11d62da62656eb96d4d108e42",
-    "probe_version": 2
+    "digest": "49083cf45e1423c5ecbc588769d7fc6b155270ea02588ffa8a73e5b2904bba85",
+    "probe_version": 3
   }
 }

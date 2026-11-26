@@ -22,7 +22,7 @@ def test_sealed_genomes_keep_ids_and_expression():
 def test_probe_set_covers_every_feature_and_is_deterministic():
     xs = dna.probes(200)
     assert set(FEATURES) <= set(xs[0])
-    assert xs == dna.probes(200)
+    assert repr(xs) == repr(dna.probes(200))   # repr: NaN != NaN under ==
 
 
 def test_expression_hash_sees_behaviour_not_names():
