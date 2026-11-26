@@ -1,0 +1,45 @@
+{
+  "cohort_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+  "built_tw": 1795699200000000000,
+  "wallets": {
+    "0xaaa": {
+      "role": "cand",
+      "eligible": true,
+      "label": "DIRECTIONAL_MAKER",
+      "window_economic_per_day": 900.5
+    },
+    "0xbbb": {
+      "role": "cand",
+      "eligible": true,
+      "label": "COMPLETE_SET_MAKER",
+      "window_economic_per_day": 1200.0
+    },
+    "0xccc": {
+      "role": "ctrl",
+      "eligible": false,
+      "label": null
+    }
+  },
+  "by_label": {
+    "cand:COMPLETE_SET_MAKER": {
+      "wallets": 1,
+      "per_day": 1200.0,
+      "positive": 1
+    },
+    "cand:DIRECTIONAL_MAKER": {
+      "wallets": 1,
+      "per_day": 900.5,
+      "positive": 1
+    },
+    "ctrl:LATE_TAKER": {
+      "wallets": 3,
+      "per_day": -410.25,
+      "positive": 0
+    }
+  },
+  "selfcheck": {
+    "window_specialists": 2,
+    "ok": 2,
+    "rate": 1.0
+  }
+}

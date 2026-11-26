@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DOPPEL desk</title>
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --ink: #1d1f21; --ink2: #5b6066; --line: #e3e3df; --head: #f0f0ec;
+  --good: #1f7a46; --good-bg: #e3f2e8; --warn: #8a5a00; --warn-bg: #fbf0d9; --bad: #a3262a; --bad-bg: #f8e1e1;
+  --muted-bg: #ececea; --accent: #2b5fa8;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #121416; --panel: #1a1d20; --ink: #e4e6e8; --ink2: #9aa1a8; --line: #2c3035; --head: #202428;
+    --good: #6fcf97; --good-bg: #183324; --warn: #e5b85c; --warn-bg: #3a2e12; --bad: #f08a8d; --bad-bg: #3c1a1c;
+    --muted-bg: #2a2e33; --accent: #7aa7e8;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #121416; --panel: #1a1d20; --ink: #e4e6e8; --ink2: #9aa1a8; --line: #2c3035; --head: #202428;
+  --good: #6fcf97; --good-bg: #183324; --warn: #e5b85c; --warn-bg: #3a2e12; --bad: #f08a8d; --bad-bg: #3c1a1c;
+  --muted-bg: #2a2e33; --accent: #7aa7e8;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.45 var(--sans); }
+header { position: sticky; top: 0; z-index: 2; background: var(--panel); border-bottom: 1px solid var(--line);
+  padding: 8px 16px; display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: baseline; }
+header h1 { font-size: 15px; margin: 0; letter-spacing: .04em; }
+header .status { color: var(--ink2); }
+header nav a { color: var(--accent); text-decoration: none; margin-right: 12px; }
+main { max-width: 1500px; margin: 0 auto; padding: 8px 16px 48px; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin: 14px 0; }
+h2 { font-size: 14px; margin: 0 0 10px; }
+h2 .n { display: inline-block; width: 20px; height: 20px; line-height: 20px; text-align: center; border-radius: 50%;
+  background: var(--muted-bg); margin-right: 8px; font-size: 12px; }
+h3 { font-size: 13px; margin: 16px 0 6px; }
+h3.fam { border-top: 1px solid var(--line); padding-top: 12px; }
+h4 { font-size: 12px; margin: 12px 0 4px; color: var(--ink2); }
+.sub { color: var(--ink2); font-weight: normal; font-size: 11px; }
+.mono, .src .f { font-family: var(--mono); font-size: 11.5px; }
+.hyp { color: var(--ink2); margin: 0 0 6px; max-width: 110ch; }
+.meta { margin: 4px 0 8px; color: var(--ink2); }
+.note { color: var(--ink2); font-size: 11.5px; max-width: 120ch; }
+.notyet { color: var(--ink2); font-style: italic; margin: 4px 0; }
+.muted { color: var(--ink2); }
+.src { color: var(--ink2); font-size: 11px; margin-top: 3px; }
+.ci { color: var(--ink2); font-size: 11px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; margin-bottom: 10px; }
+.card { border: 1px solid var(--line); border-radius: 5px; padding: 8px 10px; }
+.card h3 { margin: 0 0 6px; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0; }
+dt { color: var(--ink2); }
+dd { margin: 0; font-variant-numeric: tabular-nums; }
+dl.kv { max-width: 900px; margin-bottom: 8px; }
+.tw { overflow-x: auto; max-width: 100%; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { padding: 3px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+th { background: var(--head); font-weight: 600; font-size: 11.5px; white-space: nowrap; position: sticky; top: 0; }
+th.grp { text-align: center; border-left: 1px solid var(--line); }
+table.num td { white-space: nowrap; }
+table.find td:nth-child(2) { white-space: normal; }
+table.reg td { white-space: normal; }
+.nw { white-space: nowrap; }
+table.reg td .src { min-width: 200px; max-width: 320px; overflow-wrap: anywhere; }
+tbody tr:hover { background: var(--head); }
+.pill { display: inline-block; padding: 0 6px; border-radius: 9px; font-size: 11px; line-height: 17px; background: var(--muted-bg); }
+.pill.good { background: var(--good-bg); color: var(--good); }
+.pill.warn { background: var(--warn-bg); color: var(--warn); }
+.pill.bad { background: var(--bad-bg); color: var(--bad); }
+.bad { color: var(--bad); }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 10px; }
+ul.probs { margin: 4px 0; padding-left: 18px; color: var(--bad); }
+form.calc { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: end; margin-bottom: 10px; }
+form.calc label { display: flex; flex-direction: column; gap: 2px; color: var(--ink2); font-size: 11.5px; }
+form.calc input, form.calc select { font: 13px var(--mono); padding: 4px 6px; border: 1px solid var(--line);
+  border-radius: 4px; background: var(--bg); color: var(--ink); min-width: 140px; max-width: 100%; }
+.calc-out { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
+.calc-out div { border: 1px solid var(--line); border-radius: 5px; padding: 6px 10px; }
+.calc-out .k { display: block; color: var(--ink2); font-size: 11px; }
+.calc-out .v { font: 16px var(--mono); }
+.calc-out .v.big { font-size: 20px; }
+@media (max-width: 640px) { .two { grid-template-columns: 1fr; } header { position: static; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>DOPPEL desk</h1>
+  <span class="status"><!--DESK:STATUS--></span>
+  <nav><a href="#recorder">recorder</a><a href="#strategies">strategies</a><a href="#h3">H3</a><a href="#evidence">evidence</a><a href="#calculator">break-even</a></nav>
+</header>
+<main>
+<!--DESK:BODY-->
+</main>
+<script type="application/json" id="desk-data">/*DESK:DATA*/</script>
+<script id="desk-calc">
+"use strict";
+/* A6 arithmetic, mirrors doppel.desk.build.breakeven (and twin.verdict.commercial). */
+function breakeven(netC, perDay, opMonth) {
+  var op = opMonth / 30, edge = netC / 100 * perDay;
+  function r(x, d) { var m = Math.pow(10, d); return Math.round(x * m) / m; }
+  return { op_usd_per_day: r(op, 2), edge_usd_per_day: r(edge, 2), net_usd_per_day: r(edge - op, 2),
+           breakeven_contracts_per_day: netC > 0 ? r(op / (netC / 100), 1) : null };
+}
+function fmtDur(s) {
+  var a = Math.abs(s), o;
+  if (a < 120) o = a.toFixed(a >= 10 ? 0 : 1) + " s";
+  else if (a < 7200) o = Math.round(a / 60) + " min";
+  else if (a < 172800) o = Math.floor(a / 3600) + " h " + String(Math.floor(a % 3600 / 60)).padStart(2, "0") + " m";
+  else o = Math.floor(a / 86400) + " d " + Math.floor(a % 86400 / 3600) + " h";
+  return (s < 0 ? "-" : "") + o;
+}
+if (typeof document !== "undefined") {
+  var $ = function (id) { return document.getElementById(id); };
+  var fmt = function (x, d, sign) {
+    if (x === null || !isFinite(x)) return "–";
+    var s = x.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+    return sign && x >= 0 ? "+" + s : s;
+  };
+  var recalc = function () {
+    var r = breakeven(parseFloat($("calc-net").value) || 0, parseFloat($("calc-vol").value) || 0,
+                      parseFloat($("calc-op").value) || 0);
+    $("calc-edge").textContent = fmt(r.edge_usd_per_day, 2, true);
+    $("calc-opd").textContent = fmt(r.op_usd_per_day, 2, false);
+    $("calc-net-day").textContent = fmt(r.net_usd_per_day, 2, true);
+    $("calc-be").textContent = r.breakeven_contracts_per_day === null ? "never (net ≤ 0)" : fmt(r.breakeven_contracts_per_day, 0, false);
+  };
+  ["calc-net", "calc-vol", "calc-op"].forEach(function (id) { var e = $(id); if (e) e.addEventListener("input", recalc); });
+  var ps = $("calc-preset");
+  if (ps) ps.addEventListener("change", function () {
+    var o = ps.options[ps.selectedIndex];
+    if (!o.value) { $("calc-src").textContent = ""; return; }
+    /* a preset sets only the fields it has (E24 sets net c/contract only) */
+    if (o.dataset.net) $("calc-net").value = o.dataset.net;
+    if (o.dataset.vol) $("calc-vol").value = o.dataset.vol;
+    if (o.dataset.op) $("calc-op").value = o.dataset.op;
+    $("calc-src").textContent = "preset from " + o.dataset.src + (o.dataset.note ? " (" + o.dataset.note + ")" : "");
+    recalc();
+  });
+  /* Countdowns are as of the build (phase is computed then too); the tooltip gives the live value. */
+  document.querySelectorAll(".cd[data-t]").forEach(function (e) {
+    var t = parseFloat(e.dataset.t);
+    if (isFinite(t)) e.title = "now: " + fmtDur(Math.max(0, t - Date.now() / 1000));
+  });
+  /* Served over http: if a newer desk.json sits alongside this page, say so (file:// cannot fetch). */
+  try {
+    var built = JSON.parse($("desk-data").textContent).built;
+    if (location.protocol.indexOf("http") === 0 && window.fetch) {
+      fetch("desk.json", { cache: "no-store" }).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+        if (d && d.built && d.built !== built) {
+          document.querySelector("header .status").textContent += " · newer desk.json " + d.built + " alongside: rebuild the page";
+        }
+      }).catch(function () {});
+    }
+  } catch (e) {}
+}
+</script>
+</body>
+</html>

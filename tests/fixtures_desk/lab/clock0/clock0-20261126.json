@@ -1,0 +1,49 @@
+{
+  "meta": {
+    "as_of": 1795643200,
+    "until": 1795662000,
+    "scores_s": 12.5,
+    "wallets_scored": 41000,
+    "counts": {
+      "units": 85770
+    }
+  },
+  "eval": {
+    "n": 85770,
+    "n_train": 51462,
+    "n_test": 34308,
+    "base_rate_informed_abs": 0.0,
+    "label": "top-decile excess (train threshold)",
+    "excess_threshold_c": 0.95,
+    "base_rate_label": 0.081,
+    "known_wallet_share": 0.97,
+    "auc_model": 0.708,
+    "auc_size_only": 0.478,
+    "corr_weight_model": 0.24,
+    "by_predicted_quintile": [
+      {
+        "quintile": 1,
+        "n": 6800,
+        "informed_rate": 0.03,
+        "taker_markout_c_usd_wtd": -1.2
+      },
+      {
+        "quintile": 5,
+        "n": 6800,
+        "informed_rate": 0.19,
+        "taker_markout_c_usd_wtd": 2.4
+      }
+    ],
+    "importance_auc_drop": {
+      "log_usd": 0.08,
+      "tte_s": 0.03,
+      "dist50": 0.02
+    },
+    "status": "ok"
+  },
+  "features": [
+    "log_usd",
+    "tte_s"
+  ],
+  "built_tw": 1795663000000000000
+}

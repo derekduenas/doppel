@@ -1,0 +1,38 @@
+{
+  "tw": 1796104797000000000,
+  "pid": 5151,
+  "uptime_s": 43000,
+  "sources": {
+    "kalshi_ws": {
+      "backpressure_drops": 12,
+      "connected": true,
+      "errors": 0,
+      "last_error": null,
+      "last_msg_age_s": 0.2,
+      "msgs": 7000,
+      "reconnects": 1,
+      "stalls": 0,
+      "write_errors": 1
+    },
+    "pmus_ws_5m": {
+      "backpressure_drops": 0,
+      "connected": true,
+      "errors": 0,
+      "last_error": null,
+      "last_msg_age_s": 0.9,
+      "msgs": 50300,
+      "reconnects": 0,
+      "stalls": 0
+    },
+    "rtds_a": {
+      "backpressure_drops": 0,
+      "connected": true,
+      "errors": 0,
+      "last_error": null,
+      "last_msg_age_s": 0.3,
+      "msgs": 120400,
+      "reconnects": 1,
+      "stalls": 0
+    }
+  }
+}

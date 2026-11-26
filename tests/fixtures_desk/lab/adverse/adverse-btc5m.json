@@ -1,0 +1,85 @@
+{
+  "hz": "5m",
+  "built_tw": 1795662000000000000,
+  "total": {
+    "n": 87195,
+    "contracts": 3190000.0,
+    "maker_pnl_c": 0.56,
+    "model_edge_c": 1.06,
+    "adverse_c": -0.5
+  },
+  "skipped": {
+    "unsettled": 120,
+    "no_fair": 4
+  },
+  "by_tte": {
+    "0-30s": {
+      "n": 9000,
+      "contracts": 300000.0,
+      "maker_pnl_c": 1.1,
+      "model_edge_c": 1.2,
+      "adverse_c": -0.1
+    },
+    "30-60s": null,
+    "60-120s": {
+      "n": 12000,
+      "contracts": 410000.0,
+      "maker_pnl_c": -0.9,
+      "model_edge_c": 0.9,
+      "adverse_c": -1.8
+    },
+    "120-240s": {
+      "n": 30000,
+      "contracts": 1100000.0,
+      "maker_pnl_c": 0.7,
+      "model_edge_c": 1.0,
+      "adverse_c": -0.3
+    },
+    "240-900s": {
+      "n": 36195,
+      "contracts": 1380000.0,
+      "maker_pnl_c": 0.6,
+      "model_edge_c": 1.1,
+      "adverse_c": -0.5
+    }
+  },
+  "by_model_edge": {
+    "-100..-5c": {
+      "n": 3000,
+      "contracts": 100000.0,
+      "maker_pnl_c": -10.5,
+      "model_edge_c": -8.0,
+      "adverse_c": -2.5
+    },
+    "-5..-2c": null,
+    "-2..0c": {
+      "n": 20000,
+      "contracts": 700000.0,
+      "maker_pnl_c": -4.0,
+      "model_edge_c": -1.0,
+      "adverse_c": -3.0
+    },
+    "0..2c": {
+      "n": 30000,
+      "contracts": 1000000.0,
+      "maker_pnl_c": 0.4,
+      "model_edge_c": 1.0,
+      "adverse_c": -0.6
+    },
+    "2..5c": {
+      "n": 20000,
+      "contracts": 900000.0,
+      "maker_pnl_c": 4.6,
+      "model_edge_c": 3.2,
+      "adverse_c": 1.4
+    },
+    "5..100c": {
+      "n": 14195,
+      "contracts": 490000.0,
+      "maker_pnl_c": 9.2,
+      "model_edge_c": 7.5,
+      "adverse_c": 1.7
+    }
+  },
+  "grid": {}
+}
