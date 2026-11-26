@@ -51,9 +51,17 @@ DEFINITIONS (per order and queue mode; shares)
   0.02 (the twin filled beyond the real quantity). A twin fill AFTER the real order was gone
   cannot happen for ``filled`` / ``cancelled`` orders (the quote is cancelled then), so for them
   phantom = over-fill while the real order was live.
-- Headline set: outcome ``filled`` or ``cancelled``. ``unknown`` orders are reported apart: their
-  chain fills are a lower bound and the quote may outlive the order, so their excess is only a
-  POSSIBLE phantom. Orders with ``fill_before_placement`` (a proven wrong match) are not replayed.
+- Headline set: outcome ``filled`` or ``cancelled`` and not cut short by a book reset.
+  ``unknown`` orders are reported apart: their chain fills are a lower bound and the quote may
+  outlive the order, so their excess is only a POSSIBLE phantom. Orders with
+  ``fill_before_placement`` (a proven wrong match) are not replayed.
+- Ceiling: a ``filled`` order has real = size, so twin / real <= 1 there in BOTH modes; over-fill
+  can only show on ``cancelled`` orders. Read the ratio per outcome, not only pooled.
+- Bracket: under FIFO with truthful prints, pessimistic <= real <= optimistic. A pessimistic
+  over-fill or an optimistic under-fill (``bracket_violations``) is therefore a data, adapter or
+  match problem, not model bias. ``adapter_gate.delivered_share`` says how many of the real fills'
+  own prints reached the quote while it was live (a quote is cancelled at the first record
+  stamped after ``end_ms``, so a late-ordered last print can miss it).
 - ratio = sum(twin) / sum(real); CI = bootstrap over markets (the market of the placement event
   = one window), ratio of sums.
 - Twin fill source: ``trade`` or ``book_cross``. A real resting order keeps the opposite side
@@ -148,6 +156,7 @@ class Spec:
     cut: str | None = None  # why the replay stopped before the quote's end, if it did
     tx_seen: set[str] = field(default_factory=set)
     tx_routed: set[str] = field(default_factory=set)
+    tx_delivered: set[str] = field(default_factory=set)  # routed AND handed to the live quote
 
     @property
     def key(self) -> tuple:
@@ -281,6 +290,8 @@ def replay_stream(root: Path, stream: str, t_from: int, t_to: int, pending: dict
                     if price == s.price:
                         stats["prints_at_quote_price:" + ("hit_side" if ag == HIT_BY[SIDE[s.side]]
                                                          else "other_side")] += 1
+                    if e.tx in s.tx_routed and price == s.price:
+                        s.tx_delivered.add(e.tx)
                     for sim in s.sims.values():
                         sim._on_trade(clock, tr)
     for specs in active.values():
@@ -299,7 +310,8 @@ def result(s: Spec) -> dict:
                  "queue_ahead": s.queue0, "real_filled": round(s.real, 6),
                  "real_first_fill_ms": min(located, default=None),
                  "fills": len(s.fills_at), "fills_located": len(located),
-                 "fills_seen": len(s.tx_seen), "fills_routed": len(s.tx_routed)}
+                 "fills_seen": len(s.tx_seen), "fills_routed": len(s.tx_routed),
+                 "fills_delivered": len(s.tx_delivered)}
     for m, sim in s.sims.items():
         tw = sum(q for _, q, _ in sim.got)
         src: dict[str, float] = defaultdict(float)
@@ -338,7 +350,8 @@ def agg(rows: list[dict], mode: str, ci: bool = False) -> dict:
     d = {"n": len(rows), "markets": len({r["market"] for r in rows}), "real_shares": _r(real),
          "twin_shares": _r(tw), "ratio": _r(tw / real, 4) if real > 0 else None,
          "error_mean": _r(np.mean(err)) if err else None, "error_shares": _q(err),
-         "exact": sum(abs(e) <= TOL for e in err), "missed": sum(r[mode]["missed"] for r in rows),
+         "exact": sum(abs(e) <= TOL for e in err), "underfilled": sum(e < -TOL for e in err),
+         "missed": sum(r[mode]["missed"] for r in rows),
          "phantom": sum(r[mode]["phantom_shares"] > 0 for r in rows),
          "phantom_shares": _r(sum(r[mode]["phantom_shares"] for r in rows))}
     if ci:
@@ -372,27 +385,41 @@ def groups(rows: list[dict], mode: str) -> dict:
 
 def summarize(rows: list[dict], stats: Counter) -> dict:
     orders = [r for r in rows if r["kind"] == "order"]
-    head = [r for r in orders if r["end_known"]]
+    head = [r for r in orders if r["end_known"] and not r["cut"]]
     unk = [r for r in orders if not r["end_known"]]
     quotes = [r for r in rows if r["kind"] == "quote"]
     located = sum(r["fills_located"] for r in orders)
     seen = sum(r["fills_seen"] for r in orders)
     routed = sum(r["fills_routed"] for r in orders)
+    deliv = sum(r["fills_delivered"] for r in orders)
+    cond = {m: agg(head, m, ci=True) | {
+        "first_fill_twin_minus_real_ms": _q([r[m]["first_fill_ms"] - r["real_first_fill_ms"] for r in head
+                                             if r[m]["first_fill_ms"] is not None
+                                             and r["real_first_fill_ms"] is not None])} for m in MODES}
     doc: dict = {
         "limit": LIMIT, "counts": dict(stats) | {
             "orders_replayed": len(orders), "headline_orders": len(head),
+            "known_end_cut_by_reset": sum(bool(r["end_known"] and r["cut"]) for r in orders),
             "cut_short": dict(Counter(r["cut"] for r in rows if r["cut"])),
             "twin_book_cross_fills": sum(v == "book_cross" for r in rows for _, _, v in r["pessimistic"]["fills"])},
         "adapter_gate": {"fills": sum(r["fills"] for r in orders), "located_by_print": located,
                          "print_seen_in_replay": seen, "routed_to_order_price_and_side": routed,
                          "routed_share": _r(routed / seen, 4) if seen else None,
-                         "note": "low routed_share = the print side/mirror mapping is wrong; the "
-                                 "bias numbers then measure the adapter, not the fill model"},
-        "conditional_on_real_fill": {m: agg(head, m, ci=True) | {
-            "first_fill_twin_minus_real_ms": _q([r[m]["first_fill_ms"] - r["real_first_fill_ms"] for r in head
-                                                 if r[m]["first_fill_ms"] is not None
-                                                 and r["real_first_fill_ms"] is not None])} for m in MODES},
+                         "delivered_to_live_quote": deliv,
+                         "delivered_share": _r(deliv / routed, 4) if routed else None,
+                         "note": "low routed_share = the print side/mirror mapping is wrong; low "
+                                 "delivered_share = the quote was not live when its own fill's print "
+                                 "came (lifetime / tape order). Either way the bias numbers then "
+                                 "measure the adapter, not the fill model"},
+        "conditional_on_real_fill": cond,
+        "bracket_violations": {
+            "pessimistic_overfilled": cond["pessimistic"]["phantom"],
+            "optimistic_underfilled": cond["optimistic"]["underfilled"],
+            "note": "FIFO with truthful prints gives pessimistic <= real <= optimistic; a violation "
+                    "is a data / adapter / match problem (double print, print size not the fill, "
+                    "wrong match, undelivered fill), not fill-model bias"},
         "pessimistic_breakdown": groups(head, "pessimistic"),
+        "optimistic_by_outcome": groups(head, "optimistic")["by_outcome"],
         "end_unknown_orders": {m: agg(unk, m) for m in MODES} | {
             "note": "real fills are a lower bound and the quote may outlive the order: excess is "
                     "a POSSIBLE phantom, not in the headline"},
@@ -435,15 +462,18 @@ def card(doc: dict) -> str:
     L = [f"LIMIT: {doc['limit']}", f"counts: {doc['counts']}",
          f"adapter gate: {g['routed_to_order_price_and_side']}/{g['print_seen_in_replay']} real fill "
          f"prints routed to the order's price and side (share {g['routed_share']}); "
-         f"{g['located_by_print']}/{g['fills']} fills located by a print"]
+         f"{g['delivered_to_live_quote']} delivered to the live quote (share {g['delivered_share']}); "
+         f"{g['located_by_print']}/{g['fills']} fills located by a print",
+         f"bracket violations (should be 0): {doc['bracket_violations']['pessimistic_overfilled']} "
+         f"pessimistic over-fills, {doc['bracket_violations']['optimistic_underfilled']} optimistic under-fills"]
     for m in MODES:
         d = doc["conditional_on_real_fill"][m]
         L += [f"\n== {m} queue, orders with a known end (n {d['n']}, {d['markets']} markets)",
               f"twin {d['twin_shares']} vs real {d['real_shares']} shares: ratio {d['ratio']} "
               f"CI95 {d.get('ratio_ci95')} | mean error {d['error_mean']} sh/order {d['error_shares']}",
-              f"exact {d['exact']}, fully missed {d['missed']}, phantom {d['phantom']} orders "
+              f"exact {d['exact']}, under-filled {d['underfilled']}, fully missed {d['missed']}, phantom {d['phantom']} orders "
               f"({d['phantom_shares']} shares) | first fill twin - real ms {d['first_fill_twin_minus_real_ms']}"]
-    for name, by in doc["pessimistic_breakdown"].items():
+    for name, by in (doc["pessimistic_breakdown"] | {"optimistic by_outcome": doc["optimistic_by_outcome"]}).items():
         L.append(f"{name}: " + "; ".join(
             f"{k} n={v['n']} ratio={v['ratio']} missed={v['missed']} phantom={v['phantom']}"
             for k, v in by.items()))

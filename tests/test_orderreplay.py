@@ -158,6 +158,7 @@ def test_mate_print_is_mirrored_and_its_duplicate_dropped(replayed):
     g = doc["adapter_gate"]
     assert (g["fills"], g["located_by_print"], g["print_seen_in_replay"],
             g["routed_to_order_price_and_side"], g["routed_share"]) == (4, 3, 3, 3, 1.0)
+    assert (g["delivered_to_live_quote"], g["delivered_share"]) == (3, 1.0)
 
 
 def test_book_cross_fill_and_unknown_end_kept_out_of_the_headline(replayed):
@@ -180,7 +181,11 @@ def test_aggregate_and_phantom_accounting(replayed):
     p, q = doc["conditional_on_real_fill"]["pessimistic"], doc["conditional_on_real_fill"]["optimistic"]
     # real 40 + 5 + 20; pessimistic 0 + 5 + 20; optimistic 50 + 5 + 30
     assert (p["real_shares"], p["twin_shares"], p["ratio"]) == (65.0, 25.0, 0.3846)
-    assert (p["exact"], p["missed"], p["phantom"], p["ratio_ci95"]) == (2, 1, 0, None)  # one market
+    assert (p["exact"], p["underfilled"], p["missed"], p["phantom"], p["ratio_ci95"]) == (
+        2, 1, 1, 0, None)  # one market: no CI
+    assert doc["bracket_violations"]["pessimistic_overfilled"] == 0
+    assert doc["bracket_violations"]["optimistic_underfilled"] == 0 and c["known_end_cut_by_reset"] == 0
+    assert doc["optimistic_by_outcome"]["cancelled:exact_decrease"]["ratio"] == 1.3077
     assert (q["twin_shares"], q["ratio"], q["missed"], q["phantom"], q["phantom_shares"]) == (
         85.0, 1.3077, 0, 2, 20.0)
     assert q["first_fill_twin_minus_real_ms"] == {"p10": 0.0, "p50": 0.0, "p90": 0.0, "n": 3}
@@ -206,6 +211,32 @@ def test_bootstrap_resamples_markets():
     lo, hi = boot_ci(rows, "pessimistic")
     assert 0.5 <= lo < 0.625 < hi <= 1.0
     assert boot_ci(rows[:2], "pessimistic") is None  # one market: no CI
+
+
+def test_reset_cut_and_undelivered_fill_are_flagged_not_scored(tmp_path):
+    frames = [
+        book(0, "A", bids=[(0.5, 100)], asks=[(0.6, 50)]),
+        pc(1000, "A", 0.5, 150, "BUY"),             # r1: 50 behind 100, then the connection drops
+        pc(2000, "A", 0.4, 50, "BUY"),              # r2: alone at 0.40, filled 50 by tx u2 at 2500 ...
+        pc(2600, "A", 0.01, 1, "BUY"),              # ... but a later-stamped frame precedes that print
+        trade(2500, "A", 0.4, 50, "SELL", "u2"),
+    ]
+    w = SegmentWriter(tmp_path / "tape", "clob_btc_5m")
+    for ms, m in frames:
+        w.append(orjson.dumps([m]).decode(), tw=(MS + ms) * 1_000_000)
+    w.append("", tw=(MS + 3000) * 1_000_000, meta={"ctl": "disconnect"})
+    w.close()
+    write_dir(tmp_path / "om", [
+        orow("r1", "BUY", 0.5, 50.0, 1000, 5000, "cancelled:exact_decrease", 10.0, [("u1", 4000, 10.0)]),
+        orow("r2", "BUY", 0.4, 50.0, 2000, 2500, "filled:chain", 50.0, [("u2", 2500, 50.0)])])
+    doc, rows = run(tmp_path / "tape", tmp_path / "om", T0, T0 + 3600)
+    by = {r["id"]: r for r in rows}
+    assert by["r1"]["cut"] == "reset" and doc["counts"]["known_end_cut_by_reset"] == 1
+    assert doc["conditional_on_real_fill"]["optimistic"]["n"] == 1  # r1 is out of the headline
+    # r2's own print was routed but the quote had already been cancelled: optimistic under-fill
+    assert (by["r2"]["fills_routed"], by["r2"]["fills_delivered"], by["r2"]["optimistic"]["filled"]) == (1, 0, 0.0)
+    assert doc["adapter_gate"]["delivered_share"] == 0.0
+    assert doc["bracket_violations"]["optimistic_underfilled"] == 1
 
 
 def test_old_ordermatch_rows_are_refused(tmp_path):
