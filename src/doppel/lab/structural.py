@@ -21,8 +21,9 @@ gap-free).
 2. Discovery. Public listing endpoints (bounded pages, cached JSON, injectable ``fetch``).
 3. Scanner over recorded books. PM US books come from the WS streams ONLY (REST is CDN-stale, E22).
    Kalshi books come from the ``kalshi_books`` REST poll, whose freshness is unverified, so every
-   combination with a Kalshi leg carries ``kalshi_rest``; ``kalshi_ws`` is the slot for a future WS
-   recorder. Each side of a book is parsed independently (ladder wings are one-sided) and the latest
+   combination with a Kalshi leg carries ``kalshi_rest``; ``--kalshi-stream kalshi_ws`` reads the
+   Rust WS recorder instead (``kalshi_ws.py``: one row per top-of-book change; note that the age
+   rule below then treats an unchanged WS book as stale). Each side of a book is parsed independently (ladder wings are one-sided) and the latest
    snapshot wins, so a pulled side is not resurrected by an older quote. Rules follow ``xvenue``:
    every leg's book at most ``max_age`` (1 s) old at the evaluation second, leg skew (max - min book
    time) at most ``max_skew`` (0.5 s), persistence at least ``persist`` (2) consecutive seconds,
@@ -492,8 +493,16 @@ def load_books(root: Path, keys: dict[str, set[str]], t0: float, t1: float,
     if kalshi_stream not in KALSHI_STREAMS:
         raise ValueError(f"unknown kalshi stream {kalshi_stream}")
     if kalshi_stream == "kalshi_ws":
-        raise NotImplementedError("kalshi_ws is recorded by the Rust recorder (tape-rust); the Python parser is not written yet")
-    for f in _segments(root, kalshi_stream, lo, hi):
+        # WS state: one row per top-of-book change; an invalid book (gap) is an empty row, so
+        # Book.leg never resurrects a quote from before the gap. Snapshots come at subscribe
+        # time, so the replay starts kalshi_ws.LOOKBACK_S before lo.
+        from .kalshi_ws import replay
+        evs, _ = replay(root, lo, hi, want=lambda t: t in want_k)
+        for kind, k, tw, top in evs:
+            if kind == "book":
+                bid, bq, ask, aq = top if top is not None else (None, 0.0, None, 0.0)
+                books.setdefault(("kalshi", k), Book(fresh=True)).add(tw / 1e9, bid, bq, ask, aq)
+    for f in (_segments(root, kalshi_stream, lo, hi) if kalshi_stream == "kalshi_books" else []):
         for rec in read_segment(f, verify=True):
             m = rec.get("meta") or {}
             k = m.get("key", "")

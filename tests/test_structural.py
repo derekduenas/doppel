@@ -357,8 +357,7 @@ def test_load_books_from_tape(tmp_path: Path):
     assert kb.fresh is False and len(kb.t) == 1                     # non-200 poll ignored
     assert kb.leg(t0 + 2, "yes")[:2] == (0.35, 2.0)                 # type: ignore[index]
     assert kb.leg(t0 + 2, "no")[:2] == (0.70, 4.0)                  # type: ignore[index]
-    with pytest.raises(NotImplementedError):
-        st.load_books(tmp_path, {}, int(t0), int(t0 + 5), kalshi_stream="kalshi_ws")
+    assert st.load_books(tmp_path, {}, int(t0), int(t0 + 5), kalshi_stream="kalshi_ws") == {}  # no kalshi_ws tape here; see test_kalshi_ws.py
 
 
 def test_discover_scan_summary_cli(tmp_path: Path, monkeypatch):

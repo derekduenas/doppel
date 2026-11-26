@@ -38,6 +38,7 @@ doppel-toxicity = "doppel.lab.toxicity:main"
 doppel-clock0 = "doppel.lab.clock0:main"
 doppel-tape-compare = "doppel.tape.compare:main"
 doppel-structural = "doppel.lab.structural:main"
+doppel-bridge = "doppel.lab.bridge:main"
 doppel-desk = "doppel.desk.cli:main"
 
 [dependency-groups]
