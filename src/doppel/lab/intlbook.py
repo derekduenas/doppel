@@ -29,7 +29,7 @@ already applied, so a twin adapter can drive ``IntlBook.feed`` live without look
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -165,7 +165,7 @@ class IntlBook:
                              str(m.get("transaction_hash") or ""), mk))
         return out
 
-    def feed_messages(self, rec: dict) -> Iterator[tuple[dict, list[Item]]]:
+    def feed_messages(self, rec: dict) -> Iterator[tuple[dict, Sequence[Item]]]:
         """Apply one embedded message at a time, exposing its own book state before the next."""
         ctl = (rec.get("meta") or {}).get("ctl")
         if ctl is not None:
