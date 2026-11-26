@@ -113,6 +113,30 @@ matched the preceding run byte-for-byte, SHA-256
 `b037cfa40ddd29c9503f87a6b11d5d826c4bd494457aa21b721e96b06a95ac04`.
 Matching took 65.18 seconds and replay took 64.14 seconds on the shared host.
 
+## Full reconstruction and timer decision
+
+The final run covered `[1795629720,1795630500)` for one wallet, with all eight control and
+target CLOB streams, one 15-minute chunk, a 1,800 MiB budget and zero RPC requests.
+The decoded order cache already existed. Pipeline checkpoints were empty at the start.
+All four stages ran to completion in 982.90 seconds wall time, with 767.07 seconds user CPU,
+23.54 seconds system CPU and 1,080,136 KiB peak RSS. Part of the run overlapped other
+low-priority audit work on the recorder host. The elapsed time exceeded the 13-minute data span.
+Repeating the production command reused all four stages in 4.64 seconds and produced identical
+wallet output hashes. The local reconstruction code digest matched the cold and resumed manifests
+(`08caa48e3957c8d3844142191659045482bdcfa105246da3538b6a8b3e1025da`). The
+[validation receipt](../evidence/2026-11-26-orderreplay/validation-results.json)
+records the file hashes, commands and output paths. Exit zero indicates successful execution.
+The acceptance verdict comes from the per-wallet gates.
+
+The wallet reconciled all 192 fill IDs in the available store across 190 transactions. Of 90
+maker orders, 87 had a match. One match was flagged wrong, leaving 86 replayed and 65 eligible
+for the known-end bracket check. The public headline prices routed 152 of 160 observed fills.
+The allocation adapter routed all 160 and delivered 158. Four pessimistic overfills and zero
+optimistic underfills give a 6.15% bracket violation rate against a 5% limit. All four were
+among the 41 orders with unresolved price allocation. The 24 with complete price allocation
+had zero violations. The full-allocation and bracket gates failed. Keep the research timer gated
+and retain the conditional sample counts when comparing the next trial.
+
 ## Build and reproduction
 
 The reconstruction source is commit `2ec08ab` on `review/system-audit-20261126`. Registry-only

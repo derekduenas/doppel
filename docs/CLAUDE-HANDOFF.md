@@ -11,7 +11,11 @@ The [system audit and replay validation](SYSTEM-AUDIT-20261126.md) records the f
 Start there for current results. Allocation at maker prices fixed the 97¢ routing miss. The
 fresh trial still missed two deliveries because a later venue timestamp arrived before the
 corresponding fill. The next calibration trial needs a prespecified lifetime rule for this
-clock inversion and another untouched interval. The sections below preserve the earlier investigation.
+clock inversion and another untouched interval. The cold 13-minute run completed in
+16m 22.90s with 1,054.8 MiB peak memory and zero RPC requests. Four of 65 headline orders
+overfilled the pessimistic bound. The reconstruction timer remains gated. See the
+[run receipt](../evidence/2026-11-26-orderreplay/validation-results.json) for commands and
+for the cold and resumed outputs. The sections below preserve the earlier investigation.
 
 The integration combines Claude's receive-time patch, the canonical final-verdict evaluator,
 and the Reconstruct, Rulefit, and Fidelity fixes. The combined suite passed 423 tests on the
