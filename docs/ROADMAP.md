@@ -60,6 +60,8 @@ Sometimes that is posting, keeping queue, cancelling, hedging, or sitting out.
 | A3c | Cancel-vs-keep policy; 5 Hz raw BRTI lead in the final minute | after Rust fast-fair |
 | A4 | Research agents write competing explanations + a distinguishing future observation; deterministic evaluator alone sees locked windows; experiments ranked by $ of decision changed per cost | planned (M5) |
 | A5 | Two-venue reconciled portfolio replay (shared cash, inventory, queue, hedge depth; partial fills, lost acks, restart) | planned after `kalshi_ws` |
+| A7 | **Adverse-selection owner.** Charter: maximise spread earned − adverse selection in $ (never "least adverse": not quoting scores zero); every guard must beat a rate-matched placebo. Two halves: (1) a deterministic Rust toxicity guard with veto over every quote, ms latency (stale-quote cancels on raw-BRTI jumps, Kalshi-leads-US book moves from `kalshi_ws`, intl informed flow, time-to-close zones, edge floor, one-sided quoting, inventory skew, post-fill Kalshi hedge); (2) a research agent that reads per-fill markouts (1/5/30 s, settlement) daily, clusters losing fills, writes competing explanations, and proposes guard genomes that go through registry + twin. It cannot deploy or loosen a guard. | per-fill markout ledger next; Kalshi lead study after 24 h of `kalshi_ws` |
+| A8 | Re-price every taker path at real API fees (E25: Θ 0.0695, 70% rebate to 12-31); structural scanner + xvenue on `kalshi_ws` books | xvenue done; scanner default fee + kalshi_ws reader next |
 | A6 | Commercial hurdle replaces "$ > 0": lower bound $/day after operating cost, best-day share, ex-incentives | **in twin verdict** |
 
 ## M6: Perps expansion (PM intl perps as the lab, Kalshi perps as the venue)
