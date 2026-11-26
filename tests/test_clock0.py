@@ -4,7 +4,8 @@ from doppel.lab.clock0 import FEATURES, _iso, evaluate
 def _row(i, informed):
     r = {f: 0.0 for f in FEATURES}
     r.update(tw=i, wallet="w", known=True, informed=informed, weight=1.0 if informed else 0.0,
-             m_c=5.0 if informed else -1.0, log_usd=6.0 if informed else 2.0)
+             m_c=5.0 if informed else -1.0, log_usd=6.0 if informed else 2.0,
+             excess=10.0 if informed else float(i % 7) / 10)
     return r
 
 

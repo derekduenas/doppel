@@ -152,6 +152,7 @@ def build(root: Path, lab: Path, as_of: int, until: int) -> tuple[list[dict], di
         rows.append({
             "tw": u["tw"], "wallet": info["wallet"], "known": rec is not None,
             "informed": bool(is_informed(rec)), "weight": weight(rec), "m_c": m_c,
+            "excess": float(rec["excess"]) if rec else None,
             "log_usd": math.log1p(u["usd"]), "n_prints": u["n"], "price": vwap,
             "px_span_c": 100.0 * (max(u["px"]) - min(u["px"])), "dist50": abs(vwap - 0.5),
             "tte_s": end - tws, "hz_5m": 1.0 if info["hz"] == "5m" else 0.0,
@@ -175,11 +176,19 @@ def _auc(y: np.ndarray, s: np.ndarray) -> float | None:
 def evaluate(rows: list[dict], train_frac: float = 0.6) -> dict:
     from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
     X = np.array([[r[f] for f in FEATURES] for r in rows], dtype=float)
-    y = np.array([r["informed"] for r in rows], dtype=int)
     w = np.array([r["weight"] for r in rows], dtype=float)
     cut = int(len(rows) * train_frac)
+    # Relative label: taker wallet in the top decile of point-in-time excess (threshold from TRAIN rows
+    # with a scored wallet). The absolute flow.INFORMED_EXCESS_C bar is unreachable while history is
+    # short (K-prior shrinkage), so the absolute label is reported but not modelled.
+    ex = np.array([np.nan if r.get("excess") is None else r["excess"] for r in rows], dtype=float)
+    tr_ex = ex[:cut][np.isfinite(ex[:cut])]
+    thr = float(np.quantile(tr_ex, 0.9)) if len(tr_ex) else math.inf
+    y = np.where(np.isfinite(ex), ex >= thr, False).astype(int)
     out: dict = {"n": len(rows), "n_train": cut, "n_test": len(rows) - cut,
-                 "base_rate_informed": round(float(y.mean()), 4) if len(y) else None,
+                 "base_rate_informed_abs": round(float(np.mean([r["informed"] for r in rows])), 4) if rows else None,
+                 "label": "top-decile excess (train threshold)", "excess_threshold_c": round(thr, 3),
+                 "base_rate_label": round(float(y.mean()), 4) if len(y) else None,
                  "known_wallet_share": round(float(np.mean([r["known"] for r in rows])), 4)}
     if cut < 200 or len(rows) - cut < 200 or y[:cut].sum() < 20:
         out["status"] = "insufficient"
@@ -209,6 +218,27 @@ def evaluate(rows: list[dict], train_frac: float = 0.6) -> dict:
                             "informed_rate": round(float(yt[sel].mean()), 4),
                             "taker_markout_c_usd_wtd": round(float(np.average(m[sel], weights=usd[sel])), 3)})
     out["by_predicted_quintile"] = dec
+    # direct toxicity: predict the tx's own settlement markout (what the maker on the other side eats)
+    mm = np.array([np.nan if r["m_c"] is None else r["m_c"] for r in rows], dtype=float)
+    tr = np.isfinite(mm[:cut])
+    if tr.sum() >= 500 and ok.sum() >= 200:
+        from scipy.stats import spearmanr
+        rm = HistGradientBoostingRegressor(max_iter=300, learning_rate=0.05, l2_regularization=1.0,
+                                           random_state=0)
+        rm.fit(X[:cut][tr], np.clip(mm[:cut][tr], -100, 100))
+        pm = rm.predict(X[cut:])
+        rho: Any = spearmanr(pm[ok], m[ok])
+        q = np.quantile(pm[ok], np.linspace(0, 1, 6))
+        mq = []
+        for i in range(5):
+            sel = ok & (pm >= q[i]) & (pm <= q[i + 1] if i == 4 else pm < q[i + 1])
+            if sel.sum():
+                mq.append({"quintile": i + 1, "n": int(sel.sum()),
+                           "pred_c": round(float(pm[sel].mean()), 3),
+                           "taker_markout_c_usd_wtd": round(float(np.average(m[sel], weights=usd[sel])), 3)})
+        out["markout_model"] = {"spearman": round(float(rho.statistic), 4), "p": float(rho.pvalue),
+                                "by_predicted_quintile": mq,
+                                "note": "windows are correlated: many txs share one outcome; p overstates"}
     from sklearn.inspection import permutation_importance
     pi: Any = permutation_importance(clf, X[cut:], yt, scoring="roc_auc", n_repeats=5, random_state=0)
     out["importance_auc_drop"] = {f: round(float(v), 4) for f, v in
