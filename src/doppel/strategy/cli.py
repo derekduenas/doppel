@@ -58,10 +58,16 @@ def cmd_extract(a: argparse.Namespace) -> int:
 
 
 def cmd_register(a: argparse.Namespace) -> int:
+    from . import dna
     reg = Registry(a.root)
+    known = {v["expression_sha256"]: v["name"] for v in dna.load_store(a.root)["genomes"].values()}
     for path in a.genome:
         d = orjson.loads(Path(path).read_bytes())
         g = from_dict(d)
+        twin = known.get(dna.expression_trace(g)["expression_sha256"])
+        if twin is not None:  # informational: same behaviour as an already-sealed genome
+            print(f"{path}: NOTE behaves identically to sealed genome {twin} (expression hash match)",
+                  file=sys.stderr)
         win = (a.start, a.end) if a.start and a.end else tuple((g.evidence or {}).get("eval_window") or ())
         if len(win) != 2:
             print(f"{path}: no --start/--end and no evidence.eval_window", file=sys.stderr)
@@ -74,7 +80,8 @@ def cmd_register(a: argparse.Namespace) -> int:
         print(f"{rec['genome_id'][:12]} {rec['name']} family={rec['family']} "
               f"window={rec['eval_window']['start']}..{rec['eval_window']['end']} seq={rec['seq']} "
               f"code={str(rec['code_sha'])[:12]}{' (dirty)' if rec.get('code_dirty') else ''}")
-    print(f"head {reg.head()}")
+    added = dna.write_missing(a.root)
+    print(f"head {reg.head()}; expression hashes stored for {len(added)} new genome(s)")
     return 0
 
 
@@ -168,6 +175,19 @@ def cmd_verify(a: argparse.Namespace) -> int:
     return 0 if not errs else 1
 
 
+def cmd_dna(a) -> int:
+    from . import dna
+    if a.write:
+        added = dna.write_missing(a.root)
+        print(f"stored expression hashes for {len(added)} genome(s)")
+    probs = dna.check(a.root)
+    for p in probs:
+        print("PROBLEM", p)
+    print(f"{dna.EXPRESSION_FILE}: {'OK' if not probs else f'{len(probs)} problem(s)'} "
+          f"(semantics {dna.semantics_digest()[:12]}, probe v{dna.PROBE_VERSION})")
+    return 1 if probs else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="doppel-genome")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -205,6 +225,10 @@ def main(argv: list[str] | None = None) -> int:
     mo.add_argument("--json", action="store_true")
     mo.add_argument("--root", type=Path, default=Path("."))
     mo.set_defaults(fn=cmd_monitor)
+    dn = sub.add_parser("dna", help="check (or --write missing) expression hashes of sealed genomes")
+    dn.add_argument("--root", type=Path, default=Path("."))
+    dn.add_argument("--write", action="store_true", help="store hashes for genomes that have none (never overwrites)")
+    dn.set_defaults(fn=cmd_dna)
     v = sub.add_parser("verify", help="re-check the hash chain")
     v.add_argument("--root", type=Path, default=Path("."))
     v.set_defaults(fn=cmd_verify)

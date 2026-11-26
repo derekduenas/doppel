@@ -172,6 +172,11 @@ class Source:
     cohort_sha256: str | None = None
     dossier_sha256: tuple[str, ...] = ()
     mechanism: str | None = None          # census label of the source behaviour
+    # Lineage (DNA layer): ids of the parent genome(s) and the operator that produced this one
+    # ("mutate:<field>", "crossover", "extract", "manual"). Omitted from the id when empty, so genomes
+    # sealed before lineage existed keep their ids.
+    parents: tuple[str, ...] = ()
+    operator: str | None = None
 
 
 @dataclass(frozen=True)
@@ -199,8 +204,11 @@ class Genome:
         d = to_dict(self)
         for k in ("status", "created_tw", "notes"):
             d.pop(k, None)
-        if d.get("maker") and d["maker"].get("spread_mode") == "cents":
-            d["maker"].pop("spread_mode")
+        # Fields added after genomes were sealed are omitted at their defaults, so old ids never move.
+        for parent, key, default in _LATE_FIELDS:
+            sub = d.get(parent) if parent else d
+            if isinstance(sub, dict) and key in sub and sub[key] == default:
+                sub.pop(key)
         return orjson.dumps(d, option=orjson.OPT_SORT_KEYS)
 
     @property
@@ -260,6 +268,11 @@ def _conds(xs) -> tuple[Condition, ...]:
     return tuple(Condition(**c) for c in xs)
 
 
+# (parent key or None, field, default): schema additions that must not change pre-existing ids
+_LATE_FIELDS = (("maker", "spread_mode", "cents"), ("source", "parents", ()), ("source", "parents", []),
+                ("source", "operator", None))
+
+
 def from_dict(d: dict) -> Genome:
     d = dict(d)
     if d.get("schema_version", SCHEMA_VERSION) != SCHEMA_VERSION:
@@ -271,7 +284,8 @@ def from_dict(d: dict) -> Genome:
     src = d.pop("source")
     return Genome(universe=Universe(**{**u, "assets": tuple(u["assets"]), "horizons": tuple(u["horizons"])}),
                   source=Source(**{**src, "wallets": tuple(src.get("wallets", ())),
-                                   "dossier_sha256": tuple(src.get("dossier_sha256", ()))}),
+                                   "dossier_sha256": tuple(src.get("dossier_sha256", ())),
+                                   "parents": tuple(src.get("parents", ()))}),
                   fair=FairModel(**d.pop("fair")), taker=taker, maker=maker,
                   exit=Exit(**d.pop("exit")), risk=Risk(**d.pop("risk")),
                   costs=Costs(**d.pop("costs")), kill=KillRule(**d.pop("kill")),
