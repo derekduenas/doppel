@@ -1,0 +1,480 @@
+"""Order replay: the twin's maker FILL MODEL against real resting orders (intl CLOB).
+
+Every row of ``doppel-ordermatch``'s ``orders.jsonl`` is a hash-verified maker order located in
+the public intl book: known price, size, placement event, real fills (quantity from chain, time
+from the tx-hash print) and, when classified, its real end. Each one is replayed as a single
+quote through the twin's own maker code and the twin's fills are compared with what happened.
+
+SELECTION (read every number with this): only orders that really filled at least once are
+visible on chain. So the order comparison measures the fill model's bias CONDITIONAL ON A REAL
+FILL (how much, how early, given that the order did trade). It is NOT a fill probability and says
+nothing about quotes that never traded. The only view of those is the fingerprint candidates
+(``quotes.jsonl``), which are an attribution ESTIMATE, not identified orders.
+
+HOW THE TWIN IS DRIVEN (no re-implementation, ``twin/engine.py`` untouched)
+``QuoteSim`` subclasses ``WindowSim`` and replaces only what needs a genome: the constructor,
+``_room`` (no inventory / notional cap) and ``_fill`` (records the fill instead of booking P&L and
+fees). The fill decisions are the engine's unchanged ``_on_book`` (book-cross fills),
+``_on_trade`` (queue burn, at / through prints) and ``_on_quote_land`` (the cancel). ``run()``,
+decisions, features, latency and the post-only check are not used: the real order was accepted,
+and latency is not what is tested.
+
+ADAPTER (intl tape -> twin events, per asset of a live quote)
+- Clock: venue ms of the frame, in ns, forced strictly increasing in tape order (one tick per
+  tape record), so tape order is kept inside one millisecond. Same clock as ordermatch's times.
+- ``Book``: one full-depth snapshot (bids = BUY levels, asks = SELL levels) after each record
+  that changed the asset, only while a quote is live on it.
+- ``Trade``: one per print, receive time = execution time = the record's tick, aggressor = the
+  print's taker ``side``. A print on the MATE asset is mirrored into the quote's asset (price
+  1 - p, aggressor flipped): the book is mirrored, a bid on A is hit by buyers of B. If the same
+  execution is printed on both assets (same tx, mirrored price, same size, mirrored side) the
+  second copy is dropped and counted (``mirror_dup_prints``).
+- ASSUMED, and checked by ``adapter_gate``: the print ``side`` is the taker's side on the print's
+  own asset. Each real fill's tx-hash print must route to the order's price with the aggressor
+  that hits its side; if ``routed_share`` is low the numbers below measure the adapter, not the
+  fill model.
+
+REPLAY RULES
+- Live at the matched placement event (same token, price, side, venue ms and receive ns as
+  ordermatch reported; nearest size), not at created_ms + latency. A print in the placement's own
+  record cannot fill it (the engine's rule for a print at the landing instant).
+- Queue ahead, ``pessimistic`` (the twin's convention): the level's size just before the
+  placement increase. ``optimistic`` bound: 0. Cancels ahead never advance the queue (engine).
+- End: outcome ``filled`` / ``cancelled`` -> the quote is cancelled at the first record after
+  ordermatch's ``end_ms`` (the last fill / the exact decrease). ``unknown`` -> kept to ``end_ms``
+  when there is one (the first moment it was certainly gone: an upper bound on its life), else to
+  the next book reset or the end of the tape.
+
+DEFINITIONS (per order and queue mode; shares)
+- real = chain-filled shares; twin = shares the twin filled; error = twin - real.
+- missed: real > 0.02 and twin filled nothing. phantom_shares: max(0, twin - real) when above
+  0.02 (the twin filled beyond the real quantity). A twin fill AFTER the real order was gone
+  cannot happen for ``filled`` / ``cancelled`` orders (the quote is cancelled then), so for them
+  phantom = over-fill while the real order was live.
+- Headline set: outcome ``filled`` or ``cancelled``. ``unknown`` orders are reported apart: their
+  chain fills are a lower bound and the quote may outlive the order, so their excess is only a
+  POSSIBLE phantom. Orders with ``fill_before_placement`` (a proven wrong match) are not replayed.
+- ratio = sum(twin) / sum(real); CI = bootstrap over markets (the market of the placement event
+  = one window), ratio of sums.
+- Twin fill source: ``trade`` or ``book_cross``. A real resting order keeps the opposite side
+  from reaching its price, so ``book_cross`` fills should be ~0 here; any is a diagnostic (wrong
+  match or lifetime), and the engine's book-cross rule is NOT validated by this replay.
+- Never-filled quotes (ESTIMATE): fingerprint candidates classified ``cancelled:exact_decrease``
+  are replayed the same way; real = 0, so any twin fill is a phantom. The candidates are not
+  identified as anyone's orders and "never filled" rests on ordermatch's cancel rule.
+
+Analysis only: reads the future of the tape by design; nothing here is a decision input.
+"""
+
+from __future__ import annotations
+
+import argparse
+import math
+import sys
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+import orjson
+
+from ..twin.engine import MIN_QTY, Quote, WindowSim, _Stats
+from ..twin.tape import Book, Trade
+from .flow import _ts
+from .intlbook import IntlBook, LevelEvent, Print, Reset, px, replay
+from .ordermatch import _q, _r
+
+FOREVER = 1 << 62
+MS_NS = 1_000_000
+TOL = 0.02  # shares
+MODES = ("pessimistic", "optimistic")
+SIDE = {"BUY": "bid", "SELL": "ask"}
+AGGR = {"BUY": "buy", "SELL": "sell"}
+FLIP = {"buy": "sell", "sell": "buy"}
+HIT_BY = {"bid": "sell", "ask": "buy"}
+N_BOOT = 2000
+LIMIT = ("conditional on a real fill: every replayed order filled at least once, so this is the "
+         "fill model's bias given a fill, not a fill probability")
+
+
+class QuoteSim(WindowSim):
+    """One externally specified resting quote on the engine's maker fill logic."""
+
+    def __init__(self, side: str, price: float, size: float, live_ns: int, queue: float):
+        self.E_ns = FOREVER
+        self.rest = False
+        self.max_age_ns = 0
+        self.book = None
+        self.book_ok = False
+        self.inv = 0.0
+        self.live = {"bid": None, "ask": None}
+        self.pending = {}
+        self.dying = []
+        self.st = _Stats()
+        self.got: list[tuple[int, float, str]] = []  # (clock ns, shares, via)
+        self.quote = Quote(side=side, price=price, size=size, decided_ns=live_ns, ref_c=0.0,
+                           inv_at=0.0, remaining=size, live_ns=live_ns, queue=queue)
+        self.live[side] = self.quote
+
+    def _room(self, side: str, px: float, inv: float) -> float:
+        return math.inf
+
+    def _fill(self, t: int, role: str, side: str, px: float, qty: float, via: str, ref_qty: float) -> None:
+        self.got.append((t, qty, via))
+
+    def cancel(self, t: int) -> None:
+        side = self.quote.side
+        self.pending[side] = (0, None)
+        self._on_quote_land(t, (side, 0))
+
+
+@dataclass
+class Spec:
+    kind: str  # "order" | "quote" (fingerprint candidate)
+    id: str
+    token: str
+    side: str  # BUY | SELL
+    price: float
+    size: float
+    placed_ms: int
+    placed_tw: int
+    end_ms: int | None
+    outcome: str
+    real: float
+    fills_at: list = field(default_factory=list)  # [tx, venue ms | None, shares]
+    market: str = ""
+    queue0: float | None = None
+    sims: dict[str, QuoteSim] = field(default_factory=dict)
+    cut: str | None = None  # why the replay stopped before the quote's end, if it did
+    tx_seen: set[str] = field(default_factory=set)
+    tx_routed: set[str] = field(default_factory=set)
+
+    @property
+    def key(self) -> tuple:
+        return (self.token, self.price, self.side, self.placed_ms, self.placed_tw)
+
+
+def load_specs(d: Path) -> tuple[list[Spec], Counter]:
+    """Orders (and fingerprint candidates, if ``quotes.jsonl`` is there) from an ordermatch dir."""
+    specs: list[Spec] = []
+    stats: Counter = Counter()
+    for line in (d / "orders.jsonl").read_bytes().splitlines():
+        r = orjson.loads(line)
+        stats["orders"] += 1
+        if "fills_at" not in r:
+            raise SystemExit("orders.jsonl has no 'fills_at' (written by an older doppel-ordermatch): "
+                             "re-run doppel-ordermatch, then replay")
+        if r["fill_before_placement"]:
+            stats["orders_wrong_match_skipped"] += 1
+            continue
+        specs.append(Spec("order", r["order_id"], r["token_id"], r["side"], px(r["price"]),
+                          float(r["size"]), r["placed_venue_ms"], r["placed_tw_ns"], r["end_ms"],
+                          f"{r['outcome']}:{r['reason']}", float(r["filled"]), r["fills_at"]))
+    qp = d / "quotes.jsonl"
+    if qp.exists():
+        for line in qp.read_bytes().splitlines():
+            r = orjson.loads(line)
+            stats["quotes"] += 1
+            if (r["outcome"], r["reason"]) != ("cancelled", "exact_decrease"):
+                stats["quotes_not_cancelled_skipped"] += 1
+                continue
+            specs.append(Spec("quote", f"{r['token_id']}:{r['price']}:{r['venue_ms']}:{r['tw_ns']}",
+                              r["token_id"], "BUY", px(r["price"]), float(r["size"]), r["venue_ms"],
+                              r["tw_ns"], r["end_ms"], "cancelled:exact_decrease", 0.0))
+    return specs, stats
+
+
+def to_book(levels: dict[tuple[float, str], float], t: int) -> Book:
+    bids = sorted(((p, s) for (p, side), s in levels.items() if side == "BUY"), reverse=True)
+    asks = sorted((p, s) for (p, side), s in levels.items() if side == "SELL")
+    return Book(tw=t, bids=tuple(bids), asks=tuple(asks))
+
+
+def replay_stream(root: Path, stream: str, t_from: int, t_to: int, pending: dict[tuple, list[Spec]],
+                  wanted: dict[tuple[str, str], list[Spec]], stats: Counter) -> None:
+    """Drive the quotes placed on this stream. Mutates the specs (``sims``, ``queue0``, ...)."""
+    book = IntlBook()
+    clock = 0
+    active: dict[str, list[Spec]] = defaultdict(list)  # quote's own token -> live specs
+    mates: dict[str, str] = {}
+    n_mk = 0
+    dup: dict[tuple, list[int]] = {}  # execution -> prints seen on [first, second] asset of the pair
+
+    def live_on(asset: str, ms: int) -> list[Spec]:
+        """Specs still live on ``asset`` at venue ``ms``; the ones past their end are cancelled."""
+        specs = active.get(asset)
+        if not specs:
+            return []
+        keep = []
+        for s in specs:
+            if s.end_ms is not None and ms > s.end_ms:
+                for sim in s.sims.values():
+                    sim.cancel(clock)
+            else:
+                keep.append(s)
+        if keep:
+            active[asset] = keep
+        else:
+            del active[asset]
+        return keep
+
+    for items in replay(root, stream, t_from, t_to, book):
+        evs = [it for it in items if not isinstance(it, Reset)]
+        if len(evs) < len(items):  # book state lost: nothing more is known about live quotes
+            for specs in active.values():
+                for s in specs:
+                    s.cut = "reset"
+            active.clear()
+        if not evs:
+            continue
+        clock = max(clock + 1, evs[0].venue_ms * MS_NS)
+        if len(book.market_of) != n_mk:
+            mates, n_mk = book.mates(), len(book.market_of)
+        changed: dict[str, int] = {}
+        for e in evs:
+            if not isinstance(e, LevelEvent):
+                continue
+            changed[e.asset] = max(changed.get(e.asset, 0), e.venue_ms)
+            cands = pending.get((e.asset, e.price, e.side, e.venue_ms, e.tw_ns))
+            if cands and e.delta > 0:
+                s = min(cands, key=lambda c, d=e.delta: abs(c.size - d))
+                cands.remove(s)
+                s.market, s.queue0 = e.market or e.asset, e.old_size
+                s.sims = {m: QuoteSim(SIDE[s.side], s.price, s.size, clock, q)
+                          for m, q in zip(MODES, (e.old_size, 0.0))}
+                active[s.token].append(s)
+        for a, ms in changed.items():
+            specs = live_on(a, ms)
+            if specs:
+                b = to_book(book.levels.get(a, {}), clock)
+                for s in specs:
+                    for sim in s.sims.values():
+                        sim._on_book(b)
+        for e in evs:
+            if not isinstance(e, Print):
+                continue
+            aggr = AGGR.get(e.side)
+            if aggr is None:
+                stats["prints_bad_side"] += 1
+                continue
+            m = mates.get(e.asset)
+            views = [(e.asset, e.price, aggr)]
+            if m:
+                views.append((m, px(1 - e.price), FLIP[aggr]))
+                if e.tx:
+                    first = e.asset < m
+                    c = dup.setdefault((e.tx, e.size) + (views[0] if first else views[1]), [0, 0])
+                    c[not first] += 1
+                    if c[not first] <= c[first]:  # the other asset already printed this execution
+                        stats["mirror_dup_prints"] += 1
+                        continue
+            for asset, price, ag in views:
+                for s in wanted.get((e.tx, asset), ()):
+                    s.tx_seen.add(e.tx)
+                    if price == s.price and ag == HIT_BY[SIDE[s.side]]:
+                        s.tx_routed.add(e.tx)
+                specs = live_on(asset, e.venue_ms)
+                if not specs:
+                    continue
+                tr = Trade(clock, clock, price, e.size, ag, e.tx or None)
+                for s in specs:
+                    if price == s.price:
+                        stats["prints_at_quote_price:" + ("hit_side" if ag == HIT_BY[SIDE[s.side]]
+                                                         else "other_side")] += 1
+                    for sim in s.sims.values():
+                        sim._on_trade(clock, tr)
+    for specs in active.values():
+        for s in specs:
+            if s.end_ms is None:  # followed to the end of the tape: its real end is not known
+                s.cut = "tape_end"
+
+
+# ---------------------------------------------------------------- results
+def result(s: Spec) -> dict:
+    located = [f[1] for f in s.fills_at if f[1] is not None]
+    row: dict = {"kind": s.kind, "id": s.id, "token_id": s.token, "market": s.market, "side": s.side,
+                 "price": s.price, "size": s.size, "outcome": s.outcome,
+                 "end_known": s.outcome.split(":")[0] in ("filled", "cancelled"),
+                 "placed_ms": s.placed_ms, "end_ms": s.end_ms, "cut": s.cut,
+                 "queue_ahead": s.queue0, "real_filled": round(s.real, 6),
+                 "real_first_fill_ms": min(located, default=None),
+                 "fills": len(s.fills_at), "fills_located": len(located),
+                 "fills_seen": len(s.tx_seen), "fills_routed": len(s.tx_routed)}
+    for m, sim in s.sims.items():
+        tw = sum(q for _, q, _ in sim.got)
+        src: dict[str, float] = defaultdict(float)
+        for _, q, via in sim.got:
+            src[via] += q
+        ex = tw - s.real
+        row[m] = {"filled": round(tw, 6), "error": round(ex, 6),
+                  "first_fill_ms": sim.got[0][0] // MS_NS if sim.got else None,
+                  "by_source": {k: round(v, 6) for k, v in sorted(src.items())},
+                  "missed": s.real > TOL and tw < MIN_QTY,
+                  "phantom_shares": round(ex, 6) if ex > TOL else 0.0,
+                  "fills": [[t // MS_NS, q, via] for t, q, via in sim.got]}
+    return row
+
+
+def boot_ci(rows: list[dict], mode: str, seed: int = 0) -> list[float] | None:
+    """95 % CI of sum(twin) / sum(real), resampling markets (ratio of sums)."""
+    by: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
+    for r in rows:
+        by[r["market"]][0] += r[mode]["filled"]
+        by[r["market"]][1] += r["real_filled"]
+    a = np.array(list(by.values()))
+    if len(a) < 2:
+        return None
+    idx = np.random.default_rng(seed).integers(0, len(a), (N_BOOT, len(a)))
+    tw, re = a[idx, 0].sum(1), a[idx, 1].sum(1)
+    ok = re > 0
+    lo, hi = np.quantile(tw[ok] / re[ok], (0.025, 0.975))
+    return [round(float(lo), 4), round(float(hi), 4)]
+
+
+def agg(rows: list[dict], mode: str, ci: bool = False) -> dict:
+    real = sum(r["real_filled"] for r in rows)
+    tw = sum(r[mode]["filled"] for r in rows)
+    err = [r[mode]["error"] for r in rows]
+    d = {"n": len(rows), "markets": len({r["market"] for r in rows}), "real_shares": _r(real),
+         "twin_shares": _r(tw), "ratio": _r(tw / real, 4) if real > 0 else None,
+         "error_mean": _r(np.mean(err)) if err else None, "error_shares": _q(err),
+         "exact": sum(abs(e) <= TOL for e in err), "missed": sum(r[mode]["missed"] for r in rows),
+         "phantom": sum(r[mode]["phantom_shares"] > 0 for r in rows),
+         "phantom_shares": _r(sum(r[mode]["phantom_shares"] for r in rows))}
+    if ci:
+        d["ratio_ci95"] = boot_ci(rows, mode)
+    return d
+
+
+def _bucket(x: float, edges: tuple[float, ...], names: tuple[str, ...]) -> str:
+    return names[sum(x >= e for e in edges)]
+
+
+Q_NAMES = ("0", "(0,100]", "(100,1000]", ">1000")
+P_NAMES = ("<0.10", "0.10-0.30", "0.30-0.70", "0.70-0.90", ">=0.90")
+
+
+def groups(rows: list[dict], mode: str) -> dict:
+    def split(fn, names=None) -> dict:
+        by: dict[str, list[dict]] = defaultdict(list)
+        for r in rows:
+            by[fn(r)].append(r)
+        return {k: agg(by[k], mode) for k in (names or sorted(by)) if k in by}
+
+    return {
+        "by_outcome": split(lambda r: r["outcome"]),
+        "by_twin_source": split(lambda r: "+".join(r[mode]["by_source"]) or "none"),
+        "by_queue_ahead": split(lambda r: Q_NAMES[0] if r["queue_ahead"] <= 0 else _bucket(
+            r["queue_ahead"], (100.0001, 1000.0001), Q_NAMES[1:]), Q_NAMES),
+        "by_price": split(lambda r: _bucket(r["price"], (0.1, 0.3, 0.7, 0.9), P_NAMES), P_NAMES),
+    }
+
+
+def summarize(rows: list[dict], stats: Counter) -> dict:
+    orders = [r for r in rows if r["kind"] == "order"]
+    head = [r for r in orders if r["end_known"]]
+    unk = [r for r in orders if not r["end_known"]]
+    quotes = [r for r in rows if r["kind"] == "quote"]
+    located = sum(r["fills_located"] for r in orders)
+    seen = sum(r["fills_seen"] for r in orders)
+    routed = sum(r["fills_routed"] for r in orders)
+    doc: dict = {
+        "limit": LIMIT, "counts": dict(stats) | {
+            "orders_replayed": len(orders), "headline_orders": len(head),
+            "cut_short": dict(Counter(r["cut"] for r in rows if r["cut"])),
+            "twin_book_cross_fills": sum(v == "book_cross" for r in rows for _, _, v in r["pessimistic"]["fills"])},
+        "adapter_gate": {"fills": sum(r["fills"] for r in orders), "located_by_print": located,
+                         "print_seen_in_replay": seen, "routed_to_order_price_and_side": routed,
+                         "routed_share": _r(routed / seen, 4) if seen else None,
+                         "note": "low routed_share = the print side/mirror mapping is wrong; the "
+                                 "bias numbers then measure the adapter, not the fill model"},
+        "conditional_on_real_fill": {m: agg(head, m, ci=True) | {
+            "first_fill_twin_minus_real_ms": _q([r[m]["first_fill_ms"] - r["real_first_fill_ms"] for r in head
+                                                 if r[m]["first_fill_ms"] is not None
+                                                 and r["real_first_fill_ms"] is not None])} for m in MODES},
+        "pessimistic_breakdown": groups(head, "pessimistic"),
+        "end_unknown_orders": {m: agg(unk, m) for m in MODES} | {
+            "note": "real fills are a lower bound and the quote may outlive the order: excess is "
+                    "a POSSIBLE phantom, not in the headline"},
+    }
+    if quotes:
+        doc["never_filled_quotes_estimate"] = {m: {
+            "n": len(quotes), "twin_filled": (n := sum(r[m]["filled"] > 0 for r in quotes)),
+            "phantom_fill_rate": _r(n / len(quotes), 5),
+            "quoted_shares": _r(sum(r["size"] for r in quotes)),
+            "phantom_shares": _r(sum(r[m]["filled"] for r in quotes)),
+            "by_twin_source": dict(Counter("+".join(r[m]["by_source"]) for r in quotes if r[m]["by_source"])),
+        } for m in MODES} | {"note": "ESTIMATE: fingerprint candidates ordermatch classified "
+                                     "cancelled:exact_decrease; not identified orders, and 'never "
+                                     "filled' rests on ordermatch's cancel rule"}
+    return doc
+
+
+def run(root: Path, match_dir: Path, t_from: int, t_to: int,
+        streams: list[str] | None = None) -> tuple[dict, list[dict]]:
+    """Returns (summary doc, per-quote rows: orders first, then fingerprint candidates)."""
+    specs, stats = load_specs(match_dir)
+    pending: dict[tuple, list[Spec]] = defaultdict(list)
+    wanted: dict[tuple[str, str], list[Spec]] = defaultdict(list)
+    for s in specs:
+        pending[s.key].append(s)
+        for tx, _, _ in s.fills_at:
+            wanted[(tx, s.token)].append(s)
+    streams = streams or sorted(d.name for d in Path(root).iterdir() if d.name.startswith("clob_"))
+    for st in streams:
+        replay_stream(root, st, t_from, t_to, pending, wanted, stats)
+    stats["placement_not_found"] = sum(not s.sims for s in specs)
+    rows = [result(s) for s in specs if s.sims]
+    doc = {"params": {"from": t_from, "to": t_to, "streams": streams, "tol_shares": TOL,
+                      "n_boot": N_BOOT}} | summarize(rows, stats)
+    return doc, rows
+
+
+def card(doc: dict) -> str:
+    g = doc["adapter_gate"]
+    L = [f"LIMIT: {doc['limit']}", f"counts: {doc['counts']}",
+         f"adapter gate: {g['routed_to_order_price_and_side']}/{g['print_seen_in_replay']} real fill "
+         f"prints routed to the order's price and side (share {g['routed_share']}); "
+         f"{g['located_by_print']}/{g['fills']} fills located by a print"]
+    for m in MODES:
+        d = doc["conditional_on_real_fill"][m]
+        L += [f"\n== {m} queue, orders with a known end (n {d['n']}, {d['markets']} markets)",
+              f"twin {d['twin_shares']} vs real {d['real_shares']} shares: ratio {d['ratio']} "
+              f"CI95 {d.get('ratio_ci95')} | mean error {d['error_mean']} sh/order {d['error_shares']}",
+              f"exact {d['exact']}, fully missed {d['missed']}, phantom {d['phantom']} orders "
+              f"({d['phantom_shares']} shares) | first fill twin - real ms {d['first_fill_twin_minus_real_ms']}"]
+    for name, by in doc["pessimistic_breakdown"].items():
+        L.append(f"{name}: " + "; ".join(
+            f"{k} n={v['n']} ratio={v['ratio']} missed={v['missed']} phantom={v['phantom']}"
+            for k, v in by.items()))
+    u = doc["end_unknown_orders"]["pessimistic"]
+    L.append(f"end unknown (POSSIBLE phantom only): n {u['n']} ratio {u['ratio']} phantom {u['phantom']}")
+    nf = doc.get("never_filled_quotes_estimate")
+    if nf:
+        L.append("never-filled quotes (ESTIMATE, fingerprint candidates): " + "; ".join(
+            f"{m} {nf[m]['twin_filled']}/{nf[m]['n']} phantom-filled (rate {nf[m]['phantom_fill_rate']}, "
+            f"{nf[m]['phantom_shares']} of {nf[m]['quoted_shares']} shares)" for m in MODES))
+    return "\n".join(L)
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="doppel-orderreplay")
+    ap.add_argument("--data", type=Path, required=True, help="tape root")
+    ap.add_argument("--ordermatch-dir", type=Path, required=True,
+                    help="doppel-ordermatch output: orders.jsonl[, quotes.jsonl]")
+    ap.add_argument("--from", dest="t_from", type=_ts, required=True, help="unix s or ISO UTC")
+    ap.add_argument("--to", dest="t_to", type=_ts, required=True)
+    ap.add_argument("--out", type=Path, required=True, help="directory")
+    a = ap.parse_args(argv)
+    doc, rows = run(a.data, a.ordermatch_dir, a.t_from, a.t_to)
+    a.out.mkdir(parents=True, exist_ok=True)
+    (a.out / "orderreplay.json").write_bytes(orjson.dumps(doc, option=orjson.OPT_INDENT_2))
+    with open(a.out / "orderreplay.jsonl", "wb") as f:
+        for r in rows:
+            f.write(orjson.dumps(r) + b"\n")
+    print(card(doc))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
