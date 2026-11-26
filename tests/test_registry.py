@@ -213,3 +213,19 @@ def test_registry_append_does_not_mark_code_dirty(tmp_path):
     assert git_sha(tmp_path / "src")["dirty"] is False
     (tmp_path / "src" / "m.py").write_text("x=2\n")
     assert git_sha(tmp_path / "src")["dirty"] is True
+
+
+def test_draft_genome_cannot_be_registered(tmp_path):
+    """rulefit emits status "draft"; status is not part of the id, so a draft would otherwise seal
+    silently into the append-only registry."""
+    import pytest
+
+    from doppel.strategy.genome import Genome, KillRule, MakerRule, Source, Universe, to_dict
+    from doppel.strategy.registry import Registry, RegistryError
+    g = Genome(name="d", mode="maker", universe=Universe(venue="pmus"), source=Source(kind="manual"),
+               maker=MakerRule(), kill=KillRule(min_windows=30), created_tw=0)
+    d = to_dict(g) | {"status": "draft"}
+    reg = Registry(tmp_path, now=lambda: 0.0, code={"sha": "c0ffee", "dirty": False})
+    with pytest.raises(RegistryError, match="draft"):
+        reg.register(d, "fam", "hyp", (10, 20))
+    assert reg.lines() == []

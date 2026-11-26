@@ -35,12 +35,13 @@ import subprocess
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import get_args
 from pathlib import Path
 
 import orjson
 
 from . import sequential as seq
-from .genome import Genome, from_dict, to_dict, validate
+from .genome import Genome, Status, from_dict, to_dict, validate
 
 REL_PATH = Path("registry") / "genomes.jsonl"
 GENESIS = "0" * 64
@@ -181,6 +182,11 @@ class Registry:
         must start after now. Returns the registration record (the existing one if the id is
         already registered: no-op)."""
         g = genome if isinstance(genome, Genome) else from_dict(genome)
+        st = getattr(g, "status", None)
+        if st not in get_args(Status):
+            # e.g. rulefit's "draft": status is outside the id, so a draft would seal silently and the
+            # registry is append-only. Promote it to a real Status deliberately before registering.
+            raise RegistryError(f"genome status {st!r} cannot be registered (allowed: {', '.join(get_args(Status))})")
         errs = validate(g)
         if errs:
             raise RegistryError("genome fails validate(): " + "; ".join(errs))
