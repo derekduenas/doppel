@@ -1,5 +1,6 @@
 //! Local mock tests: WebSocket watchdog, PM US signer headers per connect and no redirects,
-//! PM US rollover, Kalshi signing (generated keys), BRTI signed poll + 429, Kalshi WS seq gap.
+//! PM US rollover, Kalshi signing (generated keys), BRTI signed poll + 429, Kalshi WS seq gap,
+//! spot L2 seq gap and tape decode.
 //! No test touches a real venue.
 
 // The handshake callback signature (Result<Response, ErrorResponse>) is fixed by tungstenite.
@@ -770,4 +771,84 @@ fn kalshi_ws_deadlines() {
     let sent: Vec<Value> = out.iter().map(|s| serde_json::from_str(s).unwrap()).collect();
     assert_eq!(sent, vec![json!({"id": 2, "cmd": "unsubscribe", "params": {"sids": [1, 2]}})]);
     assert_eq!(rec.stats.extra("resubscribes").unwrap(), 1);
+}
+
+// ------------------------------------------------------------------------------------------------
+// spot L2: Coinbase sequence gap -> reconnect -> fresh snapshot, and the tape decodes
+
+#[tokio::test]
+async fn spot_l2_coinbase_gap_reconnects_and_tape_decodes() {
+    let d = setup();
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}", l.local_addr().unwrap());
+    let subs: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let s2 = subs.clone();
+    tokio::spawn(async move {
+        let mut conn = 0;
+        while let Ok((s, _)) = l.accept().await {
+            conn += 1;
+            let mut ws = tokio_tungstenite::accept_async(s).await.unwrap();
+            for _ in 0..2 {
+                if let Some(Ok(Message::Text(t))) = ws.next().await {
+                    s2.lock().unwrap().push(serde_json::from_str(t.as_str()).unwrap());
+                }
+            }
+            let upd = |side: &str, p: &str, q: &str| json!({"side": side, "event_time": "2026-11-25T16:00:00Z", "price_level": p, "new_quantity": q});
+            let l2 = |seq: u64, typ: &str, u: Vec<Value>| {
+                json!({"channel": "l2_data", "client_id": "", "timestamp": "2026-11-25T16:00:00.5Z", "sequence_num": seq,
+                       "events": [{"type": typ, "product_id": "BTC-USD", "updates": u}]})
+            };
+            let mut frames = vec![
+                json!({"channel": "subscriptions", "timestamp": "2026-11-25T16:00:00Z", "sequence_num": 0, "events": []}),
+                l2(1, "snapshot", vec![upd("bid", "100", "1"), upd("offer", "101", "1")]),
+                json!({"channel": "heartbeats", "timestamp": "2026-11-25T16:00:01Z", "sequence_num": 2, "events": [{"heartbeat_counter": 1}]}),
+            ];
+            // the first connection skips sequence 3
+            frames.push(l2(if conn == 1 { 4 } else { 3 }, "update", vec![upd("bid", "100.5", "2")]));
+            for f in frames {
+                ws.send(Message::Text(f.to_string().into())).await.unwrap();
+            }
+            tokio::spawn(async move { while let Some(Ok(_)) = ws.next().await {} });
+        }
+    });
+    let (rec, wt) = writer(d.path(), "spot_l2_coinbase");
+    let stats = rec.stats.clone();
+    let mut v = doppel_tape::l2::SpotL2::new("coinbase").unwrap();
+    v.url = url;
+    let (tx, rx) = watch::channel(false);
+    let h = tokio::spawn(run_ws(v, rec, rx, fast()));
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    tx.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), h).await.unwrap().unwrap();
+    wt.join();
+
+    let subs = subs.lock().unwrap().clone();
+    assert!(subs.len() >= 4, "{subs:?}");
+    assert_eq!(subs[0], json!({"type": "subscribe", "product_ids": ["BTC-USD"], "channel": "level2"}));
+    assert_eq!(subs[1]["channel"], "heartbeats");
+    let recs = tape(d.path(), "spot_l2_coinbase");
+    let c = ctls(&recs);
+    assert_eq!(&c[..6], ["connect", "subscribe", "seq_gap", "reconnect", "disconnect", "connect"], "{c:?}");
+    let gap = recs.iter().find(|r| r["meta"]["ctl"] == "seq_gap").unwrap();
+    assert_eq!(gap["meta"], json!({"ctl": "seq_gap", "expected": 3, "got": 4}));
+    assert_eq!(stats.extra("seq_gaps").unwrap(), 1);
+    // heartbeats are recorded: they carry the sequence
+    assert!(recs.iter().any(|r| r["raw"].as_str().unwrap().contains("heartbeats")));
+
+    // the offline decoder sees the same gap, then rebuilds from the second connection's snapshot
+    let mut book = doppel_fair::venue::VenueBook::new(doppel_fair::venue::Venue::Coinbase);
+    let (mut gaps, mut last) = (0, None);
+    for r in &recs {
+        if book.apply_record(r["raw"].as_str().unwrap(), r["tw"].as_i64().unwrap(), r.get("meta")).is_err() {
+            gaps += 1;
+        }
+        if r.get("meta").is_none() {
+            last = book.snapshot();
+        }
+    }
+    assert_eq!(gaps, 1);
+    let s = last.expect("valid after the fresh snapshot");
+    assert_eq!((s.bids, s.asks), (vec![(100.5, 2.0), (100.0, 1.0)], vec![(101.0, 1.0)]));
+    // the shutdown `disconnect` ends continuity
+    assert!(book.snapshot().is_none());
 }

@@ -33,3 +33,5 @@ toml = "=0.8.23"
 
 [dev-dependencies]
 tempfile = "=3.27.0"
+# tests only: the recorder's tape round-trips through the offline book decoder
+doppel-fair = { path = "../doppel-fair" }
