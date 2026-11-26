@@ -159,7 +159,8 @@ def test_fill_vs_cancel_vs_ambiguous():
     assert get("f", "sign_to_book_ms", "fills_located", "print_price_ok", "print_size_ok") == (100, 1, 1, 1)
     # 1.5 filled, the remaining 95.5 removed in one step with only 1.5 printed near: 2600 - 1200
     assert get("c", *rest) == ("cancelled", "exact_decrease", 1400, 1400, True)
-    assert get("c", "remainder", "alone", "prints_near") == (95.5, True, 1)
+    assert get("c", "remainder", "alone", "prints_near", "end_src") == (95.5, True, 1, "price_change")
+    assert not any(x["fill_before_placement"] for x in r.values())
     # level fell below the remainder with no exact decrease: existed to its fill (2000), gone by 4000
     assert get("u", *rest) == ("unknown", "level_below", 700, 2700, False)
     # fill has no print (block time only) and nothing else happens at the level
@@ -167,6 +168,25 @@ def test_fill_vs_cancel_vs_ambiguous():
     assert get("z", "fills_located", "filled") == (0, 1.0)
     # an exact decrease that prints explain is not called a cancel
     assert get("p", *rest) == ("unknown", "censored", 600, None, False)
+
+
+def test_wrong_match_and_level_gone_before_the_fill_is_known():
+    t = tape_of([
+        book(0, "A", bids=[(0.5, 10)]),
+        trade(500, "A", 0.5, 2, "0xa"),          # the fill prints ...
+        pc(1_000, ("A", 0.5, 107, "BUY")),       # ... before the increase taken as its placement
+        pc(1_100, ("A", 0.3, 97, "BUY")),
+        pc(2_000, ("A", 0.3, 1, "BUY")),         # level left with 1 while the fill is only block-timed
+        pc(9_000, ("A", 0.01, 1, "BUY")),
+    ])
+    bad = order("bad", "A", "BUY", 0.5, 97.0, 900, fills={"0xa": (97.0, T0 + 2)})
+    gone = order("gone", "A", "BUY", 0.3, 97.0, 1_000, fills={"0xnoprint": (2.0, T0 + 5)})
+    m = match_placements([bad, gone], t, P)
+    rb = classify(bad, *m["bad"], t, set(), P)
+    assert (rb["outcome"], rb["fill_before_placement"], rb["rest_known"]) == ("filled", True, False)
+    # no event after block time 5000, but the level already cannot hold the 95 that should remain
+    rg = classify(gone, *m["gone"], t, set(), P)
+    assert (rg["outcome"], rg["reason"], rg["rest_min_ms"], rg["rest_max_ms"]) == ("unknown", "level_below", 0, 3900)
 
 
 def test_fill_amount_is_in_maker_amount_units():
@@ -208,16 +228,19 @@ def test_attribution_shows_the_known_false_positive_and_the_base_rate():
         pc(H, ("C", 0.01, 1, "BUY"), ("D", 0.99, 1, "SELL"), market="m2"),
     ])
     orders = [order("w1", "A", "BUY", 0.5, 98.0, 1_000), order("w2", "A", "SELL", 0.6, 98.0, 1_100),
-              order("x1", "A", "BUY", 0.45, 98.0, 1_200, maker=X)]
+              order("x1", "A", "BUY", 0.45, 98.0, 1_200, maker=X),
+              order("w3", "A", "BUY", 0.2, 98.0, 50_000)]  # decoded, but no increase found for it
     m = match_placements(orders, t, P)
-    assert len(m) == 3
+    assert set(m) == {"w1", "w2", "x1"}
     doc, rows = attribute(W, [98.0], orders, m, {"A"}, t, set(), P)
     tot = doc["total"]
     # own 2 (the SELL order's mirror twin is not double-counted as a candidate), 1 proven other
     assert (tot["own"], tot["other_known"], tot["candidates"], tot["control"]) == (2, 1, 2, 1)
     assert (doc["active_token_hours"], doc["control_token_hours"]) == (2.0, 2.0)
-    # 1 control hit / 2 token-h = 0.5/h -> 1 expected by chance in 2 active token-h -> net 1 of 2
-    assert (tot["control_per_token_hour"], tot["expected_by_chance"], tot["net_estimate"]) == (0.5, 1.0, 1.0)
+    # 1 control hit / 2 token-h = 0.5/h -> 1 expected by chance in 2 active token-h; one more
+    # candidate may be the wallet's own unmatched filled order -> net 2 - 1 - 1 = 0
+    assert (tot["control_per_token_hour"], tot["expected_by_chance"]) == (0.5, 1.0)
+    assert (tot["own_unmatched"], tot["net_estimate"]) == (1, 0.0)
     assert tot["identity_precision_upper"] == 0.667
     assert doc["per_size"]["98.0"] == tot
     by = {(r["token_id"], r["price"]): r for r in rows}

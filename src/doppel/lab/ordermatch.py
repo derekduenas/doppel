@@ -16,7 +16,8 @@ WHAT IS IDENTIFIED (from data) AND WHAT IS ASSUMED
    with every created_ms shifted by +60 s (placebo). Rates are over "observable" orders: the
    asset's book state is known (``intlbook`` spans) across BOTH the real and the placebo window,
    so the two rates share a denominator. (E37 used orders with any level event at their price and
-   a 2 % relative size tolerance; pass --size-tol-rel 0.02 to compare.)
+   a 2 % relative size tolerance; pass --size-tol-rel 0.02 to compare, but at 2 % the sizes
+   97..100 all match each other, so the fingerprint's per-size split then means nothing.)
 
 2. Follow-forward of a matched order. Known from chain: its fills (tx, amount).
    ``fill_amount`` is in maker-amount units, so filled shares = fill_amount * taker_amount /
@@ -24,7 +25,9 @@ WHAT IS IDENTIFIED (from data) AND WHAT IS ASSUMED
    print carrying its ``transaction_hash`` on the order's token or its mate (a maker bid on one
    token is hit by takers of either token: the book is mirrored, BUY A @ p == SELL B @ 1-p);
    without such a print the block time is used, which trails the match. The print gives time
-   only; quantity comes from chain. R = size - filled is the remainder.
+   only; quantity comes from chain. R = size - filled is the remainder. A fill printed BEFORE
+   the matched increase proves the placement match wrong: ``fill_before_placement``, counted and
+   kept out of the resting times.
    - ``filled``: R <= tol. The order ended at its last fill. Exact if every fill has a print.
    - ``cancelled`` (cancel or replace; they look the same): R > tol and, after the last fill, a
      single level decrease of R (within tol) at its price that prints do not explain: the volume
@@ -39,7 +42,9 @@ WHAT IS IDENTIFIED (from data) AND WHAT IS ASSUMED
      orders file, which holds only the fetched txs so chain fills are a lower bound);
      ``censored`` = the asset's known span ended first (reset, expiry, tape end).
    Before its last located fill the order is certain to exist, so the level is not examined
-   there. Resting time is reported as bounds from placement (venue ms): ``rest_min_ms`` = last
+   there beyond checking that it can still hold R once the fills are done. ``end_src`` says
+   whether the cancel was seen as a ``price_change`` or only as a snapshot diff (weaker).
+   Resting time is reported as bounds from placement (venue ms): ``rest_min_ms`` = last
    moment it certainly existed (last print-located fill, else placement), ``rest_max_ms`` = first
    moment it certainly did not (None when censored). ``rest_known`` = the two coincide.
 
@@ -52,7 +57,9 @@ WHAT IS IDENTIFIED (from data) AND WHAT IS ASSUMED
    decoded order: a proven false positive) or ``candidate``. In control tokens (no decoded order
    of the wallet) the count gives a base rate per token-hour of known book. Reported side by
    side, total and per size: candidates, expected by chance (base rate x active token-hours),
-   net = candidates - expected, and identity precision own / (own + other_known).
+   own_unmatched (the wallet's decoded fingerprint-size orders that found no placement: filled
+   quotes hiding among the candidates), net = candidates - own_unmatched - expected, and
+   identity precision own / (own + other_known).
    NOT IDENTIFIED: which candidates are the wallet's. ``net`` is an estimate under the
    assumption that other participants post these sizes at the control rate in the wallet's
    markets. The base rate is contaminated upward (the wallet may quote in control tokens without
@@ -277,19 +284,23 @@ def follow(tape: LevelTape, key: Key, i0: int, r: float, start_ms: int,
     evs = tape.events[key]
     tol = p.tol(r)
     end = tape.span_end(key[0], evs[i0].venue_ms)
-    for j in range(i0 + 1, len(evs)):
+    j, level = i0 + 1, evs[i0].new_size
+    while j < len(evs) and evs[j].venue_ms < start_ms and end is not None and evs[j].venue_ms <= end:
+        level = evs[j].new_size  # the order is certain to exist here; only track the level
+        j += 1
+    if level < r - tol:  # ... yet by start_ms the level cannot hold what should be left
+        return {"outcome": "unknown", "reason": "level_below", "end_ms": start_ms}
+    for j in range(j, len(evs)):
         e = evs[j]
         if end is None or e.venue_ms > end:
             break
-        if e.venue_ms < start_ms:
-            continue
         dec = -e.delta
         if abs(dec - r) <= tol and (key, j) not in claimed:
             vol, n = tape.printed(key[0], key[1], e.venue_ms, p.print_win_ms)
             if vol < dec - tol:
                 claimed.add((key, j))
                 return {"outcome": "cancelled", "reason": "exact_decrease", "end_ms": e.venue_ms,
-                        "alone": e.old_size <= r + tol, "prints_near": n}
+                        "end_src": e.src, "alone": e.old_size <= r + tol, "prints_near": n}
         if e.new_size < r - tol:
             return {"outcome": "unknown", "reason": "level_below", "end_ms": e.venue_ms}
     return {"outcome": "unknown", "reason": "censored", "end_ms": None}
@@ -334,7 +345,9 @@ def classify(o: Order, key: Key, i0: int, tape: LevelTape, claimed: set[tuple[Ke
     hi = res["end_ms"]
     row |= res | {"rest_min_ms": lo - place.venue_ms,
                   "rest_max_ms": None if hi is None else hi - place.venue_ms}
-    row["rest_known"] = row["rest_min_ms"] == row["rest_max_ms"]
+    # a fill printed before the matched increase is impossible: the placement match is wrong
+    row["fill_before_placement"] = bool(located) and min(located) < place.venue_ms
+    row["rest_known"] = row["rest_min_ms"] == row["rest_max_ms"] and not row["fill_before_placement"]
     return row
 
 
@@ -364,6 +377,10 @@ def attribute(wallet: str, sizes: list[float], orders: list[Order],
             a, pr = (k[0], k[1]) if k[2] == "BUY" else tape.sides(k[0], k[1])[-1]
             known[o.maker == wallet][(a, pr, tape.events[k][i].venue_ms)] += 1
     per: dict[float, Counter] = {s: Counter() for s in sizes}
+    for o in orders:  # the wallet's own decoded orders that found no placement still made an increase
+        s = next((z for z in sizes if p.near(o.size, z)), None)
+        if o.maker == wallet and o.order_id not in matches and s is not None:
+            per[s]["own_unmatched"] += 1
     rows: list[dict] = []
     for key in sorted(k for k in tape.events if k[2] == "BUY"):
         for i, e in enumerate(tape.events[key]):
@@ -399,9 +416,11 @@ def attribute(wallet: str, sizes: list[float], orders: list[Order],
         exp = None if rate is None else rate * h_act
         ident = c["own"] + c["other_known"]
         return {"own": c["own"], "other_known": c["other_known"], "candidates": c["candidates"],
+                "own_unmatched": c["own_unmatched"],
                 "control": c["control"], "control_per_token_hour": _r(rate),
                 "expected_by_chance": _r(exp),
-                "net_estimate": None if exp is None else _r(max(0.0, c["candidates"] - exp)),
+                "net_estimate": None if exp is None else _r(
+                    max(0.0, c["candidates"] - c["own_unmatched"] - exp)),
                 "identity_precision_upper": _r(c["own"] / ident) if ident else None}
 
     total: Counter = Counter()
@@ -450,6 +469,8 @@ def summarize(name: str, orders: list[Order], matches: dict, placebo: dict, rows
         "outcomes": dict(Counter(f"{r['outcome']}:{r['reason']}" for r in rs)),
         "cancelled_alone": sum(r["alone"] for r in canc),
         "cancelled_no_prints_near": sum(r["prints_near"] == 0 for r in canc),
+        "cancelled_seen_as_price_change": sum(r["end_src"] == "price_change" for r in canc),
+        "fill_before_placement": sum(r["fill_before_placement"] for r in rs),
         "fills": {"n": sum(r["n_fills"] for r in rs), "located_by_print": sum(r["fills_located"] for r in rs),
                   "print_at_level": sum(r["print_price_ok"] for r in rs),
                   "print_size_equal": sum(r["print_size_ok"] for r in rs)},
@@ -507,7 +528,9 @@ def card(doc: dict) -> str:
               f"by side {d['match_rate_by_side']}",
               f"sign-to-book ms (venue - created): {d['sign_to_book_ms']}; tw - created: {d['tw_minus_created_ms']}",
               f"outcomes: {d['outcomes']} | cancelled alone {d['cancelled_alone']}, "
-              f"no prints near {d['cancelled_no_prints_near']}",
+              f"no prints near {d['cancelled_no_prints_near']}, as price_change "
+              f"{d['cancelled_seen_as_price_change']} | WRONG MATCHES (fill printed before placement): "
+              f"{d['fill_before_placement']}",
               f"fills: {d['fills']}",
               f"resting ms where known: {d['rest_ms_known']}; not known {d['rest_not_known']} "
               f"(censored {d['rest_censored']})"]
@@ -515,7 +538,8 @@ def card(doc: dict) -> str:
         if fp:
             t = fp["total"]
             L += [f"fingerprint sizes {fp['sizes']} (ESTIMATE, not identification): "
-                  f"own {t['own']}, other makers proven {t['other_known']}, candidates {t['candidates']}",
+                  f"own {t['own']}, other makers proven {t['other_known']}, candidates {t['candidates']} "
+                  f"(own filled-but-unmatched hiding among them: {t['own_unmatched']})",
                   f"  chance: control {t['control']} in {fp['control_token_hours']} token-h -> expected "
                   f"{t['expected_by_chance']} in {fp['active_token_hours']} active token-h; "
                   f"net {t['net_estimate']}; identity precision <= {t['identity_precision_upper']}",
@@ -531,7 +555,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="doppel-ordermatch")
     ap.add_argument("--data", type=Path, required=True, help="tape root")
     ap.add_argument("--orders", type=Path, required=True, help="doppel-ordertape JSONL")
-    ap.add_argument("--wallet", action="append", help="maker address (repeatable; default: makers "
+    ap.add_argument("--wallet", nargs="+", action="extend", help="maker address(es) (default: makers "
                     "with >= --min-orders orders)")
     ap.add_argument("--from", dest="t_from", type=_ts, required=True, help="unix s or ISO UTC")
     ap.add_argument("--to", dest="t_to", type=_ts, required=True)
