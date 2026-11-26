@@ -533,3 +533,12 @@ def test_features_are_as_of_delayed_brti():
     assert x["mid_up_c"] == pytest.approx(50.0) and x["spread_c"] == pytest.approx(2.0)
     eth = Features(g, WindowRef("eth", ref.start, ref.end, ptb=1.0, settle=1.0)).at(d, wt.books[0], 0.0)
     assert math.isnan(eth["fair_up"]) and math.isnan(eth["edge_buy_up_c"]) and eth["mid_up_c"] == 50.0
+
+
+def test_uses_intl_detects_flow_features():
+    from doppel.strategy.genome import Condition, Genome, MakerRule, Source, Universe
+    from doppel.twin.flowfeat import uses_intl
+    base = dict(name="m", mode="maker", universe=Universe(venue="pmus"), source=Source(kind="manual"))
+    assert not uses_intl(Genome(**base, maker=MakerRule()))
+    g = Genome(**base, maker=MakerRule(pause_when=(Condition("intl_informed_flow_30s", ">", 50.0),)))
+    assert uses_intl(g)

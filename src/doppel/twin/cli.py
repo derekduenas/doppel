@@ -50,7 +50,7 @@ def parse_ts(s: str) -> int:
 
 
 def run_twin(root: Path, g: Genome, t_from: int, t_to: int, cfg: SimConfig = SimConfig(),
-             allow_stale_rest: bool = False) -> list[dict]:
+             allow_stale_rest: bool = False, lab: Path | None = None) -> list[dict]:
     if g.universe.venue != "pmus":
         raise ValueError(f"the twin replays PM US only (genome venue {g.universe.venue})")
     store = RefStore(root)
@@ -59,7 +59,17 @@ def run_twin(root: Path, g: Genome, t_from: int, t_to: int, cfg: SimConfig = Sim
     items = ((wt, store.window_ref(wt.asset, wt.start, wt.end, g.fair.vol_window_s))
              for wt in iter_windows(root, g.universe.assets, g.universe.horizons, t_from, t_to,
                                     cfg.depth_levels, allow_stale_rest))
-    return run_windows(g, items, cfg)
+    from .flowfeat import FlowFeatures, ScoreCache, uses_intl
+    factory = None
+    if uses_intl(g):
+        if lab is None:
+            raise ValueError("genome uses intl_* features: pass --lab (token map for informedness)")
+        cache = ScoreCache(root, lab)
+
+        def make(gg, ref, c, cache=cache):
+            return FlowFeatures(gg, ref, c.feature_config(), root, cache)
+        factory = make
+    return run_windows(g, items, cfg, features_factory=factory)
 
 
 def main(argv=None) -> int:
@@ -77,6 +87,7 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--allow-stale-rest", action="store_true",
                     help="diagnostics: also simulate REST-only windows (CDN-stale books); never in the verdict")
+    ap.add_argument("--lab", type=Path, help="lab dir (token map); required for intl_* features")
     ap.add_argument("--min-trade-coverage", type=float, default=0.9,
                     help="maker windows need this print coverage; < 0.9 marks the run DIAGNOSTIC")
     ap.add_argument("--out", type=Path, required=True)
@@ -100,7 +111,7 @@ def main(argv=None) -> int:
             return 2
     cfg = SimConfig(latency_ms=a.latency_ms, brti_delay_s=a.brti_delay_s, fair_lag_s=a.fair_lag_s,
                     depth_levels=a.depth_levels, min_trade_coverage=a.min_trade_coverage)
-    results = run_twin(a.data, g, t_from, t_to, cfg, a.allow_stale_rest)
+    results = run_twin(a.data, g, t_from, t_to, cfg, a.allow_stale_rest, a.lab)
     v = verdict(g, results, a.block, a.boot, a.seed)
     diagnostic = a.allow_stale_rest or a.min_trade_coverage < 0.9
     if diagnostic:
