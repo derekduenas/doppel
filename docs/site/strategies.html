@@ -1,0 +1,241 @@
+<title>DOPPEL Strategy Book</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: single reading column (~72ch) with full-width bands for the pipeline and tables; ledger/terminal feel, cents as the unit */
+:root{
+  --bg:#f6f7f9; --surface:#ffffff; --fg:#14202e; --muted:#566273; --line:#dde2e8;
+  --accent:#1f5fbf; --accent-soft:#e6eefb; --ok:#1d7a4f; --ok-soft:#e3f3ea; --warn:#a86200; --warn-soft:#fbf0de; --bad:#b3362b; --bad-soft:#f9e4e1;
+  --display:"Space Grotesk",ui-sans-serif,system-ui,sans-serif; --body:"Inter",ui-sans-serif,system-ui,sans-serif; --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f151d; --surface:#161e29; --fg:#e4e9f0; --muted:#97a3b3; --line:#263242;
+  --accent:#7aa7ef; --accent-soft:#1b2a40; --ok:#5cc792; --ok-soft:#14291f; --warn:#e0a54a; --warn-soft:#2c2213; --bad:#ef7f74; --bad-soft:#2f1816; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f151d; --surface:#161e29; --fg:#e4e9f0; --muted:#97a3b3; --line:#263242;
+  --accent:#7aa7ef; --accent-soft:#1b2a40; --ok:#5cc792; --ok-soft:#14291f; --warn:#e0a54a; --warn-soft:#2c2213; --bad:#ef7f74; --bad-soft:#2f1816; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:16px;line-height:1.6;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0 64px}
+.wrap{max-width:980px;margin:0 auto;display:flex;flex-direction:column;gap:56px}
+.prose{max-width:72ch}
+h1,h2,h3{font-family:var(--display);line-height:1.15;text-wrap:balance;margin:0}
+h1{font-size:clamp(2.4rem,6vw,3.6rem);letter-spacing:-.02em}
+h2{font-size:1.65rem;letter-spacing:-.01em}
+h3{font-size:1.1rem}
+p{margin:0}
+.stack{display:flex;flex-direction:column;gap:16px}
+.eyebrow{font-family:var(--mono);font-size:.75rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.lede{font-size:1.2rem;color:var(--fg);max-width:62ch}
+.mono,code{font-family:var(--mono);font-size:.88em}
+code{background:var(--accent-soft);padding:1px 5px;border-radius:4px}
+a{color:var(--accent)}
+header.top{padding-top:48px;display:flex;flex-direction:column;gap:20px;border-bottom:1px solid var(--line);padding-bottom:36px}
+.meta{display:flex;flex-wrap:wrap;gap:8px}
+.chip{font-family:var(--mono);font-size:.75rem;padding:3px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted);background:var(--surface)}
+.chip.live{color:var(--bad);border-color:var(--bad);background:var(--bad-soft)}
+.thesis{border-left:3px solid var(--accent);padding:4px 0 4px 18px;font-size:1.08rem}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.fact{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px 20px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.fact .k{font-family:var(--mono);font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--accent)}
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:.9rem;min-width:720px}
+th,td{text-align:left;vertical-align:top;padding:10px 14px;border-bottom:1px solid var(--line)}
+th{font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);background:var(--bg);font-weight:600}
+tr:last-child td{border-bottom:0}
+td.law{font-weight:600}
+.tag{display:inline-block;font-family:var(--mono);font-size:.72rem;padding:1px 7px;border-radius:5px;white-space:nowrap}
+.y{background:var(--ok-soft);color:var(--ok)} .p{background:var(--warn-soft);color:var(--warn)} .n{background:var(--bad-soft);color:var(--bad)}
+/* clocks */
+.clock{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;border:1px solid var(--line);border-radius:10px;background:var(--surface);overflow:hidden}
+.tick{padding:16px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:6px;min-width:0}
+.tick:last-child{border-right:0}
+.tick .t{font-family:var(--mono);font-weight:600;color:var(--accent)}
+.tick .d{font-family:var(--mono);font-size:.75rem;color:var(--muted)}
+.tick.hot{background:var(--accent-soft)}
+.tick.id{background:var(--warn-soft)}
+@media (max-width:760px){.clock{grid-template-columns:1fr}.tick{border-right:0;border-bottom:1px solid var(--line)}.tick:last-child{border-bottom:0}}
+/* pipeline */
+.plane{border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:18px;display:flex;flex-direction:column;gap:14px}
+.plane .ptitle{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:baseline}
+.layers{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.layer{border:1px solid var(--line);border-radius:8px;padding:12px;background:var(--bg);display:flex;flex-direction:column;gap:6px;min-width:0}
+.layer b{font-family:var(--display);font-size:.98rem}
+.layer .id{font-family:var(--mono);font-size:.7rem;color:var(--accent)}
+.layer span{font-size:.84rem;color:var(--muted);line-height:1.45}
+.bridge{display:flex;align-items:center;gap:12px;justify-content:center;font-family:var(--mono);font-size:.8rem;color:var(--warn);padding:6px 0}
+.bridge::before,.bridge::after{content:"";flex:1;max-width:160px;border-top:2px dashed var(--warn)}
+.agents{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.agent{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:var(--surface);display:flex;flex-direction:column;gap:6px;min-width:0}
+.agent .no{font-size:.82rem;color:var(--bad)}
+.agent .no::before{content:"cannot · ";font-family:var(--mono);font-size:.72rem}
+ol.steps{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:10px}
+.ms{display:grid;grid-template-columns:120px 1fr;gap:12px 20px;align-items:start}
+.ms .when{font-family:var(--mono);font-size:.8rem;color:var(--accent);padding-top:3px}
+@media (max-width:560px){.ms{grid-template-columns:1fr;gap:4px}.ms .when{padding-top:12px}}
+.callout{background:var(--warn-soft);border:1px solid var(--warn);border-radius:10px;padding:16px 18px}
+.decisions{display:flex;flex-direction:column;gap:12px;counter-reset:d}
+.decision{background:var(--surface);border:1px solid var(--accent);border-radius:10px;padding:16px 18px 16px 56px;position:relative}
+.decision::before{counter-increment:d;content:counter(d);position:absolute;left:18px;top:14px;font-family:var(--display);font-size:1.4rem;color:var(--accent);font-weight:700}
+.num{font-variant-numeric:tabular-nums}
+footer{font-size:.82rem;color:var(--muted);border-top:1px solid var(--line);padding-top:20px}
+</style>
+<style>
+.strat{border-top:1px solid color-mix(in oklab,currentColor 18%,transparent);padding-top:28px;margin-top:36px}
+.strat h2{margin-bottom:4px}.sub{opacity:.75;margin:0 0 14px}
+dl.spec{display:grid;grid-template-columns:minmax(130px,190px) 1fr;gap:8px 18px;margin:14px 0}
+dl.spec dt{font-weight:600;opacity:.8}dl.spec dd{margin:0}
+.eq{font-family:"JetBrains Mono",monospace;font-size:.92em;padding:10px 12px;border-radius:8px;background:color-mix(in oklab,currentColor 6%,transparent);overflow-x:auto;white-space:pre}
+.pill{display:inline-block;font-size:.78em;padding:2px 8px;border-radius:999px;border:1px solid currentColor;opacity:.85;margin-right:6px}
+</style>
+<div class="wrap">
+<header class="top">
+  <div class="eyebrow">DOPPEL · strategy book v1 · 2026-11-26</div>
+  <h1>Strategy book</h1>
+  <p class="lede">Every DOPPEL strategy as an executable contract: where the money comes from, who pays it, the exact rules, the numbers we have, how it fails, and the test that can kill it. Sealed families (H1–H4) are frozen as written; S5–S9 are designed and waiting on data or code, and get sealed before their windows open.</p>
+  <div class="meta"><span class="chip">4 families sealed · 20 genomes</span><span class="chip">5 designed</span><span class="chip live">0 live orders</span></div>
+</header>
+
+<section class="stack">
+  <div class="eyebrow">Shared ground</div>
+  <h2>The contract every strategy shares</h2>
+  <dl class="spec">
+    <dt>Instrument</dt><dd>Polymarket US crypto Up/Down windows (BTC first; ETH, SOL, XRP next). One YES (Up) instrument: buying Down = selling YES. Pays $1 per YES if the settlement average ≥ the opening average (ties go Up).</dd>
+    <dt>Settlement</dt><dd>A(t) = mean of raw BRTI over [t−59, t]. Strike = A(start−1), settle = A(end−1). Proven exact on our data (E15/E18). Kalshi KXBTC15M is the same contract (E23).</dd>
+    <dt>Fair value</dt><dd>fair-v1: P(settle ≥ strike) from the raw BRTI seconds already in the settlement average plus the variance of the seconds still to come. It beats the published-series model at every horizon (Brier 0.015 vs 0.048 at 30 s left).</dd>
+    <dt>Costs</dt><dd>PM US makers pay 0. API takers: 0.0695·p(1−p) per contract, 70% rebated to Dec 31 (net ≈0.021·p(1−p): 0.52¢ at 50¢). Kalshi KXBTC15M: makers 0, takers ⌈0.07·p(1−p)⌉ to the cent.</dd>
+    <dt>Clock rule</dt><dd>A decision at second d sees only data we RECEIVED by d. Orders and cancels land 250 ms later in the twin.</dd>
+    <dt>Fill model</dt><dd>Pessimistic queue: we join behind displayed size; only prints at our price burn the queue; cancellations never help us; a print through our price fills us; a book that crosses our quote without a print fills us (the adverse fill a naive replay misses). Maker verdicts need ≥90% of venue volume seen as prints.</dd>
+    <dt>Risk envelope</dt><dd>Per genome: |inventory| ≤ 40 contracts, ≤ $40 at risk per window, one window at a time, stand down after −$25 in a UTC day, kill on −$25 drawdown. riskd enforces the same limits live.</dd>
+    <dt>Verdict</dt><dd>PASS only if the lower 95% bound (block bootstrap, 12-window blocks) of net ¢ per window is above 0 after fees, on ≥300 windows, surviving Holm within its family. Then a commercial hurdle: lower-bound $/day after $60/month operating cost, without incentives.</dd>
+  </dl>
+</section>
+
+<!-- H1 -->
+<section class="strat">
+  <span class="pill">SEALED</span><span class="pill">verdict Nov 29</span>
+  <h2>H1 · Fair-value maker</h2>
+  <p class="sub">The baseline: earn the spread by quoting both sides around a better fair value than the crowd uses.</p>
+  <dl class="spec">
+    <dt>Edge source</dt><dd>Two things: the spread itself (takers pay to trade now), and a fair value computed from raw BRTI while most quoters anchor on the displayed average or the book mid. The census says this pool is real: makers in intl crypto windows earn ≈$61.7k/day; late takers lose ≈$6.7k/day.</dd>
+    <dt>Who pays us</dt><dd>Impatient takers: retail, flatteners near close, and bots crossing to fix inventory.</dd>
+    <dt>Universe</dt><dd>PM US BTC 5m. Quote only when ≥5 s since open and ≥20 s to close.</dd>
+    <dt>Rules</dt><dd>Every second: bid = fair − h − skew, ask = fair + h − skew, with skew = 0.05¢ × inventory (lean against what we hold). Never bid within 0.5¢ of fair or offer within 0.5¢ of it. Requote when fair moves ≥1¢ or a quote is 20 s old. 10 contracts per side. Hold everything to settlement.</dd>
+    <dt>Variants (6)</dt><dd>h = 1, 2, 3¢ × pause on |BRTI 5 s move| > $30 (on/off).</dd>
+    <dt>What we expect</dt><dd>Probably negative. Pre-window diagnostic: −$1.67/window on 12 windows (not evidence). E24 shows why: fills arrive disproportionately when fair is about to move against the maker (−0.5¢ per contract overall, −1.8¢ in the last 60–120 s).</dd>
+    <dt>Why run it</dt><dd>It's the control. Every guard below is measured against it on the same windows.</dd>
+    <dt>Fails when</dt><dd>Informed takers or faster quoters pick off stale quotes; volatility bursts; thin print coverage (verdict stays DIAGNOSTIC).</dd>
+  </dl>
+</section>
+
+<!-- H2/H3 -->
+<section class="strat">
+  <span class="pill">SEALED</span><span class="pill">verdict Nov 30</span>
+  <h2>H2 + H3 · Flow-guarded maker, and the test of the guard</h2>
+  <p class="sub">DOPPEL's unique input: who is trading on Polymarket intl, about 2 s after they trade, before it reaches the US book.</p>
+  <dl class="spec">
+    <dt>Edge source</dt><dd>Adverse selection is concentrated in a small set of wallets. We score each intl wallet's informedness point-in-time (how much its past taker trades beat settlement, shrunk toward the average with a 100-cell prior). When informed flow is buying Up, a US maker selling Up is about to lose.</dd>
+    <dt>Signal</dt><dd>intl_informed_flow_30s = Σ over taker trades received in the last 30 s of (Up-direction $) × wallet weight, weight = clip(excess ÷ 10¢, −1, 1). Pre-window distribution of |value|: median $26, p90 $141, p99 $617.</dd>
+    <dt>H2 rules</dt><dd>H1 rules + pull both quotes while |informed flow 30 s| > T. 6 variants: h = 1, 2, 3¢ × T = $100 or $300.</dd>
+    <dt>H3 rules</dt><dd>One frozen policy (h = 2¢, BRTI guard on), four arms on identical windows. <b>base</b>: no flow input. <b>anon</b>: pause when |raw intl flow 30 s| > $1,725. <b>ident</b>: pause when |informed flow 30 s| > $100. <b>placebo</b>: pause at random 17.4% of seconds. All three guards pause equally often (17.4%), so only the information differs.</dd>
+    <dt>Delay sweep</dt><dd>The ident arm is re-run seeing flow 0, 2, 5, 10, 30 s late. The delay at which its advantage vanishes, compared with our measured cancel latency, says whether the signal is usable live.</dd>
+    <dt>Decisions it settles</dt><dd>ident > anon > placebo: wallet research pays, so go deeper (clock-0, operator clustering). anon ≈ ident: keep the simple signal and stop paying for identity. placebo ≈ guards: the "benefit" was just quoting less.</dd>
+    <dt>Fails when</dt><dd>Informed flow reaches the US book before our cancel lands; scores drift (new wallets, rotation); the guard pauses during the most profitable seconds too.</dd>
+  </dl>
+</section>
+
+<!-- H4 -->
+<section class="strat">
+  <span class="pill">SEALED</span><span class="pill">verdict Dec 1</span>
+  <h2>H4 · Edge-selective maker</h2>
+  <p class="sub">Only accept fills where our fair value says we're at least 2¢ ahead, and sit out the toxic zone.</p>
+  <dl class="spec">
+    <dt>Edge source</dt><dd>E24 (87,195 public PM US prints): makers' realized P&L sorted cleanly by fair-v1 edge at the fill: ≤−5¢ → −10.5¢; 0–2¢ → +0.4¢; 2–5¢ → +4.6¢; ≥5¢ → +9.2¢ per contract. Most of the maker pool's profit sits in fills with ≥2¢ model edge.</dd>
+    <dt>Rules</dt><dd>H1 quoting with min edge vs fair = 2¢ (a quote is never inside fair ± 2¢), the identity guard (T = $100) and the BRTI guard. 4 variants: h = 2 or 3¢ × skip 60–120 s before close (on/off).</dd>
+    <dt>Trade-off</dt><dd>Fewer fills, better fills. Capacity is the risk: at ≥2¢ from fair we sit behind the queue and may rarely fill. The twin reports fill share of venue volume so we see that directly.</dd>
+    <dt>Fails when</dt><dd>The ≥2¢ cohort's profit belonged to makers with queue priority we can't get; fair-v1's edge at fill is itself selected (fills happen when fair is wrong).</dd>
+  </dl>
+</section>
+
+<!-- S5 bridge -->
+<section class="strat">
+  <span class="pill">DESIGNED</span><span class="pill">needs live Kalshi books</span>
+  <h2>S5 · Cross-venue bridge: rest on Kalshi, hedge on Polymarket US</h2>
+  <p class="sub">Same contract, two venues, two fee schedules. Use each venue for what it's cheap at.</p>
+  <dl class="spec">
+    <dt>Edge source</dt><dd>Kalshi makers pay 0; PM US API takers pay ≈0.52¢ at 50¢ through Dec 31. The two books disagree by a few cents for seconds at a time (E25: with real fees, 14 persistent taker-taker episodes worth $28.20 in ~3.5 h of BTC 15m, before using the cheaper resting leg).</dd>
+    <dt>Rules</dt><dd>For each BTC 15m window, rest a Kalshi YES bid at <span class="mono">b_K = PM US best bid − fee_PM(net) − m</span> and a Kalshi NO bid symmetric to the PM US ask, size ≤ PM US displayed depth. When the Kalshi bid fills, immediately sell YES on PM US at its bid (IOC). Locked: $1 at settlement on one venue, $0 on the other, net = b_P − b_K − fee.</dd>
+    <dt>Margin math</dt><dd class="eq">net per pair  = b_P − b_K − 0.3·0.0695·b_P(1−b_P)
+hedge miss    = P(PM US bid fell below b_K + fee within 250 ms | Kalshi fill)
+expected      = (1 − miss)·m − miss·E[slip | miss]</dd>
+    <dt>The real risk</dt><dd>Legging: our Kalshi bid fills <i>because</i> the price just dropped, and the PM US bid may drop with it before the hedge lands. That conditional miss rate is the number that decides the strategy, measured on Kalshi WebSocket fills against PM US WebSocket books.</dd>
+    <dt>Capital</dt><dd>Both legs lock collateral until settlement on two clearinghouses (≈$1 per pair for up to 15 min), so the allocator charges for capital time.</dd>
+    <dt>Kill</dt><dd>Miss-adjusted expectancy ≤ 0 on ≥300 attempts; or the edge disappears ex-rebate (it must not depend on the Dec 31 promo to be scaled).</dd>
+  </dl>
+</section>
+
+<!-- S6 -->
+<section class="strat">
+  <span class="pill">DESIGNED</span><span class="pill">needs Kalshi WS + hedge genome</span>
+  <h2>S6 · Hedge-priced maker</h2>
+  <p class="sub">Quote PM US where we know we can lay the risk off on Kalshi.</p>
+  <dl class="spec">
+    <dt>Edge source</dt><dd>A maker's biggest loss is inventory that moves against it. If Kalshi's book for the identical contract is a hedge, the PM US quote can be set from the distribution of the Kalshi price <i>after</i> a PM US fill, not from fair value alone.</dd>
+    <dt>Rules</dt><dd>bid_PM = E[Kalshi executable ask after a PM US buy fill] − kalshi taker fee − m (mirror for the ask). On fill: hedge immediately if the expected hedge cost beats holding; otherwise hold under inventory skew and hedge when |inventory| ≥ cap.</dd>
+    <dt>Needs</dt><dd>The post-fill Kalshi price distribution from tape (Kalshi WebSocket, recording since Nov 26), hedge depth, and our cancel latency.</dd>
+    <dt>Fails when</dt><dd>Kalshi depth vanishes at the moments we need it; both books move together faster than our hedge.</dd>
+  </dl>
+</section>
+
+<!-- S7 flow follow -->
+<section class="strat">
+  <span class="pill">DESIGNED</span><span class="pill">test on existing tape</span>
+  <h2>S7 · Informed-flow follower (taker)</h2>
+  <p class="sub">When informed intl wallets move and the US book hasn't, take the stale US price.</p>
+  <dl class="spec">
+    <dt>Edge source</dt><dd>The same signal as H2/H3, used offensively. With the API rebate, crossing costs ≈0.52¢ at 50¢ instead of 2.4¢, so a 2–3¢ lead is now worth trading.</dd>
+    <dt>Rules</dt><dd>When clock-0 (anonymous print, at receipt) or identity (RTDS, ~2 s later) marks a one-sided informed burst and the PM US best price is still at least fee + m from fair-v1 shifted by the burst, buy that side IOC, size ≤ displayed depth and 10 contracts. Hold to settlement; at most one entry per window per direction.</dd>
+    <dt>Prior result to beat</dt><dd>Our 2026-11-13 wallet-copy study found intl in-play edge gone in ~5 s and pregame following ≈0. This strategy lives inside that 5 s, so the delay sweep in H3 is its first test.</dd>
+    <dt>Kill</dt><dd>Net after fees ≤ 0 at the measured end-to-end delay; or edge only before the identity arrives and clock-0 can't see it.</dd>
+  </dl>
+</section>
+
+<!-- S8 structural -->
+<section class="strat">
+  <span class="pill">DESIGNED</span><span class="pill">needs ladder streams</span>
+  <h2>S8 · Same-settlement structural arbitrage</h2>
+  <p class="sub">Contracts that settle on the same 60 s average must be priced consistently with each other.</p>
+  <dl class="spec">
+    <dt>Edge source</dt><dd>For strikes K1 &lt; K2 on the same observation, P(≥K1) ≥ P(≥K2). Lower-strike YES + higher-strike NO pays at least $1. Ranges must tile. Both venues list ladders (hourly/daily/weekly) on the same BRTI average, plus the 5m/15m Up/Down.</dd>
+    <dt>Rules</dt><dd>Scan every same-settlement class each second; when the all-in cost of a riskless combination is &lt; $1 − margin at displayed size on both legs, take both, the less liquid leg first.</dd>
+    <dt>Status</dt><dd>Scanner built (2,700 contracts, 19 ladders tile cleanly). Only Up/Down classes are scannable until we record ladder books; Kalshi ladder equivalence (KXBTCD vs PM US daily) must be proven to the cent first, like E23.</dd>
+    <dt>Fails when</dt><dd>Second leg fails (recorded as a loss, not a skip); rounding at tied boundaries; the class is not actually the same statistic.</dd>
+  </dl>
+</section>
+
+<!-- S9 -->
+<section class="strat">
+  <span class="pill">DESIGNED</span><span class="pill">after Rust fast-fair</span>
+  <h2>S9 · Last-minute cancel-vs-keep</h2>
+  <p class="sub">In the final minute, decide every second whether a resting quote is worth its queue place.</p>
+  <dl class="spec">
+    <dt>Edge source</dt><dd>Inside the last 60 s, each new raw BRTI second moves the settlement average by 1/60 of its change; we compute that exactly and earlier than quoters reading the displayed average. Raw constituent books (Coinbase, Kraken, Bitstamp…) lead the 1 Hz BRTI print by hundreds of ms.</dd>
+    <dt>Rules</dt><dd>Keep a quote while its value (fill probability × post-fill markout + queue value) exceeds 0; cancel the instant the replica-predicted next BRTI makes it negative; never requote into the last 5 s.</dd>
+    <dt>Test</dt><dd>Charge every false alarm and lost queue place; compare against immediate repricing under the same limits.</dd>
+  </dl>
+</section>
+
+<section class="stack" style="margin-top:40px">
+  <div class="eyebrow">Order of play</div>
+  <h2>How these become money</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>When</th><th>What decides</th><th>Unlocks</th></tr></thead>
+    <tbody>
+      <tr><td>Nov 27</td><td>Rust recorder cutover; Kalshi lead and conditional-miss measurement on live Kalshi books</td><td>S5 and S6 sealed as genomes</td></tr>
+      <tr><td>Nov 29–Dec 1</td><td>H1–H4 verdicts; H3 says what identity is worth and for how long</td><td>S7 sealed or dropped; guard choice for every maker</td></tr>
+      <tr><td>Dec</td><td>Shadow paper ≥14 days for anything that passed; commercial hurdle</td><td>Micro-live, $25–100 caps, only when you arm riskd</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<footer>Source of truth: <span class="mono">genomes/make_h*.py</span> and <span class="mono">registry/genomes.jsonl</span> (sealed); evidence <span class="mono">FINDINGS.md</span> E15–E27; roadmap A1–A8, C1–C10.</footer>
+</div>
