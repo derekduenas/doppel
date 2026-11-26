@@ -18,6 +18,66 @@ def test_ledger_persists_and_caps(tmp_path):
     assert led2.summary()["usd_est"] == 0.02
 
 
+@pytest.mark.parametrize("cap", ["-1", "10000001", "1.5"])
+def test_invalid_cap_rejected_before_network_or_ledger(tmp_path, monkeypatch, cap):
+    monkeypatch.setenv("GOLDSKY_FEEDS_API_KEY", "test")
+    monkeypatch.setattr(gs.aiohttp, "ClientSession", lambda **kw: pytest.fail("network requested"))
+    ledger = tmp_path / "ledger"
+    with pytest.raises(SystemExit) as exc:
+        gs.main(["--data", str(tmp_path), "--ledger", str(ledger), "--cap-rows", cap,
+                 "window", "--start", "1", "--end", "2", "--max-rows", "1", "--job", "audit"])
+    assert exc.value.code == 2
+    assert not ledger.exists()
+
+
+def test_owner_cap_and_default_apply_to_new_and_existing_ledgers(tmp_path):
+    p = tmp_path / "rows"
+    assert gs.Ledger(p).cap == 7_000_000
+    led = gs.Ledger(p, 10_000_000)
+    led.add("first", 9_999_999, "page")
+    led.reserve("last", 1, "page")
+    with pytest.raises(gs.BudgetExceeded):
+        gs.Ledger(p, 10_000_000).reserve("too many", 1, "page")
+    with pytest.raises(ValueError, match="cap-rows"):
+        gs.Ledger(p, 10_000_001)
+    assert gs.Ledger(tmp_path / "disabled", 0).summary()["remaining_rows"] == 0
+
+
+@pytest.mark.parametrize(("cursor", "wallet_cap"), [("more", "10"), (None, "2")])
+def test_cohort_reports_cursor_at_effective_run_limit(tmp_path, monkeypatch, capsys, cursor, wallet_cap):
+    class Response:
+        status = 200
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def text(self):
+            return orjson.dumps({"data": [{}, {}], "next_cursor": cursor}).decode()
+
+    class Session:
+        def get(self, url, **kwargs):
+            assert "limit=2" in url
+            return Response()
+
+        async def close(self):
+            pass
+
+    monkeypatch.setenv("GOLDSKY_FEEDS_API_KEY", "test")
+    monkeypatch.setattr(gs.aiohttp, "TCPConnector", lambda **kw: None)
+    monkeypatch.setattr(gs.aiohttp, "ClientSession", lambda **kw: Session())
+    cohort = tmp_path / "cohort.json"
+    cohort.write_bytes(orjson.dumps({"candidates": ["w"], "controls": [], "sha256": "digest"}))
+    assert gs.main(["--data", str(tmp_path), "--ledger", str(tmp_path / "ledger"), "cohort",
+                    "--cohort", str(cohort), "--run-budget-rows", "2", "--max-rows-per-wallet",
+                    wallet_cap, "--execute"]) == 0
+    rows = [orjson.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert rows[1] == {"wallet": "w", "role": "cand", "rows": 2, "truncated": bool(cursor)}
+
+
 async def test_pull_pages_ledgers_and_stops_at_cap(tmp_path):
     pages = {None: ("c1", 3), "c1": ("c2", 3), "c2": (None, 2)}
     seen_keys = []

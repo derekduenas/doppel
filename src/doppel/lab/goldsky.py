@@ -32,6 +32,7 @@ from ..tape.sources.base import SSL_CTX, UA
 BASE = "https://edge.goldsky.com/data/polymarket/activity"
 USD_PER_ROW = 10.0 / 1_000_000
 DEFAULT_CAP_ROWS = 7_000_000
+STARTER_CREDIT_ROWS = 10_000_000  # $100 at the recorded $10 per million rows
 PAGE = 1000
 RPS = 4.0  # Starter limit is 5 req/s per project
 
@@ -44,6 +45,8 @@ class Ledger:
     """Reserve a page durably before sending. A lost reply keeps its maximum charge held."""
 
     def __init__(self, path: Path, cap_rows: int = DEFAULT_CAP_ROWS):
+        if type(cap_rows) is not int or not 0 <= cap_rows <= STARTER_CREDIT_ROWS:
+            raise ValueError(f"--cap-rows must be an integer from 0 to {STARTER_CREDIT_ROWS:,}")
         self.path = Path(path)
         self.cap = cap_rows
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -132,8 +135,14 @@ def activity_writer(root: Path):
 
 async def pull(job: str, params: dict, key: str, ledger: Ledger, writer: SegmentWriter,
                max_rows: int, session: aiohttp.ClientSession | None = None) -> int:
-    """Page through one filtered query (newest first) until exhausted or ``max_rows``.
-    Returns rows fetched. Every page is budget-checked first and ledgered after."""
+    """Return the number of rows fetched for a bounded query."""
+    rows, _ = await _pull_pages(job, params, key, ledger, writer, max_rows, session)
+    return rows
+
+
+async def _pull_pages(job: str, params: dict, key: str, ledger: Ledger, writer: SegmentWriter,
+                      max_rows: int, session: aiohttp.ClientSession | None = None) -> tuple[int, bool]:
+    """Return fetched rows and whether the last response advertised another page."""
     own = session is None
     if own:
         session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=SSL_CTX),
@@ -175,14 +184,21 @@ async def pull(job: str, params: dict, key: str, ledger: Ledger, writer: Segment
                                       "sent_tw": sent_w, "sent_tm": sent_m})
             got += rows
             cursor = doc.get("next_cursor")
-            if not cursor or rows == 0:
+            if not cursor or rows == 0 or got >= max_rows:
                 break
             await asyncio.sleep(1.0 / RPS)
     finally:
         writer.flush()
         if own:
             await session.close()
-    return got
+    return got, bool(cursor)
+
+
+def _nonnegative_int(value: str) -> int:
+    n = int(value)
+    if n < 0:
+        raise argparse.ArgumentTypeError("must be a nonnegative integer")
+    return n
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -194,21 +210,24 @@ def main(argv: list[str] | None = None) -> int:
     w = sub.add_parser("window", help="all activity in a time window (<= 7 days)")
     w.add_argument("--start", type=int, required=True)
     w.add_argument("--end", type=int, required=True)
-    w.add_argument("--max-rows", type=int, required=True)
+    w.add_argument("--max-rows", type=_nonnegative_int, required=True)
     w.add_argument("--job", required=True)
     c = sub.add_parser("cohort", help="per-wallet history for a frozen cohort file")
     c.add_argument("--cohort", type=Path, required=True)
-    c.add_argument("--n-candidates", type=int, default=10)
-    c.add_argument("--n-controls", type=int, default=10)
+    c.add_argument("--n-candidates", type=_nonnegative_int, default=10)
+    c.add_argument("--n-controls", type=_nonnegative_int, default=10)
     c.add_argument("--days", type=float, default=7.0)
     c.add_argument("--end", type=int, help="explicit end epoch (default now); start = end - days")
-    c.add_argument("--max-rows-per-wallet", type=int, default=20_000)
-    c.add_argument("--skip", type=int, default=0, help="skip the first N candidates and controls")
-    c.add_argument("--run-budget-rows", type=int, help="stop this run after this many rows")
+    c.add_argument("--max-rows-per-wallet", type=_nonnegative_int, default=20_000)
+    c.add_argument("--skip", type=_nonnegative_int, default=0, help="skip the first N candidates and controls")
+    c.add_argument("--run-budget-rows", type=_nonnegative_int, help="stop this run after this many rows")
     c.add_argument("--execute", action="store_true", help="without this, only print the plan")
     sub.add_parser("budget")
     a = ap.parse_args(argv)
-    ledger = Ledger(a.ledger, a.cap_rows)
+    try:
+        ledger = Ledger(a.ledger, a.cap_rows)
+    except ValueError as exc:
+        ap.error(str(exc))
     if a.cmd == "budget":
         print(orjson.dumps(ledger.summary()).decode())
         return 0
@@ -256,12 +275,13 @@ def _cohort(a, ledger: Ledger, key: str) -> int:
             if room <= 0:
                 print(orjson.dumps({"stopped": "run budget reached", "spent": spent}).decode())
                 break
-            n = asyncio.run(pull(f"cohort-{tag}-{role}-{w}-{start}", {"address": w, "start_time": start,
-                                                              "end_time": end},
-                                 key, ledger, writer, min(a.max_rows_per_wallet, room)))
+            job = f"cohort-{tag}-{role}-{w}-{start}"
+            params = {"address": w, "start_time": start, "end_time": end}
+            n, truncated = asyncio.run(_pull_pages(job, params, key, ledger, writer,
+                                                  min(a.max_rows_per_wallet, room)))
             spent += n
             print(orjson.dumps({"wallet": w, "role": role, "rows": n,
-                                "truncated": n >= a.max_rows_per_wallet}).decode(), flush=True)
+                                "truncated": truncated}).decode(), flush=True)
     print(orjson.dumps({"done": True, **ledger.summary()}).decode())
     return 0
 
