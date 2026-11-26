@@ -175,7 +175,8 @@ def test_only_verified_rows_count_when_the_column_exists():
     for r in rows[30:50]:
         r["verified"] = None
     w = prepare(rows, True)
-    assert w["input"] == {"rows": 200, "rows_used": 150, "verified_false": 30, "verified_null": 20,
+    assert w["input"] == {"rows": 200, "rows_used": 150, "rows_excluded_by_role": {"maker": 50},
+                          "verified_false": 30, "verified_null": 20,
                           "unflagged_input": False}
     assert len(w["orders"]) == 150
     assert len(prepare(rows, False)["orders"]) == 200
@@ -202,7 +203,7 @@ def om_e39(**kw):
          "outcomes": {"filled:chain": 141, "cancelled:exact_decrease": 123, "unknown:level_below": 76},
          "cancelled_alone": 60, "fill_before_placement": 2,
          "rest_ms_known": {"filled": q(1050, 141), "cancelled": q(2900, 123)},
-         "fingerprint": {"sizes": list(SIZES), "candidate_rest_ms_cancelled": q(245, 119941),
+         "fingerprint": {"sizes": list(SIZES), "active_token_hours": 40.0, "candidate_rest_ms_cancelled": q(245, 119941),
                          "total": {"own": 320, "other_known": 48, "candidates": 124429, "own_unmatched": 20,
                                    "control": 500, "expected_by_chance": 2942.0, "net_estimate": 121467.0,
                                    "identity_precision_upper": 0.87}}}
@@ -252,13 +253,17 @@ def test_ledger_e39_wallet_is_flicker():
     assert statuses(doc) == {
         "identity_software": VERIFIED, "universe": VERIFIED, "size_rule": VERIFIED,
         "price_rule": UNKNOWN,  # dossier has book state for 2 % of fills (E28)
-        "placement_cadence": VERIFIED,  # 200 stamped maker orders, match 0.98 vs placebo 0.046
+        "placement_cadence": ESTIMATED,  # stamps validated, but fills are 0.3 % of quotes
         "cancel_replace": ESTIMATED,  # 76 of 340 outcomes unknown
         "fill_footprint": ESTIMATED, "inventory_rule": VERIFIED, "taker_behaviour": VERIFIED,
         "pnl_source": VERIFIED, "copyability": ESTIMATED}
-    # 0.05 + 0.10 + 0.10 + 0 + 0.10 + 0.05 + 0.05 + 0.10 + 0.05 + 0.10 + 0.025
-    assert doc["coverage"] == 0.725
+    # 0.05 + 0.10 + 0.10 + 0 + 0.05 + 0.05 + 0.05 + 0.10 + 0.05 + 0.10 + 0.025
+    assert doc["coverage"] == 0.675
     ob = doc["obligations"]
+    cad = ob["placement_cadence"]
+    assert cad["false_positive_rate"] == round(2942 / 124429, 4)
+    assert cad["value"]["est_quotes_per_token_hour"] == round((340 + 121467) / 40, 1)
+    assert cad["value"]["filled_order_gap_ms_same_token_p50"] == 2000.0 and cad["value"]["sign_to_book_ms_p50"] == 149
     assert ob["fill_footprint"]["value"]["fill_ratio"] == round(340 / (340 + 121467), 5)  # ~0.3 %
     assert ob["fill_footprint"]["false_positive_rate"] == round(2942 / 124429, 4)
     assert ob["cancel_replace"]["false_positive_rate"] == 0.046
@@ -322,6 +327,16 @@ def test_copyability_verdicts():
     assert r["verdict"] == "RESTING"
 
 
+def test_cadence_is_verified_only_when_most_quotes_fill():
+    fpd = {"sizes": [100.0], "active_token_hours": 10.0, "candidate_rest_ms_cancelled": q(5000, 50),
+           "total": {"own": 300, "other_known": 0, "candidates": 400, "own_unmatched": 0, "control": 4,
+                     "expected_by_chance": 40.0, "net_estimate": 100.0, "identity_precision_upper": 1.0}}
+    cad = led(maker_rows(200), om_e39(fingerprint=fpd))["obligations"]["placement_cadence"]
+    assert cad["status"] == VERIFIED and cad["n"] == 200  # fill ratio 300/400 = 0.75
+    cad = led(maker_rows(200), om_e39(fingerprint=None))["obligations"]["placement_cadence"]
+    assert (cad["status"], cad["false_positive_rate"]) == (ESTIMATED, 0.046)  # no footprint: upper bound only
+
+
 def test_taker_wallet():
     rows = [row(i, role="taker", size=10.0 + i % 50, limit=0.5) for i in range(180)] + maker_rows(20)
     doc = led(rows, om_e39(), None)
@@ -359,7 +374,7 @@ def test_cli_writes_ledgers_and_cohort(tmp_path, capsys):
     assert sorted(p.name for p in out.iterdir()) == [
         "0xaa.ledger.json", "0xaa.ledger.md", "0xbb.ledger.json", "0xbb.ledger.md", "cohort.json", "cohort.md"]
     doc = orjson.loads((out / "0xaa.ledger.json").read_bytes())
-    assert doc["coverage"] == 0.725 and doc["sources"]["ordermatch"] == str(omp)
+    assert doc["coverage"] == 0.675 and doc["sources"]["ordermatch"] == str(omp)
     c = orjson.loads((out / "cohort.json").read_bytes())
     assert [r["wallet"] for r in c["wallets"]] == [W, X]  # by coverage; Y has 50 orders < 200
     assert c["wallets"][0]["software_cluster_size"] == 2 and c["wallets"][0]["operator_cluster_size"] == 1

@@ -77,9 +77,14 @@ validated" = ordermatch observable >= 30, match_rate >= 0.9 and placebo_rate <= 
   universe            VERIFIED: >= 200 orders and a dossier asset-horizon mix.
   size_rule           VERIFIED: >= 200 maker orders and rule fixed_sizes or fixed_notional.
   price_rule          VERIFIED: dossier maker_mid_dist_c n >= 200 and book_share >= 0.5.
-  placement_cadence   VERIFIED: >= 200 maker orders with a plausible stamp and stamps validated.
-                      ESTIMATED: >= 30 such orders, observable >= 30, match_rate > placebo_rate
-                      (rate stated = placebo_rate).
+  placement_cadence   The measured number is the gap between FILLED orders, an upper bound on
+                      the re-post cadence. VERIFIED: >= 200 maker orders with a plausible stamp,
+                      stamps validated, and a fill footprint with fill ratio >= 0.5 (so filled
+                      orders are most of the quoting). ESTIMATED: the same with a lower fill
+                      ratio (value adds the estimated quotes per active token-hour; rate
+                      stated = the footprint's chance share), or without a footprint, or with
+                      >= 30 such orders, observable >= 30 and match_rate > placebo_rate (rate
+                      stated = placebo_rate).
   cancel_replace      VERIFIED: stamps validated, >= 200 followed orders, unknown outcomes
                       <= 10 %, >= 90 % of cancels ``alone``. ESTIMATED: >= 30 followed orders
                       and a placebo rate (stated).
@@ -148,6 +153,7 @@ T = {
     "size_cover": 0.9, "max_sizes": 8, "notional_cv": 0.05,
     "match_min": 0.9, "placebo_max": 0.1, "min_observable": 30,
     "unknown_outcomes_max": 0.1, "alone_min": 0.9,
+    "cadence_fill_ratio_min": 0.5,
     "min_windows": 30, "book_share_min": 0.5, "taker_negligible": 0.05,
 }
 
@@ -226,6 +232,8 @@ def prepare(rows: list[dict], has_verified: bool) -> dict:
         orders.setdefault(r["order_id"], r)
     return {"rows": use, "orders": list(orders.values()),
             "input": {"rows": len(rows), "rows_used": len(use),
+                      "rows_excluded_by_role": dict(Counter(r["role"] for r in rows)
+                                                    - Counter(r["role"] for r in use)),
                       "verified_false": sum(r.get("verified") is False for r in rows),
                       "verified_null": sum(r.get("verified") is None for r in rows) if has_verified else 0,
                       "unflagged_input": not has_verified}}
@@ -401,7 +409,9 @@ def footprint(om: dict | None) -> dict | None:
         return None
     filled = t["own"] + t["own_unmatched"]
     tot = filled + t["net_estimate"]
+    hours = om["fingerprint"].get("active_token_hours") if om else None
     return {"filled_quotes": filled, "unfilled_net_estimate": t["net_estimate"],
+            "quotes_per_token_hour": _r(tot / hours, 1) if hours else None,
             "fill_ratio": _r(filled / tot, 5) if tot else None,
             "chance_share": _r(t["expected_by_chance"] / t["candidates"]) if t["candidates"] else 0.0,
             "identity_precision_upper": t["identity_precision_upper"]}
@@ -492,14 +502,21 @@ def ledger(wallet: str, w: dict, fp: dict, om: dict | None = None, dos: dict | N
             f"state for >= {T['book_share_min']} of fills (dossier book_share {book}); join ordermatch "
             "placements to the intl book"))
 
-    n_ts, gaps = fp["n_maker_plausible_stamp"], fp["timing"]
+    n_ts, gaps, ft = fp["n_maker_plausible_stamp"], fp["timing"], footprint(om)
     ev = gaps | {"sign_to_book_ms": (om or {}).get("sign_to_book_ms"),
                  "match_rate": (om or {}).get("match_rate"), "placebo_rate": (om or {}).get("placebo_rate"),
-                 "note": "gaps between FILLED orders: an upper bound on the re-post cadence"}
-    val = {"gap_ms_same_token_p50": (gaps["gap_ms_same_token"] or {}).get("p50"),
-           "gap_ms_overall_p50": (gaps["gap_ms_overall"] or {}).get("p50")}
-    if n_ts >= N and _stamps_validated(om):
-        ob["placement_cadence"] = _ob(VERIFIED, S_ord, n=n_ts, value=val, evidence=ev)
+                 "footprint": ft}
+    val = {"filled_order_gap_ms_same_token_p50": (gaps["gap_ms_same_token"] or {}).get("p50"),
+           "filled_order_gap_ms_overall_p50": (gaps["gap_ms_overall"] or {}).get("p50"),
+           "sign_to_book_ms_p50": ((om or {}).get("sign_to_book_ms") or {}).get("p50"),
+           "note": "gaps between FILLED orders: an upper bound on the re-post cadence"}
+    ratio = ft["fill_ratio"] if ft else None
+    if n_ts >= N and _stamps_validated(om) and ft and ratio is not None:
+        if ratio >= T["cadence_fill_ratio_min"]:
+            ob["placement_cadence"] = _ob(VERIFIED, S_ord, n=n_ts, value=val, evidence=ev)
+        else:
+            ob["placement_cadence"] = _ob(ESTIMATED, S_om, n=n_ts, evidence=ev, rate=ft["chance_share"], value=val | {
+                "est_quotes_per_token_hour": ft["quotes_per_token_hour"], "fill_ratio": ratio})
     elif (om and n_ts >= T["min_fp_n"] and om["observable"] >= T["min_observable"]
           and om["match_rate"] > om["placebo_rate"]):
         ob["placement_cadence"] = _ob(ESTIMATED, S_ord, n=n_ts, value=val, evidence=ev, rate=om["placebo_rate"])
@@ -530,7 +547,6 @@ def ledger(wallet: str, w: dict, fp: dict, om: dict | None = None, dos: dict | N
         ob["cancel_replace"] = _ob(UNKNOWN, None, n=0, resolve=(
             "doppel-ordermatch follow-forward of the wallet's orders (cancels are not on chain)"))
 
-    ft = footprint(om)
     if ft and ft["fill_ratio"] is not None:
         ob["fill_footprint"] = _ob(ESTIMATED, S_om, n=ft["filled_quotes"], rate=ft["chance_share"], evidence=ft,
                                    value={"fill_ratio": ft["fill_ratio"], "basis": "fingerprint-size bids, ordermatch window"})
