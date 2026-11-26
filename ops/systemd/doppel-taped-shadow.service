@@ -14,7 +14,7 @@ SupplementaryGroups=pmus-market-data
 LoadCredential=kalshi-profile.json:/etc/edge-engine/riskd/kalshi-production-readonly.json
 WorkingDirectory=/opt/doppel
 # Shadow root, NOT the live tape root. Create it (owned by doppel) before the first start.
-ExecStart=/opt/doppel/bin/doppel-taped run --data /mnt/volume_nyc1_1793485122853/doppel/tape-rust
+ExecStart=/opt/doppel-bin/doppel-taped run --data /mnt/volume_nyc1_1793485122853/doppel/tape-rust
 Restart=always
 RestartSec=3
 CPUQuota=150%

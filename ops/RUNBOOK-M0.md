@@ -65,3 +65,7 @@ storage nightly. Parquet compaction lands in M1.
   ~0.4 core; PM US books 200 for btc/eth/sol/xrp.
 - Deploy method: `git archive HEAD | ssh atlas-do` into `/opt/doppel.new`, venv build, atomic swap,
   then `systemctl restart doppel-tape`.
+
+## Rust recorder binary
+
+`doppel-taped` lives at `/opt/doppel-bin/doppel-taped`, OUTSIDE `/opt/doppel`, because `ops/deploy.sh` swaps `/opt/doppel` atomically and would delete it (2026-11-26: a restart after a deploy failed with 203/EXEC). Build in `/srv/doppel-build` with the toolchain at `/opt/doppel-rust`, then `install -m 755 .../target/release/doppel-taped /opt/doppel-bin/`.
