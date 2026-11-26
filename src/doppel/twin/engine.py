@@ -53,7 +53,7 @@ from typing import Callable, Iterable
 
 from ..strategy.genome import Genome
 from .features import FeatureConfig, Features, WindowRef
-from .tape import NS, Book, Trade, WindowTape
+from .tape import NS, UNIDENTIFIED, Book, Trade, WindowTape
 
 EPS = 1e-9
 MIN_QTY = 0.01
@@ -71,7 +71,10 @@ class SimConfig:
     rest_max_age_s: float = 3.0         # diagnostics only (REST is stale): older snapshot = no book
     markouts_s: tuple[int, ...] = (1, 5, 30)
     depth_levels: int = 10              # book levels kept per side
-    max_inferred_share: float = 0.4     # E31: at most this share of volume may be inferred (unprinted)
+    max_inferred_share: float = 0.4     # E31: at most this share of volume may be inferred (unprinted),
+                                        # i.e. prints must cover >= 0.6 of volume (the binding floor)
+    max_unidentified_share: float = 0.15  # E33: share of volume inferred with a guessed price/side
+    skip_unidentified: bool = False     # sensitivity only (DIAGNOSTIC): drop those guessed trades
     min_trade_coverage: float = 0.9     # maker windows need this share of sharesTraded seen as prints
                                         # PLUS inferred unprinted executions (E31);
                                         # below 0.9 the run is DIAGNOSTIC (missed prints are mostly
@@ -131,6 +134,8 @@ class Quote:
     queue: float = 0.0
     queue_known: bool = True
     cross_seen: float = 0.0
+    cross_tw: int | None = None   # receive ns of the book that last crossed this quote
+    queue_pre: float = 0.0        # queue ahead just before that cross (E33: arrival-order invariance)
     filled: float = 0.0
 
 
@@ -217,7 +222,12 @@ class WindowSim:
         for b in self.wt.books:
             data.append((b.tw, P_BOOK, len(data), "book", b))
         for tr in self.wt.trades:
-            data.append((tr.tw, P_TRADE, len(data), "trade", tr))
+            if self.cfg.skip_unidentified and (tr.id or "").startswith(UNIDENTIFIED):
+                continue
+            # our own fill reaches us on the private channel one latency after it executes; when
+            # the PUBLIC print arrives (up to minutes later, E33) is irrelevant to the fill
+            te = tr.tw if tr.t_exch is None else min(tr.tw, tr.t_exch + self.cfg.latency_ns)
+            data.append((te, P_TRADE, len(data), "trade", tr))
         data.sort(key=lambda e: (e[0], e[1], e[2]))
         for d in range(self.S, self.E):
             self._push(d * NS, P_DECIDE, "decide", d)
@@ -233,7 +243,7 @@ class WindowSim:
             elif kind == "gap":
                 self.book_ok = False
             elif kind == "trade":
-                self._on_trade(payload)
+                self._on_trade(t, payload)
             elif kind == "decide":
                 self._on_decide(payload)
             elif kind == "ioc":
@@ -265,17 +275,19 @@ class WindowSim:
             q.cross_seen = crossing
             if new <= EPS:
                 continue
+            if q.queue > 0.0:
+                q.cross_tw, q.queue_pre = b.tw, q.queue
             q.queue = 0.0   # the opposite side reached our price: nothing at our level is ahead
             f = floor2(min(q.remaining, new, self._room("buy" if side == "bid" else "sell", q.price, self.inv)))
             if f >= MIN_QTY:
                 self._maker_fill(b.tw, q, f, via="book_cross", ref_qty=new)
 
-    def _on_trade(self, tr: Trade) -> None:
+    def _on_trade(self, t: int, tr: Trade) -> None:
         tv = tr.t_venue
         if tv >= self.E_ns:
             return
         side = "bid" if tr.aggressor == "sell" else "ask"
-        self.dying = [q for q in self.dying if q.dead_ns is not None and tr.tw - q.dead_ns <= DYING_GRACE_NS]
+        self.dying = [q for q in self.dying if q.dead_ns is not None and t - q.dead_ns <= DYING_GRACE_NS]
         cands = [q for q in self.dying if q.side == side and q.dead_ns is not None and tv < q.dead_ns]
         cur = self.live[side]
         if cur is not None:
@@ -294,13 +306,19 @@ class WindowSim:
                 continue
             if through:
                 q.queue = 0.0
+            elif q.cross_tw is not None and tv <= q.cross_tw:
+                # executed before the book that crossed us: it met the queue that book wiped, so the
+                # same execution fills the same whether its print lands before or after that book
+                burn = min(q.queue_pre, avail)
+                q.queue_pre -= burn
+                avail -= burn
             else:
                 burn = min(q.queue, avail)
                 q.queue -= burn
                 avail -= burn
             f = floor2(min(q.remaining, avail, self._room("buy" if side == "bid" else "sell", q.price, self.inv)))
             if f >= MIN_QTY:
-                self._maker_fill(tr.tw, q, f, via="inferred" if (tr.id or "").startswith("inferred:") else "trade",
+                self._maker_fill(t, q, f, via="inferred" if (tr.id or "").startswith("inferred:") else "trade",
                                  ref_qty=tr.qty)
                 avail -= f
 
@@ -608,7 +626,7 @@ MIN_TRADE_COVERAGE = 0.9   # maker windows need >= 90% of the venue's traded vol
 
 
 def exclusion(g: Genome, wt: WindowTape, ref: WindowRef, min_cov: float = MIN_TRADE_COVERAGE,
-              max_inferred: float = 0.4) -> str | None:
+              max_inferred: float = 0.4, max_unidentified: float = 0.15) -> str | None:
     """Why a window cannot count toward a verdict (None = it counts).
 
     A maker is only scored where the trade feed is verifiably complete: missed prints are missed
@@ -629,6 +647,12 @@ def exclusion(g: Genome, wt: WindowTape, ref: WindowRef, min_cov: float = MIN_TR
             return "no_trade_feed"
         if any(wt.start * NS <= t < wt.end * NS for t in wt.gaps) or (wt.stats.get("trade_gap_events") or 0) > 0:
             return "feed_gap"
+        if wt.stats.get("volume_reset"):
+            return "volume_reset"            # sharesTraded went backwards: the accounting base is gone
+        if (wt.stats.get("trade_coverage") or 0.0) > 1.02:
+            return "volume_overshoot"        # more printed than traded: prints and volume disagree
+        if (wt.stats.get("unidentified_share") or 0.0) > max_unidentified:
+            return "unidentified_volume_high"
         cov = wt.stats.get("trade_coverage_with_inferred", wt.stats.get("trade_coverage"))
         if (wt.stats.get("inferred_share") or 0.0) > max_inferred:
             return "unprinted_volume_high"
@@ -646,7 +670,7 @@ def run_windows(g: Genome, items: Iterable[tuple[WindowTape, WindowRef]], cfg: S
     settled: list[tuple[int, float]] = []          # (end, net_usd) of simulated windows
     spans: list[tuple[int, int]] = []              # (first fill ns, end ns) of windows with fills
     for wt, ref in items:
-        why = exclusion(g, wt, ref, cfg.min_trade_coverage, cfg.max_inferred_share)
+        why = exclusion(g, wt, ref, cfg.min_trade_coverage, cfg.max_inferred_share, cfg.max_unidentified_share)
         if why == "stale_rest_diagnostic" and ref.outcome is not None:
             res = WindowSim(g, wt, ref, cfg, features=features_factory(g, ref, cfg) if features_factory else None).run()
             out.append({**res, "eligible": False, "excluded": why})

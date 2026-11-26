@@ -3,14 +3,14 @@
 Reads twin outputs (``doppel-twin --out``) and attributes maker-fill markouts to the conditions
 the fill happened under, one factor at a time:
 
-- ``via``: how the fill was simulated (``trade`` print, book ``cross``, ``inferred`` unprinted volume)
+- ``via``: how the fill was simulated (``trade`` print, ``book_cross``, ``inferred`` unprinted volume)
 - ``tte``: seconds to window end at the fill (late fills face the most informed flow)
 - ``px``: distance of the fill price from 50c (near-certain outcomes vs coin flips)
 - ``side``: buy / sell
 
 Markout k = (mid at fill + k s) - fill px for buys, the reverse for sells, in cents, so negative =
 adverse. Per level: fills, contracts, contract-weighted markout and its window-clustered standard
-error (fills in one window share a price path, so they are not independent), and the markout
+error (fills in one window share a price path, across genomes too, so they are not independent), and the markout
 dollars the level cost. Read-only on the twin docs; it never changes a genome.
 
     doppel-toxicity OUT.json [OUT2.json ...] [--k 30] [--out LEDGER.json]
@@ -52,7 +52,7 @@ def maker_fills(docs: list[dict]) -> list[dict]:
                 if f.get("role") != "maker":
                     continue
                 rows.append({
-                    "genome": gid, "window": f"{gid}:{w['slug']}", "qty": f["qty"], "mo": f.get("markout_c") or {},
+                    "genome": gid, "window": w["slug"], "qty": f["qty"], "mo": f.get("markout_c") or {},
                     "via": f.get("via") or "?", "side": f["side"],
                     "tte": _bucket(dur - f["t"], TTE_EDGES, "tte "),
                     "px": _bucket(abs(f["px"] - 0.5), PX_EDGES, "|p-.5| "),

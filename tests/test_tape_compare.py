@@ -27,3 +27,14 @@ def test_cutover_rule(tmp_path):
     bad = compare(a, c, H, H + 3600)
     r = bad["streams"]["clob_btc_5m"]
     assert not bad["pass"] and len(r["reasons"]) == 3
+
+
+def test_cutover_cannot_pass_on_missing_stream_or_empty_range(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    _tape(a, 2000)
+    _tape(b, 2000)
+    assert compare(a, b, H, H + 3600, ["clob_btc_5m"])["pass"]
+    miss = compare(a, b, H, H + 3600, ["clob_btc_5m", "kalshi_ws"])
+    assert not miss["pass"] and miss["problems"] == ["expected stream kalshi_ws missing or empty"]
+    assert not compare(a, b, H, H)["pass"]                       # --from == --to
+    assert not compare(a, b, H + 7200, H + 10800)["pass"]        # hours with no data

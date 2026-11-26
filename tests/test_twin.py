@@ -596,9 +596,64 @@ def test_infer_unprinted_volume_cumulative_and_sided():
                                last_trade_px=ltp)
     books = [B(0, 1000.0, 0.50), B(10, 1100.0, 0.48), B(20, 1150.0, 0.52), B(30, 1150.0, 0.52)]
     prints = [Trade(tw=5 * S, t_exch=None, price=0.48, qty=60.0, aggressor="sell"),
-              Trade(tw=int(20.5 * S), t_exch=None, price=0.52, qty=50.0, aggressor="buy")]  # 0.5 s after book@20
+              Trade(tw=int(20.5 * S), t_exch=int(19.9 * S), price=0.52, qty=50.0, aggressor="buy")]  # received after book@20
     inf = infer_unprinted(books, prints)
     # book@10: 100 traded, 60 printed -> 40 inferred at 0.48 (at the bid = seller hit it), stamped at 10 s
     assert [(t.tw, t.qty, t.price, t.aggressor) for t in inf] == [(10 * S, 40.0, 0.48, "sell")]
-    # book@20's 50 were printed 0.5 s later (inside the 2 s grace): not inferred again
+    # book@20's 50 executed before it and were printed 0.5 s later: not inferred again
     assert sum(t.qty for t in inf) + sum(p.qty for p in prints) == 150.0   # every contract exactly once
+
+
+def test_infer_counts_prints_by_execution_time():
+    """E33: a print delivered minutes late is not inferred and then counted again; a replayed print
+    that executed before the first book is already in the volume base."""
+    from doppel.twin.tape import UNIDENTIFIED, infer_unprinted
+    B = lambda t, sh, ltp: Book(tw=int(t * NS), bids=((0.48, 100.0),), asks=((0.52, 100.0),), shares_traded=sh,
+                               last_trade_px=ltp)
+    T = lambda tw, te, px, q: Trade(tw=int(tw * NS), t_exch=int(te * NS), price=px, qty=q, aggressor="sell")
+    books = [B(0, 1000.0, 0.50), B(10, 1100.0, 0.48), B(20, 1100.0, 0.48)]
+    assert infer_unprinted(books, [T(150, 9, 0.48, 100.0)]) == []          # executed at 9 s, delivered at 150 s
+    inf = infer_unprinted(books, [T(3, -5, 0.50, 500.0)])                  # replay of a pre-window trade
+    assert [(t.tw, t.qty) for t in inf] == [(10 * NS, 100.0)]
+    assert inf[0].t_exch == 1 and not inf[0].id.startswith(UNIDENTIFIED)   # executed after the previous book
+    # lastTradePx describes the printed trade, so the residual's price and side are a guess
+    guess = infer_unprinted(books, [T(5, 5, 0.48, 60.0)])
+    assert [(t.qty, t.id.startswith(UNIDENTIFIED)) for t in guess] == [(40.0, True)]
+    known = infer_unprinted(books, [T(5, 5, 0.50, 60.0)])                  # last print elsewhere: 0.48 is the unprinted one
+    assert [(t.qty, t.id.startswith(UNIDENTIFIED)) for t in known] == [(40.0, False)]
+
+
+def test_same_execution_fills_the_same_in_any_arrival_order():
+    """E33: a 100-lot sell at our 0.48 bid (queue 100 ahead) leaves 5 crossing in the next book. We get
+    5, whether the execution arrives as a print before that book, a print after it, or inferred."""
+    bid, crossed = [(0.48, 100.0)], [(0.48, 5.0), (0.52, 100.0)]
+    books = BASE + [_book(S + 9, bid, [(0.52, 100.0)]), _book(S + 10, [(0.47, 100.0)], crossed, off_ms=100)]
+    te = (S + 10) * NS
+    forms = {"print_before_book": _trade(S + 10, 0.48, 100.0, "sell", off_ms=50, t_exch=te),
+             "print_after_book": _trade(S + 10, 0.48, 100.0, "sell", off_ms=300, t_exch=te),
+             "print_minutes_late": _trade(S + 150, 0.48, 100.0, "sell", t_exch=te),
+             "inferred": Trade(tw=books[-1].tw, t_exch=books[-2].tw + 1, price=0.48, qty=100.0, aggressor="sell",
+                               id=f"inferred:{books[-1].tw}")}
+    for name, tr in forms.items():
+        r = _sim(_maker(), _wt(books, [tr]))
+        assert sum(f["qty"] for f in r["fills"]) == 5.0, name
+
+
+def test_late_print_fills_a_quote_that_was_live_when_it_executed():
+    """E33: the fill happened at execution; a public print delivered long after the quote was pulled
+    must not make the fill disappear."""
+    books = [_book(S - 1, [(0.47, 100.0)], [(0.52, 100.0)])]             # our 0.48 bid is alone at the top
+    tr = _trade(S + 200, 0.48, 4.0, "sell", t_exch=(S + 10) * NS)
+    r = _sim(_maker(), _wt(books, [tr]), fair=lambda d: 0.5 if d < S + 20 else 0.4)   # quote pulled at ~20 s
+    assert [(f["qty"], f["px"], f["t"]) for f in r["fills"]] == [(4.0, 0.48, 10.25)]
+
+
+def test_exclusion_gates_for_inferred_volume():
+    from doppel.twin.engine import exclusion
+    wt = _wt(BASE)
+    base = {"trade_coverage": 0.8, "trade_coverage_with_inferred": 1.0, "inferred_share": 0.2, "venue_volume": 100}
+    for extra, why in (({}, None), ({"unidentified_share": 0.2}, "unidentified_volume_high"),
+                       ({"volume_reset": True}, "volume_reset"), ({"trade_coverage": 1.05}, "volume_overshoot"),
+                       ({"inferred_share": 0.45}, "unprinted_volume_high")):
+        wt.stats = base | extra
+        assert exclusion(_maker(), wt, _ref()) == why, extra

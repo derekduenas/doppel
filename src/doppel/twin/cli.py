@@ -105,6 +105,8 @@ def main(argv=None) -> int:
     ap.add_argument("--op-cost-usd-month", type=float, default=60.0)
     ap.add_argument("--min-trade-coverage", type=float, default=0.9,
                     help="maker windows need this print coverage; < 0.9 marks the run DIAGNOSTIC")
+    ap.add_argument("--skip-unidentified", action="store_true",
+                    help="sensitivity (DIAGNOSTIC): drop inferred trades whose price/side is a guess (E33)")
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args(argv)
     g = from_dict(orjson.loads(a.genome.read_bytes()))
@@ -125,14 +127,15 @@ def main(argv=None) -> int:
             print(f"unknown horizon {h}", file=sys.stderr)
             return 2
     cfg = SimConfig(latency_ms=a.latency_ms, brti_delay_s=a.brti_delay_s, fair_lag_s=a.fair_lag_s,
-                    depth_levels=a.depth_levels, min_trade_coverage=a.min_trade_coverage)
+                    depth_levels=a.depth_levels, min_trade_coverage=a.min_trade_coverage,
+                    skip_unidentified=a.skip_unidentified)
     meta: dict = {}
     results = run_twin(a.data, g, t_from, t_to, cfg, a.allow_stale_rest, a.lab, a.flow_delay_s, meta)
     v = verdict(g, results, a.block, a.boot, a.seed, a.op_cost_usd_month)
     base = SimConfig()
     diagnostic = (a.allow_stale_rest or a.min_trade_coverage < base.min_trade_coverage
                   or a.latency_ms < base.latency_ms or a.brti_delay_s < base.brti_delay_s
-                  or a.flow_delay_s < 0)
+                  or a.flow_delay_s < 0 or a.skip_unidentified)
     if diagnostic:
         v["decision"] = "DIAGNOSTIC"
         v["reason"] = "relaxed data-quality gates: not evidence for or against the genome"
