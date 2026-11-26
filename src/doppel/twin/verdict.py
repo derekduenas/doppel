@@ -53,6 +53,24 @@ def block_bootstrap_ci(values, weights=None, block: int = 12, n_boot: int = 2000
     return float(lo), float(hi)
 
 
+def block_bootstrap_p(values, block: int = 12, n_boot: int = 2000, seed: int = 0) -> float | None:
+    """One-sided p for H0: mean <= 0, from the moving-block bootstrap of the CENTRED series
+    (resampled means of values - mean that reach the observed mean). This is the p the family
+    Holm ledger consumes (audit A1-F1: it used to be typed in by hand)."""
+    v = np.asarray(values, dtype=float)
+    n = len(v)
+    if n < 2:
+        return None
+    obs = float(v.mean())
+    b = max(1, min(int(block), n))
+    k = -(-n // b)
+    rng = np.random.default_rng(seed + 1)
+    starts = rng.integers(0, n - b + 1, size=(n_boot, k))
+    idx = (starts[:, :, None] + np.arange(b)[None, None, :]).reshape(n_boot, -1)[:, :n]
+    means = (v - obs)[idx].mean(axis=1)
+    return float((1 + np.sum(means >= obs)) / (n_boot + 1))
+
+
 def max_drawdown(pnl_usd) -> float:
     c = np.cumsum(np.asarray(pnl_usd, dtype=float))
     if not len(c):
@@ -145,6 +163,8 @@ def verdict(g: Genome, results: list[dict], block: int = 12, n_boot: int = 2000,
         "windows_total": len(results), "windows_evaluated": n, "windows_traded": n_traded,
         "windows_stood_down": sum(1 for r in ev if r.get("stood_down")),
         "excluded": excluded, "sources": sources,
+        "p_value": _r(block_bootstrap_p(net_c, block, n_boot, seed), 6) if n > 1 else None,
+        "p_method": "one-sided H0 mean net c/window <= 0, centred moving-block bootstrap",
         "net_c_per_window": {"mean": _r(pw), "ci95": [_r(pw_ci[0]), _r(pw_ci[1])],
                              "naive_t": _r(pw / (sd / math.sqrt(n))) if pw is not None and sd else None},
         "net_c_per_contract": {"value": _r(pc), "ci95": [_r(pc_ci[0]), _r(pc_ci[1])]},

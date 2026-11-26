@@ -79,7 +79,7 @@ def main(argv=None) -> int:
     ap.add_argument("--from", dest="t_from", type=parse_ts)
     ap.add_argument("--to", dest="t_to", type=parse_ts)
     ap.add_argument("--latency-ms", type=float, default=250.0)
-    ap.add_argument("--brti-delay-s", type=int, default=1)
+    ap.add_argument("--brti-delay-s", type=int, default=SimConfig().brti_delay_s)
     ap.add_argument("--fair-lag-s", type=int, default=0)
     ap.add_argument("--depth-levels", type=int, default=10)
     ap.add_argument("--block", type=int, default=12, help="bootstrap block length in windows")
@@ -115,7 +115,10 @@ def main(argv=None) -> int:
                     depth_levels=a.depth_levels, min_trade_coverage=a.min_trade_coverage)
     results = run_twin(a.data, g, t_from, t_to, cfg, a.allow_stale_rest, a.lab, a.flow_delay_s)
     v = verdict(g, results, a.block, a.boot, a.seed, a.op_cost_usd_month)
-    diagnostic = a.allow_stale_rest or a.min_trade_coverage < 0.9
+    base = SimConfig()
+    diagnostic = (a.allow_stale_rest or a.min_trade_coverage < base.min_trade_coverage
+                  or a.latency_ms < base.latency_ms or a.brti_delay_s < base.brti_delay_s
+                  or a.flow_delay_s < 0)
     if diagnostic:
         v["decision"] = "DIAGNOSTIC"
         v["reason"] = "relaxed data-quality gates: not evidence for or against the genome"

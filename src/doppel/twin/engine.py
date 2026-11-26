@@ -65,7 +65,8 @@ P_GAP, P_BOOK, P_TRADE, P_LAND, P_DECIDE = 0, 1, 2, 3, 4
 @dataclass(frozen=True)
 class SimConfig:
     latency_ms: float = 250.0           # decision -> order / cancel live at the venue
-    brti_delay_s: int = 1               # BRTI print for second s is known at s + this
+    brti_delay_s: int = 2               # BRTI print for second s is known at s + this (E29: receipt
+                                        # lag p50 0.65 s, p95 1.04 s, p99 10.4 s; 1 s was optimistic)
     fair_lag_s: int = 0                 # fair-v1 alignment lag (E19 measured 0)
     rest_max_age_s: float = 3.0         # diagnostics only (REST is stale): older snapshot = no book
     markouts_s: tuple[int, ...] = (1, 5, 30)
@@ -147,7 +148,8 @@ class _Stats:
                                                  "risk_blocked": 0, "empty_side": 0})
     maker: dict = field(default_factory=lambda: {"placed": 0, "post_only_rejects": 0, "no_book_rejects": 0,
                                                  "beyond_depth": 0, "no_fair": 0, "cancels": 0,
-                                                 "closed": 0, "self_cross": 0})
+                                                 "closed": 0, "self_cross": 0, "paused_s": 0,
+                                                 "pause_episodes": 0})
 
 
 class WindowSim:
@@ -186,6 +188,7 @@ class WindowSim:
         self.flatten_inflight = False
         self.flattening = False
         self.taken: dict[tuple[str, float], tuple[float, float]] = {}
+        self._was_paused = False
         self.st = _Stats()
         self.decisions = 0
         self._heap: list = []
@@ -395,9 +398,11 @@ class WindowSim:
                                     or (o.side == "sell" and px < o.limit - EPS)):
             ts["slippage_miss"] += 1
             return
-        key = (o.side, px)
-        prev = self.taken.get(key)
-        avail = disp - prev[1] if prev is not None and abs(prev[0] - disp) < EPS else disp
+        # Our fills never change the recorded book, so liquidity we took at this best price stays taken
+        # until the best price moves (audit A2-4: a size change used to reset it to the full display).
+        prev = self.taken.get((o.side, 0.0))
+        used = prev[1] if prev is not None and abs(prev[0] - px) < EPS else 0.0
+        avail = disp - used
         want = o.qty if o.rule >= 0 else abs(self.inv)
         qty = floor2(min(want, max(0.0, avail), self._room(o.side, px, self.inv)))
         if o.rule < 0:
@@ -407,7 +412,7 @@ class WindowSim:
             return
         if qty < want - EPS and avail < want:
             ts["depth_capped"] += 1
-        self.taken[key] = (disp, (prev[1] if prev is not None and abs(prev[0] - disp) < EPS else 0.0) + qty)
+        self.taken[(o.side, 0.0)] = (px, used + qty)
         self._fill(t, "taker", o.side, px, qty, via="ioc" if o.rule >= 0 else "flatten", ref_qty=disp)
         ts["fills"] += 1
         if o.rule >= 0:
@@ -436,6 +441,10 @@ class WindowSim:
         elif self.inv == 0 and not self.can_open(t):
             want = (None, None)
         else:
+            paused = self.g.maker_paused(x)
+            self.st.maker["paused_s"] += int(paused)
+            self.st.maker["pause_episodes"] += int(paused and not self._was_paused)
+            self._was_paused = paused
             want = self.g.maker_quotes(x)
             if want[0] is not None and want[1] is not None and want[1] <= want[0]:
                 want = (None, None)      # own quotes would cross: quote neither side
@@ -615,6 +624,8 @@ def exclusion(g: Genome, wt: WindowTape, ref: WindowRef, min_cov: float = MIN_TR
         if any(wt.start * NS <= t < wt.end * NS for t in wt.gaps) or (wt.stats.get("trade_gap_events") or 0) > 0:
             return "feed_gap"
         cov = wt.stats.get("trade_coverage")
+        if cov is None and (wt.stats.get("venue_volume") or 0) > 0:
+            return "unknown_trade_coverage"   # audit A2-8: unknown coverage used to pass
         if cov is not None and cov < min_cov:
             return "incomplete_trade_feed"
     return None

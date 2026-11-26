@@ -551,3 +551,25 @@ def test_placebo_u_is_uniform_and_deterministic():
     assert all(0 <= x < 1 for x in xs)
     rate = sum(x < 0.1742 for x in xs) / len(xs)
     assert abs(rate - 0.1742) < 0.01
+
+
+def test_brti_seconds_are_unknown_until_received():
+    """Audit 2026-11-26: a BRTI second is usable at decision d only if WE received it by d."""
+    import numpy as np
+    from doppel.twin.features import FeatureConfig, Features, WindowRef
+    from doppel.strategy.genome import Genome, MakerRule, Source, Universe
+    start, end = 1795651200, 1795651500
+    t0 = start - 400
+    raw = 60000.0 + np.arange(end - t0 + 1, dtype=float)       # +$1 per second
+    rcv = np.arange(t0, end + 1, dtype=float) + 0.7             # normally received 0.7 s later
+    late = start + 100
+    rcv[late - t0] = late + 4.5                                  # this second arrived 4.5 s late
+    ref = WindowRef(asset="btc", start=start, end=end, ptb=60300.0, settle=60600.0,
+                    raw=raw, raw_t0=t0, rcv=rcv)
+    g = Genome(name="m", mode="maker", universe=Universe(venue="pmus"), source=Source(kind="manual"),
+               maker=MakerRule())
+    f = Features(g, ref, FeatureConfig(brti_delay_s=2))
+    x = f.at(late + 2, None, 0.0)          # delay says second `late` is usable, but it is not received
+    assert x["brti_move_1s"] != x["brti_move_1s"]          # NaN: not known yet
+    x = f.at(late + 5, None, 0.0)          # received by now
+    assert x["brti_move_1s"] == 1.0

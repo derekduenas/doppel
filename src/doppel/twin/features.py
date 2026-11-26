@@ -42,6 +42,7 @@ class WindowRef:
     settle: float | None                # A(E-1)
     raw: np.ndarray | None = None       # raw BRTI by second, index 0 == raw_t0 (BTC only)
     raw_t0: int = 0
+    rcv: np.ndarray | None = None       # our receive time (unix s, float) of each raw second; NaN unknown
 
     @property
     def outcome(self) -> int | None:
@@ -57,7 +58,7 @@ class RefStore:
     def __init__(self, root: Path, keep_hours: int = 4):
         self.root = Path(root)
         self.keep_hours = keep_hours
-        self._brti: dict[int, dict[int, float]] = {}
+        self._brti: dict[int, dict[int, tuple[float, float]]] = {}
         self._bounds: dict[str, dict[int, float]] = {}
         self._bounds_range: dict[str, tuple[int, int]] = {}
 
@@ -89,10 +90,12 @@ class RefStore:
         return self._bounds[asset].get(t)
 
     # -- raw BRTI -----------------------------------------------------------------------------
-    def _hour(self, hour: int) -> dict[int, float]:
+    def _hour(self, hour: int) -> dict[int, tuple[float, float]]:
+        """second -> (raw BRTI, our receive time in unix s). Receive time decides when a second is
+        KNOWN (audit 2026-11-26: the 5 s live poller can deliver a second ~4 s after it prints)."""
         if hour in self._brti:
             return self._brti[hour]
-        out: dict[int, float] = {}
+        out: dict[int, tuple[float, float]] = {}
         p = hour_path(self.root, "ref_brti_raw", hour)
         if p.exists():
             for rec in read_segment(p, verify=True):
@@ -100,7 +103,7 @@ class RefStore:
                     d = orjson.loads(rec["raw"])
                     s = int(d["t_ms"]) // 1000
                     if hour <= s < hour + 3600:
-                        out[s] = float(d["v"])
+                        out[s] = (float(d["v"]), _recv_s(d.get("received"), int(d["t_ms"])))
         for h in (hour, hour + 3600):     # live poller files are by receive hour (>= print hour)
             p = hour_path(self.root, "ref_brti_live", h)
             if not p.exists():
@@ -109,7 +112,7 @@ class RefStore:
                 for t_ms, v in (rec.get("meta") or {}).get("new") or []:
                     s = int(t_ms) // 1000
                     if hour <= s < hour + 3600:
-                        out.setdefault(s, float(v))
+                        out.setdefault(s, (float(v), rec["tw"] / 1e9))
         self._brti[hour] = out
         for h in [h for h in self._brti if h < hour - self.keep_hours * 3600]:
             del self._brti[h]
@@ -117,20 +120,34 @@ class RefStore:
 
     def brti(self, lo: int, hi: int) -> np.ndarray:
         """Raw BRTI for seconds [lo, hi] (NaN where missing)."""
+        return self.brti_rcv(lo, hi)[0]
+
+    def brti_rcv(self, lo: int, hi: int) -> tuple[np.ndarray, np.ndarray]:
+        """(raw BRTI, receive time unix s) for seconds [lo, hi]; NaN where missing."""
         a = np.full(hi - lo + 1, np.nan)
+        r = np.full(hi - lo + 1, np.nan)
         for hour in range(lo // 3600 * 3600, hi + 1, 3600):
-            for s, v in self._hour(hour).items():
+            for s, (v, rc) in self._hour(hour).items():
                 if lo <= s <= hi:
                     a[s - lo] = v
-        return a
+                    r[s - lo] = rc
+        return a, r
 
     def window_ref(self, asset: str, start: int, end: int, vol_window_s: int) -> WindowRef:
         ref = WindowRef(asset=asset, start=start, end=end, ptb=self.boundary(asset, start - 1),
                         settle=self.boundary(asset, end - 1))
         if asset == "btc":
             ref.raw_t0 = start - vol_window_s - RAW_PAD_S
-            ref.raw = self.brti(ref.raw_t0, end)
+            ref.raw, ref.rcv = self.brti_rcv(ref.raw_t0, end)
         return ref
+
+
+def _recv_s(received, t_ms: int) -> float:
+    """PERELMAN's ``received`` stamp in unix seconds (s or ms); publication + 1 s if absent."""
+    if received is None:
+        return t_ms / 1000.0 + 1.0
+    r = float(received)
+    return r / 1000.0 if r > 1e11 else r
 
 
 # ---------------------------------------------------------------------------- features
@@ -171,12 +188,25 @@ class Features:
         self.coef = genome.costs.taker_fee_coef
         self.vol_window = genome.fair.vol_window_s
 
-    def brti_at(self, s: int) -> float:
+    def _raw_known(self, d: int) -> np.ndarray | None:
+        """Raw BRTI with every second we had NOT received by decision second d set to NaN."""
         r = self.ref
         if r.raw is None:
+            return None
+        if r.rcv is None:
+            return r.raw
+        if getattr(self, "_known_d", None) != d:
+            self._known = np.where(r.rcv <= d, r.raw, np.nan)
+            self._known_d = d
+        return self._known
+
+    def brti_at(self, s: int, raw: np.ndarray | None = None) -> float:
+        r = self.ref
+        raw = r.raw if raw is None else raw
+        if raw is None:
             return NAN
         i = s - r.raw_t0
-        return float(r.raw[i]) if 0 <= i < len(r.raw) else NAN
+        return float(raw[i]) if 0 <= i < len(raw) else NAN
 
     def fair(self, d: int) -> float:
         r = self.ref
@@ -185,7 +215,9 @@ class Features:
         de = d - self.cfg.brti_delay_s
         if de - self.vol_window < r.raw_t0:
             return NAN
-        p = fair_up_raw(r.raw, r.raw_t0, r.ptb, de, r.end, self.cfg.fair_lag_s, self.vol_window)
+        known = self._raw_known(d)
+        assert known is not None
+        p = fair_up_raw(known, r.raw_t0, r.ptb, de, r.end, self.cfg.fair_lag_s, self.vol_window)
         return NAN if p is None else float(p)
 
     def at(self, d: int, book: Book | None, inventory_up: float) -> dict[str, float]:
@@ -195,14 +227,16 @@ class Features:
         x["tte_s"] = float(r.end - d)
         x["inventory_up"] = float(inventory_up)
         x["placebo_u"] = placebo_u(r.start, d)
+        x["placebo_block_u"] = placebo_u(r.start, r.start + (d - r.start) // 30 * 30)
         fair = self.fair(d)
         x["fair_up"] = fair
         de = d - self.cfg.brti_delay_s
-        now = self.brti_at(de)
+        known = self._raw_known(d)
+        now = self.brti_at(de, known)
         for k, name in ((1, "brti_move_1s"), (5, "brti_move_5s"), (30, "brti_move_30s")):
-            x[name] = now - self.brti_at(de - k)
-        if r.raw is not None and r.ptb is not None:
-            proj = projected_settlement(r.raw, r.raw_t0, de, r.end, self.cfg.fair_lag_s)
+            x[name] = now - self.brti_at(de - k, known)
+        if known is not None and r.ptb is not None:
+            proj = projected_settlement(known, r.raw_t0, de, r.end, self.cfg.fair_lag_s)
             if proj is not None:
                 x["dist_to_open_usd"] = proj - r.ptb
         if book is not None and book.open:

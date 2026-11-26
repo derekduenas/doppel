@@ -20,6 +20,7 @@ Design rules:
 from __future__ import annotations
 
 import hashlib
+import math
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Literal
@@ -45,6 +46,7 @@ FEATURES = {
     "dist_to_open_usd": "current settlement-average projection minus priceToBeat, USD",
     "inventory_up": "own net Up contracts in this window (Down counts negative)",
     "placebo_u": "deterministic pseudo-random U[0,1) per (window start, second); market-independent, for placebo arms",
+    "placebo_block_u": "placebo_u drawn once per 30 s block of the window (pauses come in runs, like 30 s flow guards)",
     # Intl informed-flow guard (lab/flow.py). Rows: Polymarket intl RTDS TAKER fills (fee > 0) in the
     # same asset/horizon/start window, counted by OUR receive time tw in (t - N, t], never by trade
     # timestamp. USD = price*size, signed + for Up exposure (BUY Up / SELL Down). Wallet weight =
@@ -243,14 +245,16 @@ class Genome:
         bid = ref - h - skew
         ask = ref + h - skew
         fair_c = 100 * x["fair_up"]
-        bid = min(bid, fair_c - m.min_edge_vs_fair_c)
-        ask = max(ask, fair_c + m.min_edge_vs_fair_c)
+        # Round to the cent tick FIRST, then enforce the minimum edge on the tick price (audit A2-3:
+        # clamping before rounding let quotes sit up to 0.5 c inside fair +/- min_edge).
+        bid = min(round(bid), math.floor(round(fair_c - m.min_edge_vs_fair_c, 6)))
+        ask = max(round(ask), math.ceil(round(fair_c + m.min_edge_vs_fair_c, 6)))
         inv = x.get("inventory_up", 0.0)
         bid_ok = m.sides in ("both", "bid_only") and inv < self.risk.max_inventory
         ask_ok = m.sides in ("both", "ask_only") and inv > -self.risk.max_inventory
-        lo, hi = 1.0, 99.0
-        return (max(lo, min(hi, round(bid))) if bid_ok else None,
-                max(lo, min(hi, round(ask))) if ask_ok else None)
+        lo, hi = 1, 99
+        return (max(lo, min(hi, bid)) if bid_ok else None,
+                max(lo, min(hi, ask)) if ask_ok else None)
 
     def _in_universe(self, x: dict[str, float]) -> bool:
         tau, tte = x.get("tau_s"), x.get("tte_s")

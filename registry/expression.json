@@ -1,228 +1,337 @@
 {
   "genomes": {
     "013ea369906e9b859b573d550678bff454d13d88ec7cedd5cdc0fc3f65668ffc": {
-      "expression_sha256": "090806e0bc1025bdbbd5a32e4c2bfefc96955e9db932e959235863271bd35c89",
+      "expression_sha256": "30ad43dd147e36bf27b92ff77ac9adb3e466c17d9f06d0fc1ac6a8a3eb1f3c61",
       "n": 4000,
       "name": "h1-maker-h2-guard30",
       "stats": {
-        "paused": 2203,
-        "quote_both": 1183,
-        "quote_one": 614,
+        "paused": 2180,
+        "quote_both": 1169,
+        "quote_one": 651,
         "takes": 0
       }
     },
     "0f6ca81ce041c4b54ff758f2db83d2457c0b4d6a2a3d45af82d06a19ae2d717a": {
-      "expression_sha256": "31b50ea0aa0598f7b5368a3ed11bb0457afcfc201dd9cd697be27ecfd88075f8",
+      "expression_sha256": "ddf9a589c8e4c2282e44c27242ddd037e740f1997f87ad03ea3c4312051934b0",
       "n": 4000,
       "name": "h4-edge2-h2-skip60to120",
       "stats": {
-        "paused": 3543,
-        "quote_both": 308,
-        "quote_one": 149,
+        "paused": 3530,
+        "quote_both": 312,
+        "quote_one": 158,
         "takes": 0
       }
     },
     "1778b9382553afce0d2e64d02cc2c58950d4be8b27c6629763bb2b18c3da971e": {
-      "expression_sha256": "23f7e16e8aa11fbb09571795ddbed2fb4bc0f9ec6114fc903d282bbe03003c7d",
+      "expression_sha256": "e70b335129ffdb693ce13c639587310fd212755fcd6da91ecd78a4ff4a279515",
       "n": 4000,
       "name": "h2-maker-h1-flow300",
       "stats": {
-        "paused": 2975,
-        "quote_both": 681,
-        "quote_one": 344,
+        "paused": 2974,
+        "quote_both": 654,
+        "quote_one": 372,
         "takes": 0
       }
     },
     "19ad0b7685b27fffe4263c6d31d4ef5c21a5eebbe95463e15585f562cda01e47": {
-      "expression_sha256": "fd3d37e08b1bc6547734fbf99265a07bfb4b78fffa7afc64e66384412be1d123",
+      "expression_sha256": "10389d96b825b7cc795c9847505cf98f477c7881c588a6c45266f077a1bc6bde",
       "n": 4000,
       "name": "h1-maker-h1",
       "stats": {
-        "paused": 654,
-        "quote_both": 2246,
-        "quote_one": 1100,
+        "paused": 583,
+        "quote_both": 2222,
+        "quote_one": 1195,
         "takes": 0
       }
     },
     "2ef1045272e8ec043211e705ba994199b6c0892212647bf8e62e79122d775ff2": {
-      "expression_sha256": "775b9c0686fbbc47028688cd9e51c807fd0dfc968650f87cf0fd721cc5fd33af",
+      "expression_sha256": "08922bf0e37c12dcf23c1691b92064d8c824984dc11697d4649b421c2c6269ad",
       "n": 4000,
       "name": "h2-maker-h3-flow300",
       "stats": {
-        "paused": 2975,
-        "quote_both": 681,
-        "quote_one": 344,
+        "paused": 2974,
+        "quote_both": 654,
+        "quote_one": 372,
         "takes": 0
       }
     },
     "3ffe3cfcd1669837ad343b49598d4cd3c7c1d722f5e7e9baf333d518bada11a0": {
-      "expression_sha256": "270336b7feef5db3a82f607666b900c8e9d265476d56761dccc973cd0bd51867",
+      "expression_sha256": "7860fdfe011570f495db83c1ca812b01305d4dbf90484aa995812eefc89f8c66",
       "n": 4000,
       "name": "h3-ident",
       "stats": {
-        "paused": 3418,
-        "quote_both": 390,
-        "quote_one": 192,
+        "paused": 3391,
+        "quote_both": 402,
+        "quote_one": 207,
         "takes": 0
       }
     },
     "4b760e60252d86b12681c1966de80dbaa5c1a04b913c40c462c9dcf3cbe559ad": {
-      "expression_sha256": "c710a36edcd4257d7bb0f70e4fc74c9de5a34e59d3e800d8d0cfaf15e6ab61ea",
+      "expression_sha256": "159b0eb807609c291ca2da5bae2c816d432c2fe2546ce046e789ce27122c039b",
       "n": 4000,
       "name": "h4-edge2-h3",
       "stats": {
-        "paused": 3418,
-        "quote_both": 390,
-        "quote_one": 192,
+        "paused": 3391,
+        "quote_both": 402,
+        "quote_one": 207,
         "takes": 0
       }
     },
     "4f8c4eb5852951d4308b712aee1b213f5d00ea083216732836a08ae3a3b37734": {
-      "expression_sha256": "5393c0c9d344e358a5ede39330d569d0c204cc1d77b1d823f75df36924d49e98",
+      "expression_sha256": "e7eb71c63dfb6e6a62df09c04a4eeeb372a319215eb103f682fc7cb51492927a",
       "n": 4000,
       "name": "h4-edge2-h2",
       "stats": {
-        "paused": 3418,
-        "quote_both": 390,
-        "quote_one": 192,
+        "paused": 3391,
+        "quote_both": 402,
+        "quote_one": 207,
         "takes": 0
       }
     },
     "5476cbacf9629621b9f5a8423be3ee0f1e2f30744f399de2f6c2b6e928aeb230": {
-      "expression_sha256": "e247fc39f74502f0bee8a42076d2e009f3afb26a559c6277cc4a61edbbeb98ed",
+      "expression_sha256": "f7d5e565252a50e60ee468fe33d634ebdeb6df5135b5b18643fb5825f02e3082",
       "n": 4000,
       "name": "h1-maker-h2",
       "stats": {
-        "paused": 654,
-        "quote_both": 2246,
-        "quote_one": 1100,
+        "paused": 583,
+        "quote_both": 2222,
+        "quote_one": 1195,
         "takes": 0
       }
     },
     "71c8858724b4558f2c1cbd29204becb5238a16b444e0f76b7cefbbf77fb65044": {
-      "expression_sha256": "1d869eb7fd6127ad6d2b7bc2eb289f044d77e7c51e28aed3f3b8c9b4be803aec",
+      "expression_sha256": "4159803e6ccf515b65b8ac42ca91646938de5372113066537698e6daa133339b",
       "n": 4000,
       "name": "h2-maker-h2-flow300",
       "stats": {
-        "paused": 2975,
-        "quote_both": 681,
-        "quote_one": 344,
+        "paused": 2974,
+        "quote_both": 654,
+        "quote_one": 372,
         "takes": 0
       }
     },
     "791528470fda04482d60b8f25b6383867b6cdde3c37b29d458a9abc4501c2f83": {
-      "expression_sha256": "4eaf6e4b4ff20361dd464941b2da1b0d07b4c81683404c5a6e4f4f2faeb418a2",
+      "expression_sha256": "5ff95445384e4f863964061e5e7f4fb4bf786d9b23ed5808f1f21b7d671555fd",
       "n": 4000,
       "name": "h3-placebo",
       "stats": {
-        "paused": 2551,
-        "quote_both": 964,
-        "quote_one": 485,
+        "paused": 2520,
+        "quote_both": 944,
+        "quote_one": 536,
         "takes": 0
       }
     },
     "7b0a851e6d7bac63cd19afaadf8f27d59e67381df269f706749e579be0ca6171": {
-      "expression_sha256": "91b74792131e1efd78cffbe29d4539df58fe9c0d83e7e33201cadb06711a9523",
+      "expression_sha256": "0e9ab061143047c34591167f86c6962a2e015b05569cc70ac2e961b5ab96d188",
       "n": 4000,
       "name": "h4-edge2-h3-skip60to120",
       "stats": {
-        "paused": 3543,
-        "quote_both": 308,
-        "quote_one": 149,
+        "paused": 3530,
+        "quote_both": 312,
+        "quote_one": 158,
         "takes": 0
       }
     },
     "7d2be20eb56f531aec9a1eb1f98101ce72d0919ec616f15a5103cb9aa5c23cbf": {
-      "expression_sha256": "7b3b3cad5cdd096400b9c877f4d6f23138f08ff5e31f268cbe2eb78799979475",
+      "expression_sha256": "dad689a3da095f3812dfe24de2622b42bfccb5525d7f40a4d82a99c94670061d",
       "n": 4000,
       "name": "h2-maker-h3-flow100",
       "stats": {
-        "paused": 3418,
-        "quote_both": 390,
-        "quote_one": 192,
+        "paused": 3391,
+        "quote_both": 402,
+        "quote_one": 207,
         "takes": 0
       }
     },
     "92ae794efd21bb6b70666932009ef080bef270b3dd22a01b938dffd0e0fa04fd": {
-      "expression_sha256": "7eb5ab0e4a90b4d74a7960b408abe928922b96d5dc0bb836ce0a767d517e588d",
+      "expression_sha256": "ea64e167023e4a5a8840ac6c130514cdfa7bfafb3c8ffbd4aa1fed37cdac732f",
       "n": 4000,
       "name": "h2-maker-h1-flow100",
       "stats": {
-        "paused": 3418,
-        "quote_both": 390,
-        "quote_one": 192,
+        "paused": 3391,
+        "quote_both": 402,
+        "quote_one": 207,
         "takes": 0
       }
     },
     "a75c244842463b0efc15793172f86764cc07f62d3c7183fee4e6a1abefd56891": {
-      "expression_sha256": "270336b7feef5db3a82f607666b900c8e9d265476d56761dccc973cd0bd51867",
+      "expression_sha256": "7860fdfe011570f495db83c1ca812b01305d4dbf90484aa995812eefc89f8c66",
       "n": 4000,
       "name": "h2-maker-h2-flow100",
       "stats": {
-        "paused": 3418,
-        "quote_both": 390,
-        "quote_one": 192,
+        "paused": 3391,
+        "quote_both": 402,
+        "quote_one": 207,
         "takes": 0
       }
     },
     "b099fad46f3e8ee61c799cd51c787496f6062a68cf1e77fcbe1af2dd4dfb5f1c": {
-      "expression_sha256": "9d81c24fe4fe9233b3875b8157242228b43c18e892c27f39b9500438c7b30730",
+      "expression_sha256": "117db933a3513b9bcb2204ce2df833605e36b70f84b34caf2aec136f65c53f25",
       "n": 4000,
       "name": "h1-maker-h3",
       "stats": {
-        "paused": 654,
-        "quote_both": 2246,
-        "quote_one": 1100,
+        "paused": 583,
+        "quote_both": 2222,
+        "quote_one": 1195,
         "takes": 0
       }
     },
     "bc0c6811771f2b860df14e4182b8e0806482d00883c76a12ff7cc3e41bef8271": {
-      "expression_sha256": "c6b181bc1aa7b3c3b8f49d9c83a52aebce13f468f0a6c9268de6d0db7aa811c0",
+      "expression_sha256": "ec6cd24b8d9a24b730b1a631c20e9d3ac82930cf7df8128a60f0a6ae1e07b8b7",
       "n": 4000,
       "name": "h1-maker-h3-guard30",
       "stats": {
-        "paused": 2203,
-        "quote_both": 1183,
-        "quote_one": 614,
+        "paused": 2180,
+        "quote_both": 1169,
+        "quote_one": 651,
         "takes": 0
       }
     },
     "c3bbcae71a37f3b84cb28bbc1eb31ff71152ba67d26f54387be3f4d7a37c8188": {
-      "expression_sha256": "090806e0bc1025bdbbd5a32e4c2bfefc96955e9db932e959235863271bd35c89",
+      "expression_sha256": "30ad43dd147e36bf27b92ff77ac9adb3e466c17d9f06d0fc1ac6a8a3eb1f3c61",
       "n": 4000,
       "name": "h3-base",
       "stats": {
-        "paused": 2203,
-        "quote_both": 1183,
-        "quote_one": 614,
+        "paused": 2180,
+        "quote_both": 1169,
+        "quote_one": 651,
         "takes": 0
       }
     },
     "ccac263997c649f58a82ad41d19991212683fd722157f95b6091654edee26c4f": {
-      "expression_sha256": "bf4991d561ca05b0d1a62a0ed860465048c29d1512edce0f64a7ca5e86b74414",
+      "expression_sha256": "c08717da629bde63e9c277cb607e45ee65efdebf9a395dd8d1617ff0be5187fa",
       "n": 4000,
       "name": "h3-anon",
       "stats": {
-        "paused": 2995,
-        "quote_both": 660,
-        "quote_one": 345,
+        "paused": 2970,
+        "quote_both": 653,
+        "quote_one": 377,
         "takes": 0
       }
     },
     "d4b3f9a54831eb9082811e97c9c1638f1c35b22d13e0fa4de7155c23af3c2cc7": {
-      "expression_sha256": "d64147b584c5f67d9b1dee69577e8df8d40979b8d0b965c99f0e35ba1a1e58bd",
+      "expression_sha256": "f08c7e597305a71a37bf123476ee8c6b135896c266155b63267047f3edd6e5ac",
       "n": 4000,
       "name": "h1-maker-h1-guard30",
       "stats": {
-        "paused": 2203,
-        "quote_both": 1183,
-        "quote_one": 614,
+        "paused": 2180,
+        "quote_both": 1169,
+        "quote_one": 651,
         "takes": 0
       }
     }
   },
+  "migrations": [
+    {
+      "changed": [
+        {
+          "genome_id": "d4b3f9a54831eb9082811e97c9c1638f1c35b22d13e0fa4de7155c23af3c2cc7",
+          "new": "f08c7e597305a71a37bf123476ee8c6b135896c266155b63267047f3edd6e5ac",
+          "old": "d64147b584c5f67d9b1dee69577e8df8d40979b8d0b965c99f0e35ba1a1e58bd"
+        },
+        {
+          "genome_id": "19ad0b7685b27fffe4263c6d31d4ef5c21a5eebbe95463e15585f562cda01e47",
+          "new": "10389d96b825b7cc795c9847505cf98f477c7881c588a6c45266f077a1bc6bde",
+          "old": "fd3d37e08b1bc6547734fbf99265a07bfb4b78fffa7afc64e66384412be1d123"
+        },
+        {
+          "genome_id": "013ea369906e9b859b573d550678bff454d13d88ec7cedd5cdc0fc3f65668ffc",
+          "new": "30ad43dd147e36bf27b92ff77ac9adb3e466c17d9f06d0fc1ac6a8a3eb1f3c61",
+          "old": "090806e0bc1025bdbbd5a32e4c2bfefc96955e9db932e959235863271bd35c89"
+        },
+        {
+          "genome_id": "5476cbacf9629621b9f5a8423be3ee0f1e2f30744f399de2f6c2b6e928aeb230",
+          "new": "f7d5e565252a50e60ee468fe33d634ebdeb6df5135b5b18643fb5825f02e3082",
+          "old": "e247fc39f74502f0bee8a42076d2e009f3afb26a559c6277cc4a61edbbeb98ed"
+        },
+        {
+          "genome_id": "bc0c6811771f2b860df14e4182b8e0806482d00883c76a12ff7cc3e41bef8271",
+          "new": "ec6cd24b8d9a24b730b1a631c20e9d3ac82930cf7df8128a60f0a6ae1e07b8b7",
+          "old": "c6b181bc1aa7b3c3b8f49d9c83a52aebce13f468f0a6c9268de6d0db7aa811c0"
+        },
+        {
+          "genome_id": "b099fad46f3e8ee61c799cd51c787496f6062a68cf1e77fcbe1af2dd4dfb5f1c",
+          "new": "117db933a3513b9bcb2204ce2df833605e36b70f84b34caf2aec136f65c53f25",
+          "old": "9d81c24fe4fe9233b3875b8157242228b43c18e892c27f39b9500438c7b30730"
+        },
+        {
+          "genome_id": "92ae794efd21bb6b70666932009ef080bef270b3dd22a01b938dffd0e0fa04fd",
+          "new": "ea64e167023e4a5a8840ac6c130514cdfa7bfafb3c8ffbd4aa1fed37cdac732f",
+          "old": "7eb5ab0e4a90b4d74a7960b408abe928922b96d5dc0bb836ce0a767d517e588d"
+        },
+        {
+          "genome_id": "1778b9382553afce0d2e64d02cc2c58950d4be8b27c6629763bb2b18c3da971e",
+          "new": "e70b335129ffdb693ce13c639587310fd212755fcd6da91ecd78a4ff4a279515",
+          "old": "23f7e16e8aa11fbb09571795ddbed2fb4bc0f9ec6114fc903d282bbe03003c7d"
+        },
+        {
+          "genome_id": "a75c244842463b0efc15793172f86764cc07f62d3c7183fee4e6a1abefd56891",
+          "new": "7860fdfe011570f495db83c1ca812b01305d4dbf90484aa995812eefc89f8c66",
+          "old": "270336b7feef5db3a82f607666b900c8e9d265476d56761dccc973cd0bd51867"
+        },
+        {
+          "genome_id": "71c8858724b4558f2c1cbd29204becb5238a16b444e0f76b7cefbbf77fb65044",
+          "new": "4159803e6ccf515b65b8ac42ca91646938de5372113066537698e6daa133339b",
+          "old": "1d869eb7fd6127ad6d2b7bc2eb289f044d77e7c51e28aed3f3b8c9b4be803aec"
+        },
+        {
+          "genome_id": "7d2be20eb56f531aec9a1eb1f98101ce72d0919ec616f15a5103cb9aa5c23cbf",
+          "new": "dad689a3da095f3812dfe24de2622b42bfccb5525d7f40a4d82a99c94670061d",
+          "old": "7b3b3cad5cdd096400b9c877f4d6f23138f08ff5e31f268cbe2eb78799979475"
+        },
+        {
+          "genome_id": "2ef1045272e8ec043211e705ba994199b6c0892212647bf8e62e79122d775ff2",
+          "new": "08922bf0e37c12dcf23c1691b92064d8c824984dc11697d4649b421c2c6269ad",
+          "old": "775b9c0686fbbc47028688cd9e51c807fd0dfc968650f87cf0fd721cc5fd33af"
+        },
+        {
+          "genome_id": "ccac263997c649f58a82ad41d19991212683fd722157f95b6091654edee26c4f",
+          "new": "c08717da629bde63e9c277cb607e45ee65efdebf9a395dd8d1617ff0be5187fa",
+          "old": "bf4991d561ca05b0d1a62a0ed860465048c29d1512edce0f64a7ca5e86b74414"
+        },
+        {
+          "genome_id": "c3bbcae71a37f3b84cb28bbc1eb31ff71152ba67d26f54387be3f4d7a37c8188",
+          "new": "30ad43dd147e36bf27b92ff77ac9adb3e466c17d9f06d0fc1ac6a8a3eb1f3c61",
+          "old": "090806e0bc1025bdbbd5a32e4c2bfefc96955e9db932e959235863271bd35c89"
+        },
+        {
+          "genome_id": "3ffe3cfcd1669837ad343b49598d4cd3c7c1d722f5e7e9baf333d518bada11a0",
+          "new": "7860fdfe011570f495db83c1ca812b01305d4dbf90484aa995812eefc89f8c66",
+          "old": "270336b7feef5db3a82f607666b900c8e9d265476d56761dccc973cd0bd51867"
+        },
+        {
+          "genome_id": "791528470fda04482d60b8f25b6383867b6cdde3c37b29d458a9abc4501c2f83",
+          "new": "5ff95445384e4f863964061e5e7f4fb4bf786d9b23ed5808f1f21b7d671555fd",
+          "old": "4eaf6e4b4ff20361dd464941b2da1b0d07b4c81683404c5a6e4f4f2faeb418a2"
+        },
+        {
+          "genome_id": "0f6ca81ce041c4b54ff758f2db83d2457c0b4d6a2a3d45af82d06a19ae2d717a",
+          "new": "ddf9a589c8e4c2282e44c27242ddd037e740f1997f87ad03ea3c4312051934b0",
+          "old": "31b50ea0aa0598f7b5368a3ed11bb0457afcfc201dd9cd697be27ecfd88075f8"
+        },
+        {
+          "genome_id": "4f8c4eb5852951d4308b712aee1b213f5d00ea083216732836a08ae3a3b37734",
+          "new": "e7eb71c63dfb6e6a62df09c04a4eeeb372a319215eb103f682fc7cb51492927a",
+          "old": "5393c0c9d344e358a5ede39330d569d0c204cc1d77b1d823f75df36924d49e98"
+        },
+        {
+          "genome_id": "7b0a851e6d7bac63cd19afaadf8f27d59e67381df269f706749e579be0ca6171",
+          "new": "0e9ab061143047c34591167f86c6962a2e015b05569cc70ac2e961b5ab96d188",
+          "old": "91b74792131e1efd78cffbe29d4539df58fe9c0d83e7e33201cadb06711a9523"
+        },
+        {
+          "genome_id": "4b760e60252d86b12681c1966de80dbaa5c1a04b913c40c462c9dcf3cbe559ad",
+          "new": "159b0eb807609c291ca2da5bae2c816d432c2fe2546ce046e789ce27122c039b",
+          "old": "c710a36edcd4257d7bb0f70e4fc74c9de5a34e59d3e800d8d0cfaf15e6ab61ea"
+        }
+      ],
+      "probe_version": 2,
+      "reason": "audit 2026-11-26: (A2-3) min_edge_vs_fair_c enforced after rounding to the tick, so quotes honour their declared minimum edge; (A2-2) probe v2 adds placebo_block_u",
+      "semantics": "3439b010663a3be6160b27462918b76a321fc5d11d62da62656eb96d4d108e42"
+    }
+  ],
   "semantics": {
-    "digest": "19a56194f3792cf3c3a1645f8f3ff479bcd0115cf51a229a4fbfa441e7d1aff8",
-    "probe_version": 1
+    "digest": "3439b010663a3be6160b27462918b76a321fc5d11d62da62656eb96d4d108e42",
+    "probe_version": 2
   }
 }

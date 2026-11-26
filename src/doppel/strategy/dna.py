@@ -37,7 +37,7 @@ import orjson
 
 from .genome import FEATURES, FairModel, Genome, from_dict, to_dict, validate
 
-PROBE_VERSION = 1
+PROBE_VERSION = 2   # v2: placebo_block_u (2026-11-26)
 PROBE_SEED = 20261126
 PROBE_N = 4000
 EXPRESSION_FILE = "registry/expression.json"
@@ -73,6 +73,7 @@ def probes(n: int = PROBE_N, seed: int = PROBE_SEED) -> list[dict[str, float]]:
             "depth_top_up": float(rng.choice([0, 10, 300, 1000])), "depth_top_down": float(rng.choice([0, 10, 300, 1000])),
             "brti_move_1s": jump / 5, "brti_move_5s": jump, "brti_move_30s": jump * 2.5,
             "dist_to_open_usd": rng.gauss(0, 60), "inventory_up": inv, "placebo_u": rng.random(),
+            "placebo_block_u": rng.random(),
         }
         for k in (5, 30, 120):
             f = flow * k / 30
@@ -163,6 +164,27 @@ def write_missing(root: Path) -> list[str]:
     p = Path(root) / EXPRESSION_FILE
     p.write_bytes(orjson.dumps(store, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS) + b"\n")
     return added
+
+
+def migrate(root: Path, reason: str) -> list[dict]:
+    """Explicit, reviewed re-derivation of every stored expression hash (GENOME.md rule 4). Logs
+    old -> new per genome with the reason; never silent. Returns the changes."""
+    store = load_store(root)
+    xs = probes()
+    changes = []
+    for gid, g in registered_genomes(root).items():
+        new = expression_trace(g, xs)
+        old = store["genomes"].get(gid, {}).get("expression_sha256")
+        if old != new["expression_sha256"]:
+            changes.append({"genome_id": gid, "name": g.name, "old": old, "new": new["expression_sha256"]})
+        store["genomes"][gid] = {"name": g.name, **new}
+    store.setdefault("migrations", []).append({
+        "reason": reason, "probe_version": PROBE_VERSION, "semantics": semantics_digest(),
+        "changed": [{k: c[k] for k in ("genome_id", "old", "new")} for c in changes]})
+    store["semantics"] = {"digest": semantics_digest(), "probe_version": PROBE_VERSION}
+    (Path(root) / EXPRESSION_FILE).write_bytes(
+        orjson.dumps(store, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS) + b"\n")
+    return changes
 
 
 # ---------------------------------------------------------------- lineage operators

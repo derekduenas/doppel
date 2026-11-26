@@ -70,15 +70,15 @@ async def fetch_missing(root: Path, starts: list[int], have: dict, rps: float = 
     w.close()
 
 
-def tape_books(root: Path) -> dict[str, list[tuple[int, float, float]]]:
+def tape_books(root: Path) -> dict[str, list[tuple[float, float, float]]]:
     """slug -> sorted [(receipt second, best bid, best ask)] from the PM US WS book streams.
     Never REST: `pmus_books` is cached, 8 s stale at the median (FINDINGS E22)."""
     from .pmus_tape import ws_books
-    return {k: [(int(t), b, a) for t, b, _bq, a, _aq in v]
+    return {k: [(t, b, a) for t, b, _bq, a, _aq in v]
             for k, v in ws_books(root, "cpc-btc-updown-5m").items()}
 
 
-def asof(rows: list[tuple[int, float, float]], t: int, max_age: int = 3):
+def asof(rows: list[tuple[float, float, float]], t: float, max_age: float = 3):
     import bisect
     i = bisect.bisect_right(rows, (t, 2.0, 2.0)) - 1
     if i < 0 or t - rows[i][0] > max_age:

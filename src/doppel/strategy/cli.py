@@ -3,7 +3,7 @@
     doppel-genome extract  --dossier LAB/dossiers/0xabc.json [--out DIR] [--mechanism LABEL]
     doppel-genome register --genome G.json [G2.json ...] --family F --hypothesis "..." \
                            [--start ISO --end ISO]   (default: each genome's evidence.eval_window)
-    doppel-genome result   --id GENOME_ID --p 0.012 [--verdict '{"net_c_per_window": 0.8}']
+    doppel-genome result   --id GENOME_ID --results TWIN_OUT.json   (or --p 0.012 for a manual verdict)
     doppel-genome ledger   --family F [--alpha 0.05] [--json]
     doppel-genome monitor  --genome ID|PREFIX|G.json --results TWIN_OUT.json [--alpha 0.05] [--record] [--json]
     doppel-genome verify
@@ -86,8 +86,28 @@ def cmd_register(a: argparse.Namespace) -> int:
 
 
 def cmd_result(a: argparse.Namespace) -> int:
-    v = orjson.loads(a.verdict) if a.verdict else {}
-    v["p_value"] = a.p
+    if a.results:
+        # The binding verdict comes from the twin's own output, never from typed numbers (audit A1-F1).
+        doc = orjson.loads(Path(a.results).read_bytes())
+        gid = (doc.get("genome") or {}).get("id")
+        v = dict(doc.get("verdict") or {})
+        if gid != a.id:
+            print(f"REFUSED results are for genome {str(gid)[:12]}, not {a.id[:12]}", file=sys.stderr)
+            return 2
+        if v.get("decision") == "DIAGNOSTIC" or v.get("p_value") is None:
+            print("REFUSED diagnostic run or no p_value in the twin verdict", file=sys.stderr)
+            return 2
+        v["twin_config"] = (doc.get("twin") or {}).get("config")
+        v["twin_code_sha256"] = (doc.get("twin") or {}).get("code_sha256")
+        a.p = v["p_value"]
+    else:
+        if a.p is None:
+            print("REFUSED pass --results <twin output.json> (or --p for a manual, non-twin verdict)",
+                  file=sys.stderr)
+            return 2
+        v = orjson.loads(a.verdict) if a.verdict else {}
+        v["p_value"] = a.p
+        v["p_source"] = "manual"
     try:
         rec = Registry(a.root).record_result(a.id, v)
     except RegistryError as e:
@@ -177,6 +197,11 @@ def cmd_verify(a: argparse.Namespace) -> int:
 
 def cmd_dna(a) -> int:
     from . import dna
+    if a.migrate:
+        ch = dna.migrate(a.root, a.migrate)
+        for c in ch:
+            print(f"MIGRATED {c['genome_id'][:12]} {c['name']}: {str(c['old'])[:12]} -> {c['new'][:12]}")
+        print(f"migration logged: {len(ch)} genome(s) changed")
     if a.write:
         added = dna.write_missing(a.root)
         print(f"stored expression hashes for {len(added)} genome(s)")
@@ -207,7 +232,8 @@ def main(argv: list[str] | None = None) -> int:
     r.set_defaults(fn=cmd_register)
     s = sub.add_parser("result", help="append a verdict (after the evaluation window closed)")
     s.add_argument("--id", required=True)
-    s.add_argument("--p", type=float, required=True, help="one-sided p-value, H1: net per window > 0")
+    s.add_argument("--results", type=Path, default=None, help="doppel-twin output JSON (binding source)")
+    s.add_argument("--p", type=float, default=None, help="manual one-sided p (non-twin verdicts only)")
     s.add_argument("--verdict", default=None, help="extra verdict fields as JSON")
     s.add_argument("--root", type=Path, default=Path("."))
     s.set_defaults(fn=cmd_result)
@@ -228,6 +254,8 @@ def main(argv: list[str] | None = None) -> int:
     dn = sub.add_parser("dna", help="check (or --write missing) expression hashes of sealed genomes")
     dn.add_argument("--root", type=Path, default=Path("."))
     dn.add_argument("--write", action="store_true", help="store hashes for genomes that have none (never overwrites)")
+    dn.add_argument("--migrate", metavar="REASON", default=None,
+                    help="re-derive ALL stored hashes after a reviewed semantics change; logs old->new")
     dn.set_defaults(fn=cmd_dna)
     v = sub.add_parser("verify", help="re-check the hash chain")
     v.add_argument("--root", type=Path, default=Path("."))

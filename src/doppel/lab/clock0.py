@@ -9,7 +9,8 @@ Labels come from RTDS, joined by tx hash, and are NEVER features:
   * ``m_c``: the tx's own settlement markout, cents/share = 100 * dir * (payout_token - price).
 Only transactions RECEIVED after ``as_of`` are used, so scores never saw them.
 
-Features (all known at the first print's receive time, from public market data only):
+Features (public market data only; market-state features are as of the first print's receive time,
+while the unit's own size/span/n_prints aggregate prints of the same tx received within 0.5 s of it):
   log_usd, n_prints, price, px_span_c (levels swept), dist50 (|p - 0.5|), tte_s, hz_5m, coin,
   buy_up (direction on Up), burst_1s / burst_5s (prior prints in the market), usd_5s, same_dir_5s
   (share of the last 5 s of market USD in the same Up direction), dmove_5s_c (price change vs the
