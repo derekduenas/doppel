@@ -6,6 +6,15 @@ from ``matchOrders`` calldata, hash-verified). Only maker rows are matched; rows
 ``order_id`` are merged (fills summed per tx). Screen as in the E37 probe: ``created_ms`` inside
 [--from, --to) and 0 <= age_s < 600 at the first fill.
 
+``--orders`` is a JSONL sample (every row is used, in file order) or the cohort parquet directory
+(``day=YYYY-MM-DD/part-*.parquet``). From a directory only rows with ``verified == True`` are
+used (when the column exists), read oldest fill first, so "first fill" does not depend on the
+order the parts were written in. A cohort run verifies the cohort's own fills only, so other
+makers in the same txs are ``verified == False`` and are left out: ``other_known`` is then 0 and
+``identity_precision_upper`` is NOT MEASURED (it reads 1.0 or null), and there is no
+``others_pooled``. Maker rows created outside [--from, --to) are dropped while reading and
+counted in rows (``rows_out_of_range``), not in orders.
+
 WHAT IS IDENTIFIED (from data) AND WHAT IS ASSUMED
 
 1. Placement. An order (token, side, limit, size, created_ms) is "matched" to a level increase at
@@ -82,6 +91,7 @@ from pathlib import Path
 
 import numpy as np
 import orjson
+import pyarrow.parquet as pq
 
 from .flow import _ts
 from .intlbook import IntlBook, LevelEvent, Print, px, replay
@@ -138,37 +148,70 @@ def filled_shares(row: dict) -> float:
     return fa / 1e6 / row["limit"]
 
 
+PARQUET_COLS = ("tx", "block_ts", "role", "order_id", "maker", "token_id", "side", "size", "limit",
+                "maker_amount", "taker_amount", "fill_amount", "created_ms", "age_s", "verified")
+
+
+def _jsonl_rows(path: Path):
+    with open(path, "rb") as fh:
+        for line in fh:
+            if line.strip():
+                yield orjson.loads(line)
+
+
+def _parquet_rows(path: Path, t_from: int, t_to: int, active: dict[str, set[str]],
+                  stats: Counter) -> list[dict]:
+    """Maker rows of an ordertape directory created in [t_from, t_to), oldest fill first. Only
+    ``verified == True`` rows count (when the column exists); every counted row, whatever its role
+    or time, adds its token to ``active``. One part is in memory at a time."""
+    keep: list[dict] = []
+    for p in sorted(path.glob("day=*/part-*.parquet")):
+        names = pq.read_schema(p).names
+        for r in pq.read_table(p, columns=[c for c in PARQUET_COLS if c in names]).to_pylist():
+            if "verified" in names and r["verified"] is not True:
+                stats["rows_not_verified"] += 1
+                continue
+            active[r["maker"].lower()].add(r["token_id"])
+            if r["role"] != "maker":
+                continue
+            c = r["created_ms"]
+            if c is None or not t_from * 1000 <= c < t_to * 1000:
+                stats["rows_out_of_range"] += 1
+                continue
+            keep.append(r)
+    keep.sort(key=lambda r: (r["block_ts"], r["tx"]))
+    return keep
+
+
 def load_orders(path: Path, t_from: int, t_to: int) -> tuple[list[Order], dict[str, set[str]], Counter]:
-    """Screened maker orders (one per order_id), every maker's tokens (any role), counts."""
+    """Screened maker orders (one per order_id), every maker's tokens (any role), counts.
+    ``path`` is a JSONL file or an ordertape parquet directory (see the module docstring)."""
     orders: dict[str, Order] = {}
     active: dict[str, set[str]] = defaultdict(set)
     stats: Counter = Counter()
     skip: set[str] = set()
-    with open(path, "rb") as fh:
-        for line in fh:
-            if not line.strip():
+    path = Path(path)
+    for r in (_parquet_rows(path, t_from, t_to, active, stats) if path.is_dir() else _jsonl_rows(path)):
+        active[r["maker"].lower()].add(r["token_id"])
+        if r.get("role") != "maker":
+            continue
+        oid = r["order_id"]
+        if oid in skip:
+            continue
+        o = orders.get(oid)
+        if o is None:  # screen on the first row seen
+            age = r.get("age_s")
+            why = ("no_limit" if not r.get("limit") else
+                   "out_of_range" if not t_from * 1000 <= r["created_ms"] < t_to * 1000 else
+                   "bad_age" if age is None or not 0 <= age < MAX_AGE_S else None)
+            if why:
+                stats[f"screened:{why}"] += 1
+                skip.add(oid)
                 continue
-            r = orjson.loads(line)
-            active[r["maker"].lower()].add(r["token_id"])
-            if r.get("role") != "maker":
-                continue
-            oid = r["order_id"]
-            if oid in skip:
-                continue
-            o = orders.get(oid)
-            if o is None:  # screen on the first row seen
-                age = r.get("age_s")
-                why = ("no_limit" if not r.get("limit") else
-                       "out_of_range" if not t_from * 1000 <= r["created_ms"] < t_to * 1000 else
-                       "bad_age" if age is None or not 0 <= age < MAX_AGE_S else None)
-                if why:
-                    stats[f"screened:{why}"] += 1
-                    skip.add(oid)
-                    continue
-                o = orders[oid] = Order(oid, r["maker"].lower(), r["token_id"], r["side"],
-                                        px(r["limit"]), float(r["size"]), int(r["created_ms"]))
-            sh, _ = o.fills.get(r["tx"], (0.0, None))
-            o.fills[r["tx"]] = (sh + filled_shares(r), r.get("block_ts"))
+            o = orders[oid] = Order(oid, r["maker"].lower(), r["token_id"], r["side"],
+                                    px(r["limit"]), float(r["size"]), int(r["created_ms"]))
+        sh, _ = o.fills.get(r["tx"], (0.0, None))
+        o.fills[r["tx"]] = (sh + filled_shares(r), r.get("block_ts"))
     stats["maker_orders"] = len(orders)
     return sorted(orders.values(), key=lambda o: (o.created_ms, o.order_id)), dict(active), stats
 
@@ -557,7 +600,9 @@ def card(doc: dict) -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="doppel-ordermatch")
     ap.add_argument("--data", type=Path, required=True, help="tape root")
-    ap.add_argument("--orders", type=Path, required=True, help="doppel-ordertape JSONL")
+    ap.add_argument("--orders", type=Path, required=True,
+                    help="doppel-ordertape output: JSONL sample, or the cohort parquet directory "
+                         "(verified rows only)")
     ap.add_argument("--wallet", nargs="+", action="extend", help="maker address(es) (default: makers "
                     "with >= --min-orders orders)")
     ap.add_argument("--from", dest="t_from", type=_ts, required=True, help="unix s or ISO UTC")

@@ -1,0 +1,15 @@
+[Unit]
+Description=DOPPEL reconstruction: cohort order tape -> book match -> twin replay -> ledgers (last 6 closed hours)
+# NOT INSTALLED. Before installing (lead only): set the --cohort path, check the fill store is being
+# compacted (doppel-reconstruct does not compact it), and size --max-txs-per-wallet to the RPC budget:
+# one request per tx, two free endpoints at 5 req/s each, shared with any other doppel-ordertape job.
+# The run directory is named after cohort and range, so a restart inside the same hour resumes.
+
+[Service]
+Type=oneshot
+User=doppel
+WorkingDirectory=/tmp
+# $$ = a literal $ for the shell, %% = a literal %. T = start of the current hour (the last closed hour ends there).
+ExecStart=/bin/sh -c 'T=$$(( $$(date +%%s) / 3600 * 3600 )); exec /opt/doppel/.venv/bin/doppel-reconstruct --data /mnt/volume_nyc1_1793485122853/doppel/tape --lab /mnt/volume_nyc1_1793485122853/doppel/lab --cohort /mnt/volume_nyc1_1793485122853/doppel/lab/COHORT.json --from $$(( T - 21600 )) --to $$T --max-txs-per-wallet 500'
+MemoryMax=3G
+Nice=10
