@@ -93,8 +93,10 @@ wallet-hour (E39).
 
 One limit comes from the pipeline itself. A cohort run verifies only the cohort's own fills, so
 other makers in the same transactions are unverified and are left out of the book match. With
-this input, `other_known` is 0 and `identity_precision_upper` is **not measured** (it reads 1.0 or
-null). The 0.87 of E39 came from a JSONL sample that kept the other makers.
+this input `other_known` counts only other cohort wallets, so `identity_precision_upper` is
+**not measured** (the report prints null). The 0.87 of E39 came from a JSONL sample that kept
+every maker. A second limit: a wallet needs at least 30 maker orders inside one chunk to get a size
+fingerprint there; below that its footprint is absent, not zero.
 
 ## Gates
 
@@ -120,7 +122,11 @@ the steps it reads from is `pass`:
 - twin replay gates -> the twin ratios
 
 The run does not stop on a gate. It finishes and writes the gates that did not pass under
-`untrusted` in the manifest; the report marks those cells `UNTRUSTED`.
+`untrusted` in the manifest. In the report a cell reads `UNTRUSTED` when a gate behind it failed
+(or a step's kept output is stale: made from other inputs or code than the current ones), and
+`NO GATE` when a gate could not be evaluated, so nothing vouches for the number. A wallet with
+few orders in the range, or a pure taker, is `NO GATE` on everything after the order tape; its
+ledger already holds the match-dependent obligations at UNKNOWN.
 
 ## Running it
 
@@ -183,11 +189,12 @@ wallet that is on the order of 100,000 rows per hour (E39).
 `manifest.json` holds: run id, git commit (`DEPLOYED_COMMIT` on a deployed tree, else
 `git rev-parse`), sha256 of each code file used, the cohort file's sha256, the range, and per step
 its inputs and outputs with sha256 and row counts, wall time, and per wallet every gate with its
-value, n, threshold and status.
+value, n, threshold and status, plus the sha256 of the wallet's own files.
 
 ## Reading a wallet card
 
-Start in `report.md`, one row per wallet. Read left to right, and stop at the first `UNTRUSTED`.
+Start in `report.md`, one row per wallet. Read left to right, and stop at the first `UNTRUSTED`
+or `NO GATE`.
 
 1. **verified orders, verified share.** How many filled orders the rest is built on. A share
    below 1 means the decoder and the fill store disagree.

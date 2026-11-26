@@ -16,7 +16,7 @@ from doppel.tape.segment import SegmentWriter
 T0 = 1795629600  # hour-aligned
 MS = T0 * 1000
 EX = "0xe111180000d2663c0091e4f400237545b87b996b"
-W1, W2, TAKER = "0x" + "a1" * 20, "0x" + "b2" * 20, "0x" + "cc" * 20
+W1, W2, W3, TAKER = "0x" + "a1" * 20, "0x" + "b2" * 20, "0x" + "d3" * 20, "0x" + "cc" * 20
 BLOCK = 97_000_000
 
 
@@ -70,23 +70,24 @@ def trade(ms, asset, market, price, size, tx):
 def world(root):
     """35 W1 orders (32 in hour 0 on two markets, 3 in hour 1), each alone at its price: 31 fully
     filled by one print, 4 filled 20 of 50 then cancelled. 2 W2 orders whose fill-store order_id
-    is wrong. Unfilled 50-share bids in an active token (candidate) and in a control token."""
+    is wrong. 2 verified W3 orders of 100 shares (too few for a fingerprint). Unfilled 50-share
+    bids in an active token (candidate) and in a control token, and an unfilled 100-share bid."""
     frames, fills, chain = [], [], {}
     k = 0
 
-    def an_order(wallet, ms, token, market, cents, partial=False, oid=None):
+    def an_order(wallet, ms, token, market, cents, partial=False, oid=None, size=50):
         nonlocal k
         k += 1
-        price, tx, got = cents / 100, f"0x{k:064x}", 20 if partial else 50
-        st = static(1000 + k, wallet, token, cents, 50, MS + ms)
-        chain[tx] = (calldata(static(k, TAKER, token, 90, 50, MS + ms), [st], [got * cents * 10**4]), BLOCK + k)
+        price, tx, got = cents / 100, f"0x{k:064x}", 20 if partial else size
+        st = static(1000 + k, wallet, token, cents, size, MS + ms)
+        chain[tx] = (calldata(static(k, TAKER, token, 90, size, MS + ms), [st], [got * cents * 10**4]), BLOCK + k)
         fills.append({"id": f"r{k}", "address": wallet, "event_type": "TRADE", "token_id": token, "side": "BUY",
                       "amount_shares": float(got), "amount_usdc": got * price, "fee": 0.0,
                       "block_timestamp": T0 + (ms + 400) // 1000 + 1, "block_number": BLOCK + k,
                       "order_type": "maker", "price": price, "order_id": oid or "0x" + ot.order_hash(st, EX),
                       "transaction_hash": tx})
-        frames.extend([pc(ms + 100, token, market, price, 50), trade(ms + 400, token, market, price, got, tx),
-                       pc(ms + 400, token, market, price, 50 - got)])
+        frames.extend([pc(ms + 100, token, market, price, size), trade(ms + 400, token, market, price, got, tx),
+                       pc(ms + 400, token, market, price, size - got)])
         if partial:
             frames.append(pc(ms + 700, token, market, price, 0))
 
@@ -100,6 +101,9 @@ def world(root):
         an_order(W1, 3_600_000 + 1000 + 1000 * i, "101", "m1", 10 + i)
     for i in range(2):
         an_order(W2, 40_000 + 1000 * i, "101", "m1", 60 + i, oid="0x" + "00" * 32)
+    for i in range(2):
+        an_order(W3, 44_000 + 1000 * i, "201", "m2", 70 + i, size=100)
+    frames += [pc(54_000, "201", "m2", 0.06, 100), pc(54_300, "201", "m2", 0.06, 0)]  # W3's size, unfilled
     frames += [pc(50_000, "101", "m1", 0.05, 50), pc(50_300, "101", "m1", 0.05, 0),   # candidate
                pc(52_000, "301", "m3", 0.05, 50), pc(52_300, "301", "m3", 0.05, 0)]   # control
     for h in (0, 3_600_000):  # keep every asset's book known past the placebo windows
@@ -113,7 +117,7 @@ def world(root):
              meta={"job": "cohort-a", "status": 200, "rows": len(fills)})
     g.close()
     compact(root / "tape", root / "lab" / "fills")
-    (root / "cohort.json").write_bytes(orjson.dumps({"candidates": [W1], "controls": [W2], "sha256": "ab" * 32}))
+    (root / "cohort.json").write_bytes(orjson.dumps({"candidates": [W1, W3], "controls": [W2], "sha256": "ab" * 32}))
     return chain
 
 
@@ -131,7 +135,7 @@ def cfg(root, **kw) -> Cfg:
     out = kw.pop("out", root / "lab" / "reconstruct" / "run1")
     return Cfg(**({"data": root / "tape", "store": root / "lab" / "fills", "cohort": root / "cohort.json",
                    "t_from": T0, "t_to": T0 + 7200, "out": out, "orders": out / "ordertape",
-                   "wallets": (W1, W2), "roles": {W1: "cand", W2: "ctrl"}} | kw))
+                   "wallets": (W1, W2, W3), "roles": {W1: "cand", W2: "ctrl", W3: "cand"}} | kw))
 
 
 @pytest.fixture(scope="module")
@@ -150,10 +154,10 @@ def test_chunks_are_cut_at_whole_hours_and_do_not_overlap():
 def test_end_to_end_all_four_steps(ran):
     root, chain, man = ran
     out = root / "lab" / "reconstruct" / "run1"
-    assert chain.calls == 37  # one request per tx: the store gave block time and number
+    assert chain.calls == 39  # one request per tx: the store gave block time and number
     assert {s: man["steps"][s]["status"] for s in reconstruct.STEPS} == dict.fromkeys(reconstruct.STEPS, "ran")
     ot_step = man["steps"]["ordertape"]
-    assert ot_step["complete"] and ot_step["outputs"]["orders"]["rows"] == 74  # taker + maker per tx
+    assert ot_step["complete"] and ot_step["outputs"]["orders"]["rows"] == 78  # taker + maker per tx
     assert [c["status"] for c in man["steps"]["ordermatch"]["chunks"]] == ["ran", "ran"]
 
     # the manifest traces the run
@@ -167,7 +171,13 @@ def test_end_to_end_all_four_steps(ran):
     assert ch["inputs"]["tape"][seg] == hashlib.sha256((root / "tape" / seg).read_bytes()).hexdigest()
     f = out / "chunks" / ch["chunk"] / "ordermatch" / "orders.jsonl"
     assert ch["outputs"]["orders.jsonl"] == {"sha256": hashlib.sha256(f.read_bytes()).hexdigest(),
-                                             "bytes": f.stat().st_size, "rows": 32}
+                                             "bytes": f.stat().st_size, "rows": 34}
+    wf = out / "wallets" / W1 / "orders.jsonl"
+    assert man["wallets"][W1]["outputs"][f"wallets/{W1}/orders.jsonl"] == {
+        "sha256": hashlib.sha256(wf.read_bytes()).hexdigest(), "bytes": wf.stat().st_size, "rows": 35}
+    assert set(man["wallets"][W1]["outputs"]) == {
+        "orders", f"wallets/{W1}/orders.jsonl", f"wallets/{W1}/orderreplay.jsonl",
+        f"profile/{W1}.ledger.json", f"profile/{W1}.ledger.md"}
     assert man["gate_table"]["provisional"] and man["gate_table"]["gates"] == GATES
 
     # W1: every gate passes at the default thresholds
@@ -188,9 +198,11 @@ def test_end_to_end_all_four_steps(ran):
     assert om["rest_ms_known"]["cancelled"]["p50"] == 600.0 and om["sign_to_book_ms"]["p50"] == 100.0
     fp = om["fingerprint"]
     assert fp["sizes"] == [50.0] and fp["sizes_stable"]
-    # W2's two 50-share orders are unverified, so they are not "other_known": they count as candidates
+    # W2's two 50-share orders are unverified, so they are not "other_known": they count as candidates.
+    # own is 32, not 35: W1's 3 orders in hour 1 are below the fingerprint floor of that chunk
     assert (fp["total"]["own"], fp["total"]["other_known"], fp["total"]["candidates"], fp["total"]["control"]) == (
-        35, 0, 3, 1)
+        32, 0, 3, 1)
+    assert list(fp["sizes_by_chunk"]) == om["chunks"][:1]
     assert fp["candidate_rest_ms_cancelled"] == {"p10": 300.0, "p50": 300.0, "p90": 300.0, "n": 1}
     assert sum(1 for _ in open(out / "wallets" / W1 / "orders.jsonl")) == 35
 
@@ -208,12 +220,13 @@ def test_end_to_end_all_four_steps(ran):
     # ledgers, cohort table and report
     led = orjson.loads((out / "profile" / f"{W1}.ledger.json").read_bytes())
     assert led["fingerprint"]["n_maker_orders"] == 35 and led["input"]["unflagged_input"] is False
-    assert len(orjson.loads((out / "profile" / "cohort.json").read_bytes())["wallets"]) == 2
+    assert len(orjson.loads((out / "profile" / "cohort.json").read_bytes())["wallets"]) == 3
     rep = orjson.loads((out / "report.json").read_bytes())
     r1 = next(r for r in rep["wallets"] if r["wallet"] == W1)
     assert (r1["role"], r1["verified_maker_orders"], r1["match"]["match_rate"]) == ("cand", 35, 1.0)
     assert r1["twin"]["pessimistic"]["ratio"] == 1.0 and r1["footprint"]["chance_share"] is not None
-    assert rep["cohort"]["trusted_wallets"] == dict.fromkeys(reconstruct.STEPS, 1)
+    assert r1["footprint"]["identity_precision_upper"] is None  # not measured in a cohort run
+    assert rep["cohort"]["trusted_wallets"] == dict.fromkeys(reconstruct.STEPS, 1) | {"ordertape": 2}
     assert set(rep["ledger_status"]) == set(profile.WEIGHTS)
     md = (out / "report.md").read_text()
     assert W1 in md and "PROVISIONAL" in md and "## Verified / estimated / unknown" in md
@@ -227,7 +240,7 @@ def test_a_failing_gate_marks_downstream_untrusted(ran):
     assert (g["value"], g["n"], g["status"]) == (0.0, 2, "fail")
     assert w2["gates"]["ordermatch.match_rate"]["status"] == "not_evaluable"
     assert all("ordertape.verified_share:fail" in w2["untrusted"][s] for s in reconstruct.STEPS)
-    assert man["untrusted_wallets"]["profile"] == [W2]
+    assert man["untrusted_wallets"]["profile"] == [W2, W3]
     assert "UNTRUSTED" in (root / "lab" / "reconstruct" / "run1" / "report.md").read_text()
     # a failing ordermatch gate leaves the order tape trusted and marks what reads the match
     strict = GATES | {"ordermatch.match_rate": GATES["ordermatch.match_rate"] | {"min": 1.01}}
@@ -283,11 +296,47 @@ def test_one_chunk_and_two_chunks_give_the_same_counts(ran):
               "sign_to_book_ms"):
         assert a[k] == b[k], k
     ta, tb = a["fingerprint"]["total"], b["fingerprint"]["total"]
-    assert all(ta[k] == tb[k] for k in reconstruct.FP_COUNTS)
+    # the fingerprint floor is per chunk: hour 1 alone has 3 orders (no fingerprint), the 2 h chunk has 35
+    assert (ta["own"], tb["own"]) == (32, 35)
+    assert all(ta[k] == tb[k] for k in ("other_known", "candidates", "own_unmatched", "control"))
     # token-hours are NOT the same: a known span is [first book, last frame] inside one replay, so
     # the quiet stretch across the hour edge counts only when both hours are replayed together
     assert a["fingerprint"]["active_token_hours"] < b["fingerprint"]["active_token_hours"]
     assert man["wallets"][W1]["untrusted"] == {s: [] for s in reconstruct.STEPS}
+
+
+def test_a_thin_wallet_gets_no_fingerprint_and_reads_no_gate(ran):
+    """W3: 2 verified orders. Its sizes must not become a fingerprint, and its cells are NO GATE
+    (nothing failed; nothing could be evaluated)."""
+    root, _, man = ran
+    out = root / "lab" / "reconstruct" / "run1"
+    ch = man["steps"]["ordermatch"]["chunks"][0]
+    assert ch["counts"]["fingerprints_dropped"] == 1
+    cd = out / "chunks" / ch["chunk"] / "ordermatch"
+    raw = orjson.loads((cd / "ordermatch.json").read_bytes())["wallets"][W3]
+    assert raw["fingerprint"] is None and "fewer than 30" in raw["fingerprint_dropped"]
+    assert {orjson.loads(line)["wallet"] for line in open(cd / "quotes.jsonl", "rb")} == {W1}
+    om = orjson.loads((out / "ordermatch" / "ordermatch.json").read_bytes())["wallets"][W3]
+    assert (om["maker_orders"], om["matched"], om["fingerprint"]) == (2, 2, None)
+    w3 = man["wallets"][W3]
+    assert w3["gates"]["ordertape.verified_share"]["status"] == "pass" and w3["untrusted"]["ordertape"] == []
+    assert w3["untrusted"]["ordermatch"] == ["ordermatch.match_rate:not_evaluable",
+                                             "ordermatch.placebo_rate:not_evaluable"]
+    row = next(line for line in (out / "report.md").read_text().splitlines() if line.startswith(f"| {W3}"))
+    assert "NO GATE" in row and "UNTRUSTED" not in row
+
+
+def test_a_kept_output_made_from_other_code_is_stale_and_untrusted(ran, monkeypatch):
+    """--steps profile after ordermatch's code changed: its kept chunks no longer match their key."""
+    root, _, _ = ran
+    real = reconstruct.code_sha
+    monkeypatch.setattr(reconstruct, "code_sha", lambda: real() | {"lab/ordermatch.py": "changed"})
+    man = run(cfg(root, out=root / "lab" / "reconstruct" / "one", chunk_s=7200, steps=("profile",),
+                  orders=root / "lab" / "reconstruct" / "run1" / "ordertape"), lambda *a: 1 / 0)
+    assert man["steps"]["ordermatch"]["status"] == "kept" and man["steps"]["ordermatch"]["stale"]
+    u = man["wallets"][W1]["untrusted"]
+    assert u["ordertape"] == [] and u["ordermatch"] == ["ordermatch:stale"]
+    assert "ordermatch:stale" in u["orderreplay"] and "ordermatch:stale" in u["profile"]
 
 
 # ---------------------------------------------------------------- parquet input to ordermatch

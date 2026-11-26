@@ -28,7 +28,16 @@ counted twice. The cost, visible per chunk in the manifest: the book is unknown 
 a chunk until each asset's next snapshot; an order still resting at the end of its chunk is
 ``unknown:censored``; an order created in the last ~62.5 s of a chunk is not ``observable`` (its
 placebo window crosses the edge). Chunks without a verified maker order created in them are not
-run (``empty``).
+run (``empty``). A known span is [first book, last frame] inside one replay, so a quiet stretch
+across a chunk edge is not counted in token-hours.
+
+FINGERPRINT FLOOR. Every wallet is passed to every chunk, and ordermatch derives a size
+fingerprint from whatever orders the wallet has there, even two. A wallet with fewer than
+``MIN_FP_ORDERS`` maker orders in a chunk therefore gets no fingerprint for that chunk: its
+``fingerprint`` is set to null (``fingerprint_dropped`` says why) and its candidate rows are not
+written. ordermatch has still done the counting; avoiding that cost needs a change inside
+``ordermatch.run``. A wallet that never reaches the floor in one chunk has no footprint; a
+longer ``--chunk-hours`` gives it one.
 
 MERGE (per wallet; sums of counts, never averages of rates)
 - ordermatch: counts are summed over chunks (maker_orders, observable, matched, placebo_matched,
@@ -84,6 +93,7 @@ STEPS = ("ordertape", "ordermatch", "orderreplay", "profile")
 UPSTREAM = {"ordertape": (), "ordermatch": ("ordertape",),
             "orderreplay": ("ordertape", "ordermatch"), "profile": ("ordertape", "ordermatch")}
 PROFILE_BATCH = 20  # wallets per profile.run call (it holds its wallets' rows in memory)
+MIN_FP_ORDERS = 30  # maker orders a wallet needs in a chunk for a size fingerprint (ordermatch's --min-orders)
 NS = 1_000_000_000
 MODES = orderreplay.MODES
 
@@ -329,7 +339,8 @@ def step_ordertape(c: Cfg, code: dict[str, str], transport: Callable) -> dict:
     out = orders_digest(c.orders, parts) if c.orders.is_dir() else None
     if status == "ran" or len(parts) != n_cached:  # keep the part hashes: parts are written once
         _write_json(sp, prev)
-    return {"status": status, "stale": status in ("kept", "skipped") and prev.get("key") != key,
+    # an order tape this run directory never fetched (--orders) has no key here: kept, not judged
+    return {"status": status, "stale": bool(prev.get("key")) and prev["key"] != key,
             "wall_s": prev.get("wall_s"), "complete": prev.get("complete"),
             "inputs": {"store_state_sha256": sha_file(store_state) if store_state.is_file() else None,
                        "store": str(c.store), "wallets": len(c.wallets), "max_txs_per_wallet": c.max_txs},
@@ -360,6 +371,11 @@ def _chunk_ordermatch(c: Cfg, d: Path, a: int, b: int, streams: list[str]) -> di
     """Run ordermatch on one chunk and write the tool's own three files plus the candidates'
     life histogram per wallet (integer ms -> count), which the merge needs for exact quantiles."""
     doc, rows, quotes = ordermatch.run(c.data, c.orders, a, b, list(c.wallets), streams=streams)
+    thin = {w for w, d in doc["wallets"].items() if d["fingerprint"] and d["maker_orders"] < MIN_FP_ORDERS}
+    for w in thin:  # a fingerprint from a handful of orders is noise (see FINGERPRINT FLOOR)
+        doc["wallets"][w]["fingerprint"] = None
+        doc["wallets"][w]["fingerprint_dropped"] = f"fewer than {MIN_FP_ORDERS} maker orders in the chunk"
+    quotes = [r for r in quotes if r["wallet"] not in thin]
     hist: dict[str, Counter] = defaultdict(Counter)
     for r in quotes:
         if r["rest_known"]:
@@ -375,6 +391,7 @@ def _chunk_ordermatch(c: Cfg, d: Path, a: int, b: int, streams: list[str]) -> di
                    "maker_orders": sum(w["maker_orders"] for w in ws),
                    "observable": sum(w["observable"] for w in ws),
                    "matched_all": sum(w["matched_all"] for w in ws),
+                   "fingerprints_dropped": len(thin),
                    "censored": sum(w["outcomes"].get("unknown:censored", 0) for w in ws)}}
 
 
@@ -476,6 +493,12 @@ def _partition(files: list[Path], field_: str, wallets: set[str], dst: Path, nam
     return n
 
 
+def _wallet_files(out: Path, wallets: tuple[str, ...], name: str, rows: dict[str, int]) -> dict[str, dict]:
+    return {f"wallets/{w}/{name}": {"sha256": sha_file(out / "wallets" / w / name),
+                                    "bytes": (out / "wallets" / w / name).stat().st_size, "rows": rows[w]}
+            for w in wallets}
+
+
 def _chunked(c: Cfg, step: str, code: dict[str, str], chunks: list[tuple[str, int, int]], busy: Counter,
              key_of: Callable[[str, int, int], dict | None], work: Callable[[Path, int, int], dict]) -> list[dict]:
     """Run ``work`` on every busy chunk whose key changed; returns one record per chunk."""
@@ -546,13 +569,15 @@ def step_ordermatch(c: Cfg, code: dict[str, str], chunks: list[tuple[str, int, i
                "orders": dict(sum((Counter(d["orders"]) for _, d in docs), Counter())),
                "wallet_rows": n_rows, "wallets": wallets}
         prev = {"key": key, "wall_s": round(time.monotonic() - t0, 1),
-                "outputs": {"ordermatch/ordermatch.json": _write_json(out / "ordermatch.json", doc)}}
+                "outputs": {"ordermatch/ordermatch.json": _write_json(out / "ordermatch.json", doc)}
+                | _wallet_files(c.out, c.wallets, "orders.jsonl", n_rows)}
         _write_json(sp, prev)
         merged = "ran"
     elif "ordermatch" not in c.steps:
         merged = "kept"
     ran = merged == "ran" or any(r["status"] == "ran" for r in recs)
-    return {"status": "ran" if ran else merged, "stale": bool(prev and prev["key"] != key),
+    return {"status": "ran" if ran else merged,
+            "stale": bool(prev and prev["key"] != key) or any(r.get("stale") for r in recs),
             "wall_s": round(sum(r.get("wall_s", 0) for r in recs) + (prev or {}).get("wall_s", 0), 1),
             "chunks": recs, "outputs": (prev or {}).get("outputs", {})}
 
@@ -662,7 +687,8 @@ def step_orderreplay(c: Cfg, code: dict[str, str], chunks: list[tuple[str, int, 
     elif "orderreplay" in c.steps and not (_fresh(prev, key, c.out) and "orderreplay" not in c.force):
         t0 = time.monotonic()
         dirs = [c.out / "chunks" / r["chunk"] / "orderreplay" for r in done]
-        _partition([d / "orderreplay.jsonl" for d in dirs], "maker", set(c.wallets), c.out / "wallets", "orderreplay.jsonl")
+        n_rows = _partition([d / "orderreplay.jsonl" for d in dirs], "maker", set(c.wallets), c.out / "wallets",
+                            "orderreplay.jsonl")
         docs = [orjson.loads((d / "orderreplay.json").read_bytes()) for d in dirs]
         by_market: dict[str, dict[str, list[float]]] = {m: defaultdict(lambda: [0.0, 0.0]) for m in MODES}
         wallets = {}
@@ -688,13 +714,15 @@ def step_orderreplay(c: Cfg, code: dict[str, str], chunks: list[tuple[str, int, 
                         "cohort: chunk counts summed, CI over the cohort wallets' pooled markets",
                "cohort": merge_replay_cohort(docs, by_market), "wallets": wallets}
         prev = {"key": key, "wall_s": round(time.monotonic() - t0, 1),
-                "outputs": {"orderreplay/orderreplay.json": _write_json(out / "orderreplay.json", doc)}}
+                "outputs": {"orderreplay/orderreplay.json": _write_json(out / "orderreplay.json", doc)}
+                | _wallet_files(c.out, c.wallets, "orderreplay.jsonl", n_rows)}
         _write_json(sp, prev)
         merged = "ran"
     elif "orderreplay" not in c.steps:
         merged = "kept"
     ran = merged == "ran" or any(r["status"] == "ran" for r in recs)
-    return {"status": "ran" if ran else merged, "stale": bool(prev and prev["key"] != key),
+    return {"status": "ran" if ran else merged,
+            "stale": bool(prev and prev["key"] != key) or any(r.get("stale") for r in recs),
             "wall_s": round(sum(r.get("wall_s", 0) for r in recs) + (prev or {}).get("wall_s", 0), 1),
             "chunks": recs, "outputs": (prev or {}).get("outputs", {})}
 
@@ -729,9 +757,7 @@ def step_profile(c: Cfg, code: dict[str, str], orders: dict | None) -> dict:
     elif "profile" not in c.steps and prev:
         status = "kept"
     return {"status": status, "stale": bool(prev and prev["key"] != key),
-            "wall_s": (prev or {}).get("wall_s"), "inputs": inputs,
-            "outputs": {k: v for k, v in (prev or {}).get("outputs", {}).items() if "ledger" not in k},
-            "ledgers": sum(k.endswith(".ledger.json") for k in (prev or {}).get("outputs", {}))}
+            "wall_s": (prev or {}).get("wall_s"), "inputs": inputs, "outputs": (prev or {}).get("outputs", {})}
 
 
 # ---------------------------------------------------------------- gates
@@ -766,16 +792,23 @@ def wallet_gates(table: dict[str, dict], vs: dict | None, om: dict | None, rp: d
     return {k: gate(table, k, *v) for k, v in vals.items()}
 
 
-def untrusted(gates: dict[str, dict]) -> dict[str, list[str]]:
-    """step -> the gates (its own and its upstream steps') that are not ``pass``; [] = trusted."""
-    return {s: [f"{k}:{g['status']}" for k, g in gates.items()
-                if g["step"] in (s, *UPSTREAM[s]) and g["status"] != "pass"] for s in STEPS}
+def untrusted(gates: dict[str, dict], stale: frozenset[str] = frozenset()) -> dict[str, list[str]]:
+    """step -> the gates (its own and its upstream steps') that are not ``pass``, plus
+    ``<step>:stale`` for a step (own or upstream) whose kept output was made from other inputs or
+    code than the current ones; [] = trusted."""
+    return {s: [f"{u}:stale" for u in (*UPSTREAM[s], s) if u in stale]
+            + [f"{k}:{g['status']}" for k, g in gates.items()
+               if g["step"] in (s, *UPSTREAM[s]) and g["status"] != "pass"] for s in STEPS}
 
 
 # ---------------------------------------------------------------- report
 def _mark(x, bad: list[str]) -> str:
+    """Cell text. UNTRUSTED = a gate failed or an input is stale; NO GATE = a gate could not be
+    evaluated (too few cases, step not run), so nothing vouches for the number."""
     s = "" if x is None else orjson.dumps(x).decode().replace("|", "/") if isinstance(x, dict | list) else str(x)
-    return f"{s} UNTRUSTED" if bad and s else s
+    if not bad or not s:
+        return s
+    return f"{s} " + ("NO GATE" if all(b.endswith(":not_evaluable") for b in bad) else "UNTRUSTED")
 
 
 def build_report(c: Cfg, man: dict) -> tuple[dict, str]:
@@ -807,7 +840,9 @@ def build_report(c: Cfg, man: dict) -> tuple[dict, str]:
             "footprint": ft and {"fill_ratio": ft["fill_ratio"], "chance_share": ft["chance_share"],
                                  "filled_quotes": ft["filled_quotes"],
                                  "unfilled_net_estimate": ft["unfilled_net_estimate"],
-                                 "identity_precision_upper": ft["identity_precision_upper"],
+                                 # not measured: non-cohort makers are unverified and left out (see ordermatch)
+                                 "identity_precision_upper": None,
+                                 "other_cohort_makers_proven": o["fingerprint"]["total"]["other_known"],
                                  "sizes_stable": o["fingerprint"]["sizes_stable"]},
             "twin": r and {m: {k: r["conditional_on_real_fill"][m].get(k) for k in ("n", "markets", "ratio", "ratio_ci95")}
                            for m in MODES},
@@ -838,8 +873,9 @@ def build_report(c: Cfg, man: dict) -> tuple[dict, str]:
     L = [f"# Reconstruction {man['run_id']}", "",
          f"commit `{man['git_commit']}` | cohort `{man['cohort']['sha256'][:12]}` | "
          f"{man['range']['from_utc']} to {man['range']['to_utc']} | manifest: `manifest.json`", "",
-         "Read first: a cell marked UNTRUSTED has a gate that did not pass (thresholds PROVISIONAL, "
-         "table in the manifest). Twin ratios are conditional on a real fill, not fill probabilities. "
+         "Read first: UNTRUSTED = a gate behind the cell failed or its input is stale; NO GATE = a gate "
+         "could not be evaluated (too few cases), so nothing vouches for the number. Thresholds are "
+         "PROVISIONAL (table in the manifest). Twin ratios are conditional on a real fill, not fill probabilities. "
          "Footprints are estimates with the stated chance share. Only filled orders are on chain.", "",
          "| wallet | role | mechanism | verified orders (maker) | verified share | matched / observable (rate) | "
          "placebo rate | rest ms p50 filled / cancelled | fill ratio (chance share) | twin pess [CI] | "
@@ -902,13 +938,15 @@ def run(c: Cfg, transport: Callable = ordertape.http_transport, gates: dict[str,
     om = (_load(c.out / "ordermatch" / "ordermatch.json") or {}).get("wallets", {})
     rp = (_load(c.out / "orderreplay" / "orderreplay.json") or {}).get("wallets", {})
     wallets = {}
+    stale = frozenset(s for s in STEPS if steps[s]["stale"])
+    made = {k: v for s in STEPS for k, v in steps[s]["outputs"].items() if isinstance(v, dict) and "sha256" in v}
     for w in c.wallets:
         g = wallet_gates(table, shares.get(w), om.get(w), rp.get(w))
-        wallets[w] = {"role": c.roles.get(w), "gates": g, "untrusted": untrusted(g),
-                      "outputs": {"orders": f"{c.orders} (rows with maker == wallet and verified)",
-                                  "book_match": f"wallets/{w}/orders.jsonl; ordermatch/ordermatch.json",
-                                  "twin_replay": f"wallets/{w}/orderreplay.jsonl; orderreplay/orderreplay.json",
-                                  "ledger": f"profile/{w}.ledger.json; profile/{w}.ledger.md"}}
+        files = (f"wallets/{w}/orders.jsonl", f"wallets/{w}/orderreplay.jsonl",
+                 f"profile/{w}.ledger.json", f"profile/{w}.ledger.md")
+        wallets[w] = {"role": c.roles.get(w), "gates": g, "untrusted": untrusted(g, stale),
+                      "outputs": {"orders": f"{c.orders} (rows with maker == wallet and verified == True)"}
+                      | {f: made[f] for f in files if f in made}}
     cohort_doc = orjson.loads(c.cohort.read_bytes())
     fmt = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))  # noqa: E731
     man = {

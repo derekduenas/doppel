@@ -10,9 +10,9 @@ from ``matchOrders`` calldata, hash-verified). Only maker rows are matched; rows
 (``day=YYYY-MM-DD/part-*.parquet``). From a directory only rows with ``verified == True`` are
 used (when the column exists), read oldest fill first, so "first fill" does not depend on the
 order the parts were written in. A cohort run verifies the cohort's own fills only, so other
-makers in the same txs are ``verified == False`` and are left out: ``other_known`` is then 0 and
-``identity_precision_upper`` is NOT MEASURED (it reads 1.0 or null), and there is no
-``others_pooled``. Maker rows created outside [--from, --to) are dropped while reading and
+makers in the same txs are ``verified == False`` and are left out: ``other_known`` then counts
+only other COHORT wallets, ``identity_precision_upper`` is NOT MEASURED (it reads near 1.0 or
+null) and ``others_pooled`` holds cohort wallets only. Maker rows created outside [--from, --to) are dropped while reading and
 counted in rows (``rows_out_of_range``), not in orders.
 
 WHAT IS IDENTIFIED (from data) AND WHAT IS ASSUMED
