@@ -97,7 +97,10 @@ EPS = 1e-9
 #   fail  = the CI's upper bound < threshold
 #   shuffle = the score must also exceed EVERY shuffled-wallet value (a permutation test: with
 #             N_NULL = 20 shuffles, p <= 1/21), or the row stays open. Activity is exempt: a wallet
-#             active in every window keeps its activity under any shuffle.
+#             active in every window keeps its activity under any shuffle. A row whose shuffle
+#             value is undefined stays open.
+# The gated fill scores are the ANY-MATCH volume shares (scale-free): one wallet fill can stand for
+# several clone fills and the reverse. Read them next to the one-to-one ``*_count`` scores.
 THRESHOLDS = (
     ("activity.agreement", "value", 0.7, False),
     ("fills.recall_volume", "value", 0.5, True),
@@ -109,6 +112,8 @@ GATES = {
     "min_comparable_windows": 30,
     "min_located_share": 0.9,     # wallet fills in comparable windows timed by a print
     "max_abs_print_lag_s": 2.0,   # |median receive - venue time| of prints: the two clocks agree
+    "min_wallet_fills": 1,        # no scored wallet fill = no wallet data, not a silent wallet
+    "min_usable_rows_share": 0.9, # wallet rows that are verified and priced (else the tape is not the wallet)
 }
 
 
@@ -380,7 +385,7 @@ def shuffled(wallet: dict[Key, list[Fill]], windows: list[Key], rng: np.random.G
 
 
 def decide(n: int, scores: dict, null: dict | None, gates: dict) -> dict:
-    """The preregistered verdict. ``gates`` = {"located_share", "print_lag_s"} as measured."""
+    """The preregistered verdict. ``gates`` = the ``GATES`` quantities as measured (None = not measured)."""
     checks = []
     for name, stat, th, beat in THRESHOLDS:
         m = scores.get(name) or {"value": None, "ci95": None}
@@ -390,17 +395,22 @@ def decide(n: int, scores: dict, null: dict | None, gates: dict) -> dict:
         failed = ci is not None and ci[1] is not None and ci[1] < th
         nmax = (null or {}).get(name, {}).get("max")
         note = None
-        if ok and beat and (null is None or (nmax is not None and v <= nmax)):
+        if ok and beat and (nmax is None or v <= nmax):
             ok, note = False, "not above the shuffled wallet"
         checks.append({"score": name, "statistic": stat, "threshold": th, "value": v, "ci95": ci,
                        "null_max": nmax, "result": "pass" if ok else "fail" if failed else "open", "note": note})
     loc, lag = gates.get("located_share"), gates.get("print_lag_s")
+    nwf, use = gates.get("wallet_fills"), gates.get("usable_rows_share")
     data = [f"{n} comparable windows < {GATES['min_comparable_windows']}"
             if n < GATES["min_comparable_windows"] else None,
             f"wallet fills timed by a print {loc} < {GATES['min_located_share']}"
             if loc is not None and loc < GATES["min_located_share"] else None,
             f"|median print lag| {lag} s > {GATES['max_abs_print_lag_s']} s (recorder and venue clocks disagree)"
-            if lag is not None and abs(lag) > GATES["max_abs_print_lag_s"] else None]
+            if lag is not None and abs(lag) > GATES["max_abs_print_lag_s"] else None,
+            f"{nwf} scored wallet fills < {GATES['min_wallet_fills']}"
+            if nwf is not None and nwf < GATES["min_wallet_fills"] else None,
+            f"usable wallet rows {use} < {GATES['min_usable_rows_share']} (unverified, unchecked or unpriced)"
+            if use is not None and use < GATES["min_usable_rows_share"] else None]
     data = [d for d in data if d]
     fails = [c["score"] for c in checks if c["result"] == "fail"]
     opens = [c["score"] for c in checks if c["result"] == "open"]
@@ -446,6 +456,7 @@ def evaluate(clone: dict[Key, list[Fill]], wallet: dict[Key, list[Fill]], window
     n_w = sum(r["n_w_all"] for r in comp)
     g = dict(gates or {})
     g["located_share"] = _num(sum(r["n_w"] for r in comp) / n_w) if n_w else None
+    g["wallet_fills"] = int(n_w)
     return {"windows": {"eligible": len(windows), "comparable": len(comp),
                         "neither_traded": len(windows) - len(comp)},
             "scale_k": _num(k), "clone_shares": _num(v_c), "wallet_shares": _num(v_w),
@@ -470,8 +481,12 @@ def run(root: Path, lab: Path, g: Genome, wallet: str, orders: Path, t_from: int
     clone = {k: clone_fills(r) for k, r in elig.items()}
     lags = [r["tape"]["print_lag_s"][1] for r in elig.values() if r["tape"].get("print_lag_s")]
     lag = _num(np.median(lags)) if lags else None
+    rn = left["rows"]
+    bad = sum(rn.get(k, 0) for k in ("unverified", "unchecked", "no_limit"))
+    mine = [r["block_ts"] for r in rows if r["maker"].lower() == wallet and r.get("block_ts")]
+    usable = _num(1 - bad / len(mine)) if mine else None
     doc = evaluate(clone, wfills, {k: (r["start"], r["end"], r["outcome"]) for k, r in elig.items()},
-                   g.costs, {"print_lag_s": lag}, n_boot, n_null, seed)
+                   g.costs, {"print_lag_s": lag, "usable_rows_share": usable}, n_boot, n_null, seed)
     records = doc.pop("records")
     excl = Counter(r["excluded"] for r in results if not r["eligible"])
     excl_w = Counter(r["excluded"] for k, r in by_key.items() if not r["eligible"] and wfills.get(k))
@@ -488,7 +503,8 @@ def run(root: Path, lab: Path, g: Genome, wallet: str, orders: Path, t_from: int
         "coverage": {
             "windows_in_range": len(wins) + len(missing), "windows_without_tokens": len(missing),
             "windows_excluded_by_twin": dict(excl), "of_which_wallet_traded": dict(excl_w),
-            "wallet": left, "wallet_shares_in_excluded_windows": _num(sh_excl),
+            "wallet": left, "wallet_rows_block_ts": [min(mine), max(mine)] if mine else None,
+            "wallet_shares_in_excluded_windows": _num(sh_excl),
             "wallet_volume_share_scored": _num(doc["wallet_shares"] / (doc["wallet_shares"] + sh_excl + sh_out))
             if doc["wallet_shares"] + sh_excl + sh_out > 0 else None},
         "adapter": {"print_lag_s_median": lag,
@@ -521,7 +537,8 @@ def card(doc: dict) -> str:
          f"windows: {w['comparable']} comparable of {w['eligible']} eligible ({w['neither_traded']} traded by "
          f"neither); excluded {c.get('windows_excluded_by_twin')}, without tokens {c.get('windows_without_tokens')}",
          f"shares: clone {doc['clone_shares']} wallet {doc['wallet_shares']} (k = {doc['scale_k']}); wallet "
-         f"volume scored {c.get('wallet_volume_share_scored')}; left out {c.get('wallet')}",
+         f"volume scored {c.get('wallet_volume_share_scored')}; left out {c.get('wallet')}; order-tape rows of the "
+         f"wallet span block_ts {c.get('wallet_rows_block_ts')} (a window the tape does not cover reads as wallet-idle)",
          f"gates measured: {doc['gates_measured']} | adapter: {doc.get('adapter')}", "",
          f"{'score':<26}{'value':>10}  {'CI95':<24}{'shuffle mean':>13}{'shuffle max':>13}"]
     null = doc["null"] or {}

@@ -12,12 +12,14 @@ from pathlib import Path
 
 import numpy as np
 import orjson
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from doppel.lab import fidelity as F
 from doppel.lab.fidelity import Fill
 from doppel.lab.ledger import TokenMap
-from doppel.lab.ordertape import decode_match
+from doppel.lab.ordertape import SCHEMA, decode_match
 from doppel.strategy.genome import (Condition, Costs, Genome, KillRule, Risk, Source, TakerRule,
                                     Universe, to_dict)
 from doppel.tape.segment import SegmentWriter
@@ -90,7 +92,7 @@ def taker_fill(p: dict, window: int, buy_up: bool, t_s: float, px_up: float, tx:
     return rows, trade(t_s, token, price, 10, "BUY", tx, f"m{w['start']}")
 
 
-def build(tmp_path, wallet_of, n: int = N, lag_s: float = 0.0):
+def build(tmp_path, wallet_of, n: int = N, lag_s: float = 0.0, parquet: bool = False, verified=True):
     """Tape + tokens + order tape. ``wallet_of(i, plan)`` -> list of taker_fill(...) results."""
     frames, rows, toks = [], [], []
     for i in range(n):
@@ -109,8 +111,16 @@ def build(tmp_path, wallet_of, n: int = N, lag_s: float = 0.0):
     lab = tmp_path / "lab"
     lab.mkdir()
     (lab / "tokens.jsonl").write_bytes(b"".join(orjson.dumps(t) + b"\n" for t in toks))
+    rows = [r | {"verified": verified} for r in rows]
     orders = tmp_path / "orders.jsonl"
-    orders.write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in rows))
+    if parquet:   # the cohort layout of doppel-ordertape
+        orders = tmp_path / "orders"
+        for j, day in enumerate(("2026-11-25", "2026-11-26")):
+            (orders / f"day={day}").mkdir(parents=True)
+            part = [r for r in rows if (int(r["tx"], 16) % 2) == j]   # a tx stays in one part
+            pq.write_table(pa.Table.from_pylist(part, schema=SCHEMA), orders / f"day={day}" / "part-000001.parquet")
+    else:
+        orders.write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in rows))
     return tmp_path / "tape", lab, orders
 
 
@@ -121,7 +131,8 @@ def mirror(i, p):
 
 
 def run(tmp_path, wallet_of, n=N, **kw):
-    root, lab, orders = build(tmp_path, wallet_of, n, kw.pop("lag_s", 0.0))
+    root, lab, orders = build(tmp_path, wallet_of, n, kw.pop("lag_s", 0.0), kw.pop("parquet", False),
+                              kw.pop("verified", True))
     return F.run(root, lab, genome(), WALLET, orders, T0, T0 + 300 * n, n_boot=300, **kw)
 
 
@@ -148,7 +159,9 @@ def test_a_clone_that_mirrors_the_wallet_passes_with_scores_of_one(tmp_path):
     # read against chance: the shuffled wallet does far worse on every gated score
     assert doc["null_shuffles"] == F.N_NULL
     assert doc["null"]["fills.recall_volume"]["max"] < 0.5 and doc["null"]["pnl.corr"]["max"] < 1.0
-    assert doc["gates_measured"] == {"print_lag_s": 0.0, "located_share": 1.0}
+    assert doc["gates_measured"] == {"print_lag_s": 0.0, "usable_rows_share": 1.0, "located_share": 1.0,
+                                     "wallet_fills": 32}
+    assert doc["coverage"]["wallet_rows_block_ts"] == [T0 + 300 + 57 + 2, T0 + 300 * 39 + 168 + 2]   # tau 57 and 168
     assert doc["coverage"]["wallet_volume_share_scored"] == 1.0
     assert doc["adapter"]["outcome_src"] == {"payout": 40}
     v = doc["verdict"]
@@ -189,6 +202,29 @@ def test_fewer_than_30_comparable_windows_is_inconclusive_even_for_a_perfect_clo
     assert doc["windows"]["comparable"] == 24 and val(doc, "fills.recall_volume") == 1.0
     v = doc["verdict"]
     assert v["decision"] == "INCONCLUSIVE" and "24 comparable windows < 30" in v["reason"]
+
+
+def test_parquet_order_tape_gives_the_same_answer(tmp_path):
+    doc, _ = run(tmp_path, mirror, parquet=True)
+    assert doc["verdict"]["decision"] == "PASS" and doc["wallet_shares"] == 320.0
+    assert doc["coverage"]["wallet"]["rows"] == {"used": 32}
+
+
+def test_an_order_tape_without_usable_wallet_rows_is_inconclusive_not_fail(tmp_path):
+    doc, _ = run(tmp_path, mirror, verified=None)   # the store could not check any row
+    assert doc["coverage"]["wallet"]["rows"] == {"unchecked": 32} and doc["wallet_shares"] == 0.0
+    assert doc["gates_measured"]["wallet_fills"] == 0 and doc["gates_measured"]["usable_rows_share"] == 0.0
+    v = doc["verdict"]
+    assert v["decision"] == "INCONCLUSIVE" and "0 scored wallet fills < 1" in v["reason"]
+    assert "usable wallet rows 0.0 < 0.9" in v["reason"]
+
+
+def test_a_score_whose_shuffle_is_undefined_stays_open():
+    sc = {t[0]: {"value": 0.9, "ci95": [0.8, 1.0]} for t in F.THRESHOLDS}
+    null = {t[0]: {"max": 0.1} for t in F.THRESHOLDS if t[0] != "pnl.corr"}
+    assert F.decide(40, sc, null, {})["binding"] == ["pnl.corr"]
+    assert F.decide(40, sc, null | {"pnl.corr": {"max": 0.2}}, {})["decision"] == "PASS"
+    assert F.decide(40, sc, null | {"pnl.corr": {"max": 0.95}}, {})["decision"] == "INCONCLUSIVE"
 
 
 def test_skewed_clocks_and_unlocated_fills_are_data_gates(tmp_path):
