@@ -51,10 +51,10 @@ def _iso(s: str) -> int:
     return int(datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp())
 
 
-def pmus_fee(p: float, n: float = 1.0) -> float:
+def pmus_fee(p: float, n: float = 1.0, *, coef: float = PMUS_COEF, rebate: float = PMUS_REBATE) -> float:
     """Dollars for n contracts at price p, cent half-even (Python round = banker's)."""
     from ..twin.engine import fee_usd
-    return round(fee_usd(PMUS_COEF, p, n) * (1 - PMUS_REBATE), 4)
+    return round(fee_usd(coef, p, n) * (1 - rebate), 4)
 
 
 def kalshi_fee(p: float, n: float = 1.0) -> float:
@@ -149,15 +149,19 @@ def episodes(series: list[tuple[int, float, float]], persist: int) -> list[dict]
     return out
 
 
-def run(root: Path, lab: Path, max_age: float = 1.0, skew: float = 0.5, persist: int = 2) -> dict:
+def run(root: Path, lab: Path, max_age: float = 1.0, skew: float = 0.5, persist: int = 2, *,
+        pmus_coef: float = PMUS_COEF, pmus_rebate: float = PMUS_REBATE) -> dict:
+    if persist < 1 or pmus_coef < 0 or not 0 <= pmus_rebate <= 1:
+        raise ValueError("invalid fee or persistence setting")
     # PM US books from the WS streams only (REST is cached and 8 s stale at the median, E22).
     from .pmus_tape import ws_books
     pm = {k: [(t, (b, bq, a, aq)) for t, b, bq, a, aq in v]
           for k, v in ws_books(root, "cpc-btc-updown-15m-").items()}
     ka = load_books(root, "kalshi_books", "KXBTC15M-")
     km = kalshi_meta(sorted(ka), lab / "xvenue" / "kalshi_meta.json")
-    by_open = {v["open"]: t for t, v in km.items()}
-    res: dict = {"windows": [], "equivalence": {"checked": 0, "strike_match": 0, "result_match": 0}}
+    by_open = {v["open"]: t for t, v in km.items() if t in ka}
+    res: dict = {"windows": [], "fees": {"pmus_coef": pmus_coef, "pmus_rebate": pmus_rebate},
+                 "equivalence": {"checked": 0, "strike_match": 0, "result_match": 0, "excluded": []}}
     for slug, prow in sorted(pm.items()):
         start = int(datetime.strptime(slug[-16:-1], "%Y-%m-%d-%H%M").replace(
             tzinfo=__import__("datetime").timezone.utc).timestamp())
@@ -168,11 +172,19 @@ def run(root: Path, lab: Path, max_age: float = 1.0, skew: float = 0.5, persist:
         meta = km[t]
         pmm = pmus_meta(start)
         eq = {}
+        reason = None
+        if meta.get("close") != start + 900:
+            reason = "close_mismatch"
+        elif not pmm or pmm.get("ptb") is None or meta.get("strike") is None:
+            reason = "missing_strike"
         if pmm and pmm["ptb"] is not None and meta.get("strike") is not None:
             res["equivalence"]["checked"] += 1
             eq["strike_diff"] = round(pmm["ptb"] - float(meta["strike"]), 4)
-            res["equivalence"]["strike_match"] += abs(eq["strike_diff"]) < 0.005
-            if pmm["settle"] is not None and meta.get("result") in ("yes", "no"):
+            strikes_match = abs(pmm["ptb"] - float(meta["strike"])) < 0.005
+            res["equivalence"]["strike_match"] += strikes_match
+            if not strikes_match and reason is None:
+                reason = "strike_mismatch"
+            if reason is None and pmm["settle"] is not None and meta.get("result") in ("yes", "no"):
                 pm_up = pmm["settle"] >= pmm["ptb"]
                 ok = pm_up == (meta["result"] == "yes")
                 res["equivalence"]["result_match"] += ok
@@ -181,6 +193,9 @@ def run(root: Path, lab: Path, max_age: float = 1.0, skew: float = 0.5, persist:
                         {"slug": slug, "kalshi": t, "ptb": pmm["ptb"], "pm_settle": pmm["settle"],
                          "kalshi_strike": meta.get("strike"), "kalshi_result": meta["result"],
                          "kalshi_expiration_value": meta.get("expiration_value")})
+        if reason is not None:
+            res["equivalence"]["excluded"].append({"slug": slug, "kalshi": t, "reason": reason, **eq})
+            continue
         A, B, gaps = [], [], []
         for s in range(start + 5, start + 900 - 5):
             pt, kt = asof(prow, s, max_age, True), asof(krow, s, max_age, True)
@@ -193,9 +208,9 @@ def run(root: Path, lab: Path, max_age: float = 1.0, skew: float = 0.5, persist:
             kb, kbq, ka_, kaq = k
             gaps.append((pb + pa) / 2 - (kb + ka_) / 2)
             n = max(1.0, min(paq, kbq))
-            a = kb - pa - (pmus_fee(pa, n) + kalshi_fee(1 - kb, n)) / n
+            a = kb - pa - (pmus_fee(pa, n, coef=pmus_coef, rebate=pmus_rebate) + kalshi_fee(1 - kb, n)) / n
             n2 = max(1.0, min(pbq, kaq))
-            b = pb - ka_ - (pmus_fee(pb, n2) + kalshi_fee(ka_, n2)) / n2
+            b = pb - ka_ - (pmus_fee(pb, n2, coef=pmus_coef, rebate=pmus_rebate) + kalshi_fee(ka_, n2)) / n2
             A.append((s, a, min(paq, kbq)))
             B.append((s, b, min(pbq, kaq)))
         if not A:
@@ -224,21 +239,23 @@ def run(root: Path, lab: Path, max_age: float = 1.0, skew: float = 0.5, persist:
                       "arb_dollars_upper_total": round(sum(x["arb_dollars_upper"] for x in w), 2),
                       "note": "upper bound: counts every positive second at displayed size; overlapping "
                               "seconds re-count the same liquidity; no leg risk or latency modelled"}
+    if res["equivalence"].get("mismatches"):
+        # Keep the observed prices and diagnostics. One contrary settlement invalidates
+        # a guaranteed-dollar estimate over this series, including the matching windows.
+        res["summary"].update(episode_dollars=None, episode_dollars_ex_last60s=None,
+                              arb_dollars_upper_total=None, note="Observed settlement conflict in matched contracts")
     return res
 
 
 def main(argv=None) -> int:
-    global PMUS_COEF, PMUS_REBATE
     ap = argparse.ArgumentParser(prog="doppel-xvenue")
     ap.add_argument("--data", type=Path, required=True)
     ap.add_argument("--lab", type=Path, required=True)
     ap.add_argument("--pmus-coef", type=float, default=PMUS_COEF)
     ap.add_argument("--pmus-rebate", type=float, default=0.0, help="API promo 0.70 through 2026-12-31")
     a = ap.parse_args(argv)
-    PMUS_COEF, PMUS_REBATE = a.pmus_coef, a.pmus_rebate
-    res = run(a.data, a.lab)
-    res["fees"] = {"pmus_coef": PMUS_COEF, "pmus_rebate": PMUS_REBATE}
-    tag = f"c{PMUS_COEF:g}-r{PMUS_REBATE:g}"
+    res = run(a.data, a.lab, pmus_coef=a.pmus_coef, pmus_rebate=a.pmus_rebate)
+    tag = f"c{a.pmus_coef:g}-r{a.pmus_rebate:g}"
     out = a.lab / "xvenue" / f"xvenue-btc15m-{tag}-{time.strftime('%Y%m%dT%H%MZ', time.gmtime())}.json"
     out.write_bytes(orjson.dumps(res, option=orjson.OPT_INDENT_2))
     print("equivalence:", res["equivalence"])

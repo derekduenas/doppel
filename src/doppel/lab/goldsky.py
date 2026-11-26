@@ -14,9 +14,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fcntl
 import os
 import sys
 import time
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -38,34 +41,93 @@ class BudgetExceeded(RuntimeError):
 
 
 class Ledger:
-    """Append-only row ledger. One line per page: {"tw","job","rows","url"}. Totals are recomputed
-    from the file on open, so restarts cannot forget spend."""
+    """Reserve a page durably before sending. A lost reply keeps its maximum charge held."""
 
     def __init__(self, path: Path, cap_rows: int = DEFAULT_CAP_ROWS):
         self.path = Path(path)
         self.cap = cap_rows
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.total = 0
-        if self.path.exists():
-            for line in self.path.read_bytes().splitlines():
+        self.pending: dict[str, int] = {}
+        self.offset = 0
+        with self._locked():
+            pass
+
+    @contextmanager
+    def _locked(self):
+        with self.path.open("a+b") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            if fh.tell() < self.offset:
+                raise ValueError("Goldsky ledger was truncated")
+            fh.seek(self.offset)
+            for line in fh:
+                if not line.endswith(b"\n"):
+                    raise ValueError("incomplete Goldsky ledger entry")
                 if line.strip():
-                    self.total += orjson.loads(line)["rows"]
+                    self._apply(orjson.loads(line))
+                self.offset = fh.tell()
+            yield fh
+
+    def _apply(self, entry):
+        if "reserve" in entry:
+            self.pending[entry["reserve"]] = entry["limit"]
+        if "settle" in entry:
+            del self.pending[entry["settle"]]
+        self.total += entry["rows"]
+
+    def _append(self, fh, **entry):
+        fh.write(orjson.dumps({"tw": time.time_ns(), **entry}) + b"\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+        self._apply(entry)
+        self.offset = fh.tell()
+
+    def _check(self, rows: int) -> None:
+        if rows < 0 or self.total + sum(self.pending.values()) + rows > self.cap:
+            raise BudgetExceeded(f"row cap {self.cap:,} would be exceeded "
+                                 f"(spent {self.total:,}, reserved {sum(self.pending.values()):,})")
 
     def check(self, next_rows: int = PAGE) -> None:
-        if self.total + next_rows > self.cap:
-            raise BudgetExceeded(f"row cap {self.cap:,} would be exceeded (spent {self.total:,})")
+        with self._locked():
+            self._check(next_rows)
 
     def add(self, job: str, rows: int, url: str) -> None:
-        self.total += rows
-        with open(self.path, "ab") as fh:
-            fh.write(orjson.dumps({"tw": time.time_ns(), "job": job, "rows": rows, "url": url}) + b"\n")
-            fh.flush()
-            os.fsync(fh.fileno())
+        with self._locked() as fh:
+            self._check(rows)
+            self._append(fh, job=job, rows=rows, url=url)
+
+    def reserve(self, job: str, limit: int, url: str) -> str:
+        with self._locked() as fh:
+            self._check(limit)
+            rid = uuid.uuid4().hex
+            self._append(fh, reserve=rid, limit=limit, rows=0, job=job, url=url)
+            return rid
+
+    def settle(self, rid: str, rows: int, job: str, url: str) -> None:
+        with self._locked() as fh:
+            if rid not in self.pending or rows < 0:
+                raise ValueError("invalid Goldsky reservation")
+            self._append(fh, settle=rid, rows=rows, job=job, url=url)
 
     def summary(self) -> dict:
-        return {"rows": self.total, "usd_est": round(self.total * USD_PER_ROW, 4),
-                "cap_rows": self.cap, "cap_usd": round(self.cap * USD_PER_ROW, 2),
-                "remaining_rows": self.cap - self.total}
+        with self._locked():
+            held = sum(self.pending.values())
+            return {"rows": self.total, "usd_est": round(self.total * USD_PER_ROW, 4),
+                    "cap_rows": self.cap, "cap_usd": round(self.cap * USD_PER_ROW, 2),
+                    "reserved_rows": held, "remaining_rows": self.cap - self.total - held}
+
+
+@contextmanager
+def activity_writer(root: Path):
+    stream = root / "goldsky_activity"
+    stream.mkdir(parents=True, exist_ok=True)
+    with (stream / ".pull.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        writer = SegmentWriter(root, "goldsky_activity")
+        try:
+            yield writer
+        finally:
+            writer.close()
 
 
 async def pull(job: str, params: dict, key: str, ledger: Ledger, writer: SegmentWriter,
@@ -82,26 +144,33 @@ async def pull(job: str, params: dict, key: str, ledger: Ledger, writer: Segment
     try:
         while got < max_rows:
             limit = min(PAGE, max_rows - got)
-            ledger.check(limit)
             q = {**params, "limit": limit}
             if cursor:
                 q["cursor"] = cursor
             url = f"{BASE}?{urlencode(q)}"
+            rid = ledger.reserve(job, limit, url)
             sent_w, sent_m = time.time_ns(), time.monotonic_ns()
-            async with session.get(url, headers={"X-API-Key": key}) as r:
+            async with session.get(url, headers={"X-API-Key": key}, allow_redirects=False) as r:
                 body = await r.text()
                 status = r.status
                 retry = r.headers.get("Retry-After")
             if status == 429:
+                ledger.settle(rid, 0, job, url)
                 await asyncio.sleep(float(retry or 1.0))
                 continue
             if status != 200:
-                writer.append(body, meta={"job": job, "url": url, "status": status,
+                if 300 <= status < 500:
+                    ledger.settle(rid, 0, job, url)
+                writer.append("", meta={"job": job, "url": url, "status": status,
                                           "sent_tw": sent_w, "sent_tm": sent_m})
-                raise RuntimeError(f"HTTP {status}: {body[:200]}")
+                raise RuntimeError(f"Goldsky returned HTTP {status}")
             doc = orjson.loads(body)
-            rows = len(doc.get("data") or [])
-            ledger.add(job, rows, url)
+            if not isinstance(doc.get("data"), list):
+                raise ValueError("missing Goldsky page data")
+            rows = len(doc["data"])
+            ledger.settle(rid, rows, job, url)
+            if rows > limit:
+                raise ValueError(f"Goldsky returned {rows} rows for a limit of {limit}")
             writer.append(body, meta={"job": job, "url": url, "status": status, "rows": rows,
                                       "sent_tw": sent_w, "sent_tm": sent_m})
             got += rows
@@ -144,19 +213,18 @@ def main(argv: list[str] | None = None) -> int:
         print(orjson.dumps(ledger.summary()).decode())
         return 0
     key = os.environ.get("GOLDSKY_FEEDS_API_KEY")
+    if a.cmd == "cohort" and not a.execute:
+        return _cohort(a, ledger, "")
     if not key:
         print("GOLDSKY_FEEDS_API_KEY not set", file=sys.stderr)
         return 2
     if a.cmd == "cohort":
         return _cohort(a, ledger, key)
-    if a.end - a.start > 604_800:
+    if not 0 < a.end - a.start <= 604_800:
         ap.error("Feeds time windows are limited to 7 days")
-    writer = SegmentWriter(a.data, "goldsky_activity")
-    try:
+    with activity_writer(a.data) as writer:
         n = asyncio.run(pull(a.job, {"start_time": a.start, "end_time": a.end}, key, ledger,
                              writer, a.max_rows))
-    finally:
-        writer.close()
     print(orjson.dumps({"job": a.job, "rows": n, **ledger.summary()}).decode())
     return 0
 
@@ -165,23 +233,24 @@ def _cohort(a, ledger: Ledger, key: str) -> int:
     doc = orjson.loads(a.cohort.read_bytes())
     wallets = ([("cand", w) for w in doc["candidates"][a.skip:a.skip + a.n_candidates]]
                + [("ctrl", w) for w in doc["controls"][a.skip:a.skip + a.n_controls]])
-    worst = min(len(wallets) * a.max_rows_per_wallet, a.run_budget_rows or 10**12)
+    worst = len(wallets) * a.max_rows_per_wallet
+    if a.run_budget_rows is not None:
+        worst = min(worst, a.run_budget_rows)
     plan = {"cohort_sha256": doc["sha256"], "wallets": len(wallets), "days": a.days,
             "run_budget_rows": a.run_budget_rows,
             "max_rows_per_wallet": a.max_rows_per_wallet, "worst_case_rows": worst,
             "worst_case_usd": round(worst * USD_PER_ROW, 2), "ledger_before": ledger.summary()}
     print(orjson.dumps(plan).decode())
-    if worst > ledger.cap - ledger.total:
+    if worst > plan["ledger_before"]["remaining_rows"]:
         print("plan exceeds remaining cap; refusing", file=sys.stderr)
         return 3
-    if not a.execute:
+    if not a.execute or worst == 0:
         return 0
     end = a.end or int(time.time())
     start = end - int(a.days * 86400)
-    writer = SegmentWriter(a.data, "goldsky_activity")
     tag = doc["sha256"][:12]
     spent = 0
-    try:
+    with activity_writer(a.data) as writer:
         for role, w in wallets:
             room = worst - spent
             if room <= 0:
@@ -193,8 +262,6 @@ def _cohort(a, ledger: Ledger, key: str) -> int:
             spent += n
             print(orjson.dumps({"wallet": w, "role": role, "rows": n,
                                 "truncated": n >= a.max_rows_per_wallet}).decode(), flush=True)
-    finally:
-        writer.close()
     print(orjson.dumps({"done": True, **ledger.summary()}).decode())
     return 0
 

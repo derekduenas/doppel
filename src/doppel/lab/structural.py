@@ -27,9 +27,9 @@ gap-free).
    snapshot wins, so a pulled side is not resurrected by an older quote. Rules follow ``xvenue``:
    every leg's book at most ``max_age`` (1 s) old at the evaluation second, leg skew (max - min book
    time) at most ``max_skew`` (0.5 s), persistence at least ``persist`` (2) consecutive seconds,
-   and each episode valued ONCE at its first second's net edge x displayed size.
+   and each episode valued once at its first qualifying second's net edge x displayed size.
 4. One-leg failure. For each ordering of the legs, the cost change of the remaining legs 1 s and 5 s
-   after the first leg's book time, read from the tape. A missing quote is null and counted, never
+   after the decision second, read from the tape. A missing quote is null and counted, never
    zero. Kalshi REST is polled at about 1 s, which limits the +1 s figure.
 5. Ledger. Append-only JSONL (schema ``SCHEMA``): one ``run`` header (params, fees, code SHA), one row
    per excluded contract, per class, per static skip, per opportunity episode, and per (combination,
@@ -60,10 +60,11 @@ from typing import Any, Callable, Iterable, Iterator
 import orjson
 
 from ..tape.segment import read_segment
+from ..twin.engine import fee_usd
 from .pmus_tape import WS_STREAMS as PMUS_STREAMS
 from .xvenue import KALSHI, PMUS, _get
 
-SCHEMA = 1
+SCHEMA = 2
 KALSHI_SERIES = ("KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXBTCD", "KXBTC", "KXETHD", "KXETH")
 KALSHI_STRIKE_TYPES = ("greater", "greater_or_equal", "less", "less_or_equal", "between")
 # stream -> fresh (verified to reflect the live book at receive time)
@@ -396,12 +397,12 @@ class Fees:
     def taker(self, venue: str, p: float, n: float) -> float:
         """Dollars for an n-contract taker order at p (xvenue rounding conventions)."""
         if venue == "pmus":
-            return round(self.pmus_taker * n * p * (1 - p), 2)
+            return fee_usd(self.pmus_taker, p, n)
         return math.ceil(self.kalshi_taker * n * p * (1 - p) * 100 - 1e-9) / 100
 
     def maker(self, c: Contract, p: float, n: float) -> float | None:
         if c.venue == "pmus":
-            return round(self.pmus_maker * n * p * (1 - p), 2)
+            return fee_usd(self.pmus_maker, p, n)
         if c.maker_coef is None:
             return None
         return math.ceil(c.maker_coef * n * p * (1 - p) * 100 - 1e-9) / 100
@@ -527,6 +528,10 @@ class Params:
     max_skew: float = 0.5
     persist: int = 2
 
+    def __post_init__(self):
+        if self.persist < 1:
+            raise ValueError("persistence requires at least one observation")
+
 
 def _price(books: dict[tuple[str, str], Book], c: Contract, side: str, at: float):
     b = books.get((c.venue, c.key))
@@ -534,13 +539,13 @@ def _price(books: dict[tuple[str, str], Book], c: Contract, side: str, at: float
 
 
 def leg2_moves(books: dict[tuple[str, str], Book], combo: Combo, quotes: list[tuple[float, float, float]],
-               deltas: tuple[int, ...] = (1, 5), max_age: float = 1.0) -> list[dict]:
+               deltas: tuple[int, ...] = (1, 5), max_age: float = 1.0, *, decision_s: float | None = None) -> list[dict]:
     """For each choice of first leg: cost change (c/set, + = adverse) of the remaining legs ``d`` s
-    after the first leg's book time. None when any remaining leg has no quote then, or only one older
+    after the opportunity was confirmed. None when any remaining leg has no quote then, or only one older
     than ``max_age`` (a stalled stream or failed poll is unknown, not a zero move)."""
     out = []
+    t_first = max(q[2] for q in quotes) if decision_s is None else decision_s
     for i, (ci, _si) in enumerate(combo.legs):
-        t_first = quotes[i][2]
         row: dict[str, Any] = {"first": f"{ci.venue}:{ci.key}"}
         for d in deltas:
             mv = 0.0
@@ -554,7 +559,8 @@ def leg2_moves(books: dict[tuple[str, str], Book], combo: Combo, quotes: list[tu
                     break
                 mv += q[0] - quotes[j][0]
             row[f"move_{d}s_c"] = round(100 * mv, 2) if ok else None
-        row["kalshi_poll_limited"] = any(c.venue == "kalshi" for j, (c, _) in enumerate(combo.legs) if j != i)
+        row["kalshi_poll_limited"] = any(c.venue == "kalshi" and not books[(c.venue, c.key)].fresh
+                                        for j, (c, _) in enumerate(combo.legs) if j != i)
         out.append(row)
     return out
 
@@ -633,9 +639,10 @@ def scan_class(members: list[Contract], books: dict[tuple[str, str], Book], t0: 
         for run in _runs([(p[0], p[1]) for p in pos]):
             first = pos[run[0]]
             if first[1] and len(run) >= params.persist:
-                s, _, _, net, net_m, size, qv, gross = first
+                s, _, _, net, net_m, size, qv, gross = pos[run[params.persist - 1]]
                 yield {"type": "opportunity", "cls": combo.cls, "combo": combo.id, "kind": combo.kind,
-                       "relation": combo.relation, "payout": combo.payout, "start": s, "secs": len(run),
+                       "relation": combo.relation, "payout": combo.payout, "start": first[0],
+                       "qualified_at": s, "secs": len(run),
                        "gross_c": round(100 * gross, 2), "net_c": round(100 * net, 2),
                        "net_maker_c": None if net_m is None else round(100 * net_m, 2),
                        "size": size, "dollars": round(net * size, 2),
@@ -644,7 +651,7 @@ def scan_class(members: list[Contract], books: dict[tuple[str, str], Book], t0: 
                                  "price": q[0], "qty": q[1], "book_t": round(q[2], 3),
                                  "age_s": round(s - q[2], 3)} for (c, sd), q in zip(combo.legs, qv)],
                        "flags": {"kalshi_rest": kalshi_rest, "tie_unverified": combo.tie_unverified},
-                       "leg2": leg2_moves(books, combo, qv, max_age=params.max_age)}
+                       "leg2": leg2_moves(books, combo, qv, max_age=params.max_age, decision_s=s)}
                 continue
             reasons = Counter(pos[i][2] for i in run)
             reason = "not_persistent" if first[1] else reasons.most_common(1)[0][0]
