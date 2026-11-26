@@ -161,7 +161,7 @@ class SegmentWriter:
         return last
 
 
-def _frames(path: Path, read_size: int = 1 << 20):
+def _frames(path: Path, read_size: int = 1 << 20, *, strict: bool = False):
     """Decompressed zstd frames of a segment, one at a time, reading the file in ``read_size``
     chunks (memory is one frame, not the whole file). A truncated or corrupt tail ends it."""
     dctx = zstandard.ZstdDecompressor()
@@ -174,10 +174,14 @@ def _frames(path: Path, read_size: int = 1 << 20):
                 if not buf:
                     buf = fh.read(read_size)
                     if not buf:
+                        if strict and out:
+                            raise ValueError(f"truncated zstd frame in {path}")
                         return  # clean end, or a truncated tail frame from a crash
                 try:
                     out.append(obj.decompress(buf))
-                except zstandard.ZstdError:
+                except zstandard.ZstdError as exc:
+                    if strict:
+                        raise ValueError(f"invalid zstd frame in {path}") from exc
                     return
                 if obj.eof:
                     buf = obj.unused_data
@@ -186,10 +190,9 @@ def _frames(path: Path, read_size: int = 1 << 20):
             yield b"".join(out)
 
 
-def read_segment(path: Path, verify: bool = True):
-    """Yield records from a segment. Tolerates a truncated final frame. Raises on CRC mismatch
-    when ``verify`` is true."""
-    for chunk in _frames(Path(path)):
+def read_segment(path: Path, verify: bool = True, *, strict: bool = False):
+    """Yield records, optionally checking payload CRCs and requiring complete zstd frames."""
+    for chunk in _frames(Path(path), strict=strict):
         for line in chunk.splitlines():
             if not line:
                 continue

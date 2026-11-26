@@ -1,0 +1,766 @@
+"""Rule fit on a synthetic wallet whose quoting rule is known exactly.
+
+The wallet re-posts every 2 s in each 5m window: a bid joining the best bid (BUY Up) and an ask at
+round(mid + 2 - 0.05 * inventory) placed as a BUY on the Down token; sizes 97..100. Spread, mid and
+inventory vary independently, so touch, mid and the skew are separately identified."""
+
+import dataclasses
+import math
+import sys
+import time
+import tracemalloc
+from types import SimpleNamespace
+
+import numpy as np
+import orjson
+import pytest
+
+from doppel.lab import rulefit
+from doppel.lab.rulefit import STATE_COLS, Fair, Inventory, main, run, thresholds, up_order, up_view
+from doppel.strategy.genome import from_dict, validate
+from doppel.strategy.registry import Registry, RegistryError
+from doppel.tape.segment import SegmentWriter
+
+T0 = 1795629600  # hour-aligned, a 5m boundary
+MS = T0 * 1000
+NS = 1_000_000_000
+W = "0xabc0000000000000000000000000000000000001"
+L = 300
+
+
+def slug(k, asset="btc"):
+    return f"{asset}-updown-5m-{T0 + L * k}"
+
+
+def book(ms, asset, bids, asks, market):
+    lv = lambda xs: [{"price": f"{p:.2f}", "size": str(s)} for p, s in xs]  # noqa: E731
+    return ms, {"event_type": "book", "asset_id": asset, "market": market, "bids": lv(bids),
+                "asks": lv(asks), "timestamp": str(MS + ms)}
+
+
+def pc(ms, asset, price, size, side, market, ts=None):
+    return ms, {"event_type": "price_change", "market": market, "timestamp": str(MS + (ms if ts is None else ts)),
+                "price_changes": [{"asset_id": asset, "price": f"{price:.2f}", "size": str(size), "side": side}]}
+
+
+def trade(ms, asset, price, size, tx, market):
+    return ms, {"event_type": "last_trade_price", "asset_id": asset, "market": market, "price": f"{price:.2f}",
+                "size": str(size), "side": "SELL", "timestamp": str(MS + ms), "transaction_hash": tx}
+
+
+def tape_row(tx, order_id, token, price, size, q, block_ts, created_ms):
+    return {"tx": tx, "block": 1, "block_ts": block_ts, "role": "maker", "order_id": order_id, "maker": W,
+            "token_id": token, "side": "BUY", "size": size, "limit": price,
+            "maker_amount": round(size * price * 1e6), "taker_amount": round(size * 1e6),
+            "fill_amount": round(q * price * 1e6), "created_ms": created_ms, "salt": "1"}
+
+
+def world(seed=1, windows=6, candidates=0, ask_fn=None):
+    """frames, ordermatch rows, order-tape rows, candidate rows. ``ask_fn(k, ms, bb, ba, inv)`` ->
+    the ask in Up cents (default: round(mid + 2 - 0.05 * inv))."""
+    rng = np.random.default_rng(seed)
+    frames, orders, tape, quotes = [], [], [], []
+    n = 0
+    for k in range(windows):
+        U, D, mk = f"U{k}", f"D{k}", f"m{k}"
+        inv, bb = 0.0, int(rng.integers(35, 60))
+        for t in range(k * L * 1000 + 10_000, (k + 1) * L * 1000 - 8_000, 2000):
+            bb = int(np.clip(bb + rng.integers(-1, 2), 25, 70))
+            ba = bb + int(rng.integers(1, 5))
+            frames.append(book(t, U, [(bb / 100, 500), ((bb - 5) / 100, 300)], [(ba / 100, 400)], mk))
+            frames.append(book(t, D, [((100 - ba) / 100, 400)], [((100 - bb) / 100, 500)], mk))
+            ask = int(round((bb + ba) / 2 + 2 - 0.05 * inv)) if ask_fn is None else int(ask_fn(k, t + 310, bb, ba, inv))
+            placed = []
+            for ms, tok, price, old in ((t + 300, U, bb / 100, 500),
+                                        (t + 310, D, (100 - ask) / 100, 400 if ask == ba else 0)):
+                if not 2 <= round(100 * price) <= 98:
+                    continue  # no such price: this side is not quoted in this step
+                n += 1
+                size = float(rng.integers(97, 101))
+                frames.append(pc(ms, tok, price, old + size, "BUY", mk))
+                o = {"order_id": f"o{n}", "maker": W, "token_id": tok, "side": "BUY", "price": round(price, 2),
+                     "size": size, "created_ms": MS + ms - 150, "placed_venue_ms": MS + ms,
+                     "placed_tw_ns": (MS + ms) * 1_000_000, "filled": 0.0, "remainder": size, "n_fills": 0,
+                     "fills_at": [], "outcome": "cancelled", "reason": "exact_decrease", "end_ms": MS + ms + 1500,
+                     "rest_min_ms": 1500, "rest_max_ms": 1500, "fill_before_placement": False}
+                orders.append(o)
+                placed.append(o)
+            for j in range(candidates):  # never-filled bids 3 c behind the best
+                ms = t + 320 + j
+                frames.append(pc(ms, U, (bb - 3) / 100, 97 * (j + 1), "BUY", mk))
+                quotes.append({"attribution": "fingerprint_candidate", "wallet": W, "token_id": U,
+                               "price": round((bb - 3) / 100, 2), "side_view": "BUY", "venue_ms": MS + ms,
+                               "tw_ns": (MS + ms) * 1_000_000, "size": 97.0, "outcome": "cancelled",
+                               "reason": "exact_decrease", "end_ms": MS + ms + 200})
+            # one fill per step moves the inventory: + on the bid (Up bought), - on the ask (Down bought)
+            o = placed[0] if len(placed) == 1 or inv < -60 or (inv <= 60 and rng.random() < 0.5) else placed[1]
+            q = float(rng.integers(1, 21))
+            inv += q if o is placed[0] else -q
+            tx = f"0xt{n}"
+            frames.append(trade(t + 600, o["token_id"], o["price"], q, tx, mk))
+            o.update(filled=q, remainder=o["size"] - q, n_fills=1, fills_at=[[tx, MS + t + 600, q]])
+            tape.append(tape_row(tx, o["order_id"], o["token_id"], o["price"], o["size"], q,
+                                 T0 + (t + 600) // 1000 + 2, o["created_ms"]))
+    return frames, orders, tape, quotes
+
+
+def jl(rows):
+    return b"".join(orjson.dumps(r) + b"\n" for r in rows)
+
+
+def write(tmp, frames, orders, tape, quotes=None, om_doc=None, windows=6, asset="btc"):
+    tmp.mkdir(parents=True, exist_ok=True)
+    w = SegmentWriter(tmp / "tape", f"clob_{asset}_5m")
+    for ms, m in sorted(frames, key=lambda f: f[0]):
+        w.append(orjson.dumps([m]).decode(), tw=(MS + ms) * 1_000_000)
+    w.close()
+    om = tmp / "om"
+    om.mkdir(exist_ok=True)
+    (om / "orders.jsonl").write_bytes(jl(orders))
+    if quotes is not None:
+        (om / "quotes.jsonl").write_bytes(jl(quotes))
+    if om_doc is not None:
+        (om / "ordermatch.json").write_bytes(orjson.dumps(om_doc))
+    (tmp / "ordertape.jsonl").write_bytes(jl(tape))
+    (tmp / "tokens.jsonl").write_bytes(jl([{"token": f"{'UD'[i]}{k}", "slug": slug(k, asset), "idx": i,
+                                            "status": "open"} for k in range(windows) for i in (0, 1)]))
+
+
+def brti_lab(lab, lo=T0 - 900, hi=T0 + 1300, bump_received_after=None):
+    """Raw BRTI received 0.3 s after each second, plus the settlement series. With
+    ``bump_received_after`` (unix s) every value received later than that is moved by 500."""
+    rng = np.random.default_rng(7)
+    raw = {t: 90000 + float(v) for t, v in zip(range(lo, hi), np.cumsum(rng.normal(0, 3, hi - lo)))}
+    series = {t: sum(raw[s] for s in range(t - 59, t + 1)) / 60 for t in range(lo + 60, hi)}
+    w = SegmentWriter(lab, "ref_brti_raw")
+    for t, v in raw.items():
+        if bump_received_after is not None and t + 0.3 > bump_received_after:
+            v += 500
+        w.append(orjson.dumps({"t_ms": t * 1000, "v": str(v), "received": (t + 0.3) * 1000}).decode(),
+                 tw=int((t + 0.3) * NS))
+    w.close()
+    w = SegmentWriter(lab, "ref_prices")
+    w.append(orjson.dumps({"series": [{"candles": [{"timestamp": t, "close": v} for t, v in series.items()]}]}).decode(),
+             tw=hi * NS, meta={"asset": "crypto:btc", "status": 200, "from": lo + 60, "to": hi - 1})
+    w.close()
+    return lab
+
+
+def fit(tmp, out=None, **kw):
+    return run(tmp / "tape", tmp / "om", tmp / "ordertape.jsonl", W, T0, T0 + 3600, out,
+               token_files=[tmp / "tokens.jsonl"], **kw)
+
+
+@pytest.fixture(scope="module")
+def fitted(tmp_path_factory):
+    tmp = tmp_path_factory.mktemp("rulefit")
+    write(tmp, *world()[:3])
+    return fit(tmp, tmp / "out") + (tmp,)
+
+
+# ---------------------------------------------------------------- the rule
+def test_known_rule_is_recovered(fitted):
+    genome, rep, rows, _ = fitted
+    assert rep["label"] == "rule conditional on fill" and "0.3%" in rep["selection_caveat"]
+    bid, ask = rep["price_rule"]["bid"], rep["price_rule"]["ask"]
+    # bid = best bid exactly
+    assert (bid["chosen"], bid["tie_with"]) == ("touch", "mid")
+    assert bid["runner_up"]["ci95"] is None  # only one validation window
+    assert bid["offset_c"]["value"] == 0 and bid["offset_c"]["iqr"] == 0 and bid["offset_c"]["oos"]["mae_c"] == 0
+    assert bid["within_1c_of_const_rule"]["value"] == 1 and bid["offset_c"]["oos"]["within_1c"] == 1
+    assert bid["offset_c"]["ci95"] == [0, 0] and bid["offset_c"]["clusters"] == 6
+    # ask = mid + 2 - 0.05 * inventory (cent rounding leaves ~0.25 c of error)
+    assert (ask["chosen"], ask["model"], ask["tie_with"]) == ("mid", "skew", "touch")
+    assert abs(ask["intercept_c_with_skew"] - 2) < 0.1 and 0.2 < ask["offset_c"]["oos"]["mae_c"] < 0.3
+    k = ask["skew_c_per_contract"]
+    assert abs(k["value"] - 0.05) < 0.002 and 0.045 < k["ci95"][0] <= k["value"] <= k["ci95"][1] < 0.055
+    assert k["oos"]["val_mae_c_with_skew"] < 0.35 < k["oos"]["val_mae_c_const"]
+    assert ask["candidates"]["touch"]["val_mae_skew_c"] > 2 * ask["candidates"]["mid"]["val_mae_skew_c"]
+    assert ask["inventory_range"][1] - ask["inventory_range"][0] > 60
+    assert ask["n_fit"] + ask["n_val"] + ask["n_test"] == ask["n"] and ask["n_val"] > 50
+    # every ask was a BUY on the Down token: Up terms
+    assert {r["up_side"] for r in rows if r["idx"] == 1} == {"ask"} and bid["n_rows"] == ask["n_rows"] == len(rows) // 2
+    # size, timing
+    size = rep["size_rule"]
+    assert size["descriptor"]["rule"] == "fixed_sizes" and set(size["descriptor"]["sizes_90"]) <= {97.0, 98.0, 99.0, 100.0}
+    assert size["train_size_set_covers_test"]["value"] == 1 and 97 <= size["median_size"]["value"] <= 100
+    gap = rep["timing_rule"]["gap_s"]
+    assert gap["value"] == 2 and gap["ci95"] == [2, 2] and gap["oos"]["holdout_value"] == 2
+    shares = {k: v["value"] for k, v in rep["timing_rule"]["trigger_shares"].items()}
+    assert abs(sum(shares.values()) - 1) < 1e-3 and shares["own_fill"] > 0.3 and shares["unknown"] == 0
+    assert rep["timing_rule"]["cancel"]["life_ms"]["value"] == 1500
+    part = rep["participation_rule"]
+    assert part["windows_seen"] == part["windows_with_orders"] == 6 and part["presence_rate"]["value"] > 0.9
+    assert part["both_sides_share_when_present"]["value"] == 1 and part["pre_open_order_share"] == 0
+    assert rep["ladder"]["ladder_share"]["value"] == 0 and rep["ladder"]["depth_max"] == 1
+
+
+def test_genome_is_a_valid_draft_that_acts_like_the_fit_and_cannot_be_registered(fitted, tmp_path):
+    genome, rep, rows, tmp = fitted
+    assert genome["status"] == "draft" and rep["genome"]["registered"] is False and rep["genome"]["validate"] == []
+    g = from_dict(orjson.loads((tmp / "out" / "genome.json").read_bytes()))
+    assert validate(g) == [] and g.id == rep["genome"]["id"] and rep["genome"]["reasons"] == []
+    assert g.source.wallets == (W,) and g.source.parents == () and g.universe.venue == "intl_sim"
+    assert g.universe.assets == ("btc",) and g.universe.horizons == ("5m",)
+    assert g.evidence["wallet"] == W and g.evidence["label"] == "rule conditional on fill"
+    assert g.evidence["fit_range"] == {"from": T0, "to": T0 + 3600}
+    m = g.maker
+    assert m is not None and m.quote_ref == "mid" and m.sides == "both" and 97 <= m.size <= 100
+    assert 1.5 < m.half_spread_c < 2.5 and 0.015 < m.skew_c_per_contract < 0.035 and m.max_quote_age_s == 2
+    # the registry refuses the draft status (main 7778177): nothing rulefit writes can seal itself
+    reg = Registry(tmp_path)
+    with pytest.raises(RegistryError, match="status 'draft' cannot be registered"):
+        reg.register(orjson.loads((tmp / "out" / "genome.json").read_bytes()), "rulefit-test", "h",
+                     (time.time() + 3600, time.time() + 7200))
+    assert not reg.path.exists() or reg.lines() == []
+    # every number that reaches the genome carries n, a window-clustered CI and a holdout score
+    e, part = rep["expressible_price_rule"], rep["participation_rule"]
+    fitted_numbers = [e["half_spread_fit"], e["centre_shift_fit"], e["skew_fit"], rep["size_rule"]["median_size"],
+                      rep["timing_rule"]["cancel"]["life_ms_p90"], part["tte_s_p1"], part["tau_s_p1"]]
+    assert all(x["n"] > 100 and x["clusters"] == 6 and len(x["ci95"]) == 2 and x["oos"] for x in fitted_numbers)
+    assert e["half_spread_fit"]["ci95"][0] <= m.half_spread_c <= e["half_spread_fit"]["ci95"][1]
+    # the printed rule is the selected one: intercept at zero inventory with the skew, not the raw median
+    assert g.evidence["price_rule"]["ask"]["rule"] == rep["price_rule"]["ask"]["rule"]
+    u = rep["price_rule"]["ask"]["rule"]
+    assert u["ref"] == "mid" and abs(u["offset_c"] - 2) < 0.1 and abs(u["skew_c_per_contract"] - 0.05) < 0.002
+    assert rep["price_rule"]["bid"]["rule"] | {"fitted_on": 0} == {"ref": "touch", "offset_c": 0,
+                                                                  "skew_c_per_contract": 0, "fitted_on": 0}
+    card = (tmp / "out" / "rule.md").read_text()
+    assert f"ask = mid {u['offset_c']:+g} c - {u['skew_c_per_contract']:g} c x inventory" in card
+
+    # universe from p1, not p10: it keeps ~99 % of the wallet's own orders (was ~80 %)
+    uni = rep["universe_fit"]
+    assert g.universe.tte_min_s == uni["tte_min_s"] == int(part["tte_s_p1"]["value"])
+    assert uni["own_orders_excluded_share"] <= 0.025
+    # risk measured from the wallet, so one fill does not silence a side (default max_inventory is 50)
+    rf = rep["risk_fit"]
+    assert g.risk.max_inventory == rf["max_inventory"] >= max(m.size, rf["abs_inventory_at_placement"]["p99"])
+    assert g.risk.max_notional_per_window == math.ceil(rf["window_opening_notional_usd"]["p95"])
+    # The emitted genome's static intent check describes the same observations used to fit it.
+    ck = rep["emitted_genome_check"]
+    assert ck["would_quote_share"] >= 0.95 and ck["fair_substituted_by_mid"] is True
+    assert "in-sample" in ck["note"].lower()
+    test = [r for r in rows if r["window_start_ns"] >= rep["inputs"]["split"]["t_test_ns"]]
+    errs = []
+    for r in rows:
+        b, a = g.maker_quotes({"mid_up_c": r["mid_c"], "fair_up": r["mid_c"] / 100, "inventory_up": r["inv"],
+                               "tau_s": r["tau_s"], "tte_s": r["tte_s"]})
+        q = b if r["up_side"] == "bid" else a
+        if q is not None:
+            errs.append(abs(q - r["px_c"]))
+    assert ck["rows"] == len(rows) and ck["would_quote"] <= len(errs)
+    assert len(errs) - ck["would_quote"] == sum(ck["silent_by"].get(k, 0)
+                                                for k in ("no_room", "would_cross_book"))
+    assert ck["mae_c_when_quoting"] < 1.2 and sum(ck["silent_by"].values()) == ck["rows"] - ck["would_quote"]
+    # with the schema-default risk the same rule goes silent on the rows where |inventory| >= 50
+    capped = rulefit.check_genome(dataclasses.replace(g, risk=dataclasses.replace(g.risk, max_inventory=50.0)),
+                                  rows, False)
+    assert capped["would_quote"] < ck["would_quote"] and capped["silent_by"]["inventory_cap_or_side"] > 0
+
+    items = {c["item"]: c for c in rep["cannot_express"]}
+    assert "bid: quote pegged to the same-side best" in items and "a different reference per side" in items
+    assert "size drawn from a set / randomised" in items and "status draft" in items
+    assert "inventory skew differs by side" in items  # the bid has none, the ask 0.05
+    cost = items["cost of the schema on the price rule"]["measured"]
+    assert cost["oos_cost_of_schema_c"] > 0 and cost["n_test_common"] == e["n_test"] == len(test)
+    assert "bid: several price levels" not in items
+    # same inputs -> same id (evidence is part of the id: no clock, seeded bootstrap)
+    assert fit(tmp)[0] == genome
+    assert sorted(p.name for p in (tmp / "out").iterdir()) == ["decision_table.jsonl", "fit_report.json",
+                                                              "genome.json", "rule.md"]
+
+
+def test_selection_never_sees_the_test_slice(fitted):
+    """Reference, model and keep-skew are chosen on the validation slice; the test slice is scored
+    once. Wrecking every test-slice order must change the test MAE and nothing that was chosen."""
+    rows = [r for r in fitted[2] if r["kind"] == "order"]
+    th = thresholds(rows)
+    assert th == (fitted[1]["inputs"]["split"]["t_val_ns"], fitted[1]["inputs"]["split"]["t_test_ns"])
+    assert th == ((T0 + 3 * L) * NS, (T0 + 4 * L) * NS)
+    bad = [r | {k: r[k] + 9 for k in ("px_c", "d_touch_c", "d_mid_c")}
+           if r["window_start_ns"] >= th[1] else r for r in rows]
+    a, b = rulefit.fit_price(rows, th), rulefit.fit_price(bad, th)
+    for s in ("bid", "ask"):
+        for k in ("chosen", "model", "tie_with", "candidates", "train_rule", "runner_up"):
+            assert a[s][k] == b[s][k], (s, k)
+        assert abs(b[s]["offset_c"]["oos"]["mae_c"] - a[s]["offset_c"]["oos"]["mae_c"] - 9) < 0.6
+    ea, eb = rulefit.fit_expressible(rows, a, th), rulefit.fit_expressible(bad, b, th)
+    assert all(ea[k] == eb[k] for k in ("quote_ref", "skew_kept", "validation_mae_c"))
+    assert eb["oos_mae_c"] > ea["oos_mae_c"] + 4
+    # ... and wrecking the validation slice does change the choice (the test above is not vacuous)
+    worse = [r | {"d_mid_c": r["d_mid_c"] + (r["inv"] or 0)} if th[0] <= r["window_start_ns"] < th[1] else r
+             for r in rows]
+    assert rulefit.fit_price(worse, th)["ask"]["chosen"] != "mid"
+
+    # A reference known only in test windows cannot enter model selection. Missing test books
+    # leave the test score undefined without turning a trained candidate into a different rule.
+    late_fair = [r | {"d_fair_c": 0.0} for r in rows if r["window_start_ns"] >= th[1]]
+    early = [r for r in rows if r["window_start_ns"] < th[1]]
+    late_only = rulefit.fit_price(early + late_fair, th)
+    assert all("fair" not in late_only[s]["candidates"] for s in ("bid", "ask"))
+    no_test = rulefit.fit_price(early, th)
+    assert all(no_test[s]["train_rule"] == a[s]["train_rule"] for s in ("bid", "ask"))
+    assert all(no_test[s]["offset_c"]["oos"]["mae_c"] is None for s in ("bid", "ask"))
+    assert rulefit.fit_expressible(early + late_fair, late_only, th)["refs_compared"] == ["mid"]
+    assert rulefit._phase([{"window_start_ns": th[0] - NS, "window_end_ns": th[1] + NS}], th).tolist() == [-1]
+
+
+def test_mid_and_fair_share_one_mask_and_only_fair_assets_enter_the_genome(fitted):
+    rows = [dict(r) for r in fitted[2] if r["kind"] == "order"]
+    rng = np.random.default_rng(0)
+    for r in rows:  # fair known for ~70 % of the orders, near the mid
+        if rng.random() < 0.7:
+            f = r["mid_c"] + float(rng.normal(0, 0.3))
+            r["fair_c"], r["d_fair_c"] = f, r["px_c"] - f
+    eth = [r | {"asset": "eth", "window": "eth-" + r["window"]} for r in rows[:200]]
+    th = thresholds(rows + eth)
+    price = rulefit.fit_price(rows + eth, th)
+    e = rulefit.fit_expressible(rows + eth, price, th)
+    no_fair = sum(r["fair_c"] is None for r in rows)
+    assert e["refs_compared"] == ["mid", "fair"] and e["rows_dropped_by_fair_requirement"] == no_fair > 400
+    assert e["n"] == len(rows) - no_fair and set(e["validation_mae_c"]) == {"mid", "mid+skew", "fair", "fair+skew"}
+    assert e["rows_dropped_no_fair_model"] == 200 and e["assets"] == ["btc"]
+    assert e["n_test_common"] == e["n_test"]  # schema cost: both rules on the same test rows
+    assert abs(e["oos_cost_of_schema_c"] - (e["oos_mae_c_same_rows"] - e["per_side_fit_oos_mae_c"])) < 2e-4
+    # too little fair: mid alone, nothing dropped for it
+    for r in rows[100:]:
+        r["fair_c"] = r["d_fair_c"] = None
+    e2 = rulefit.fit_expressible(rows, rulefit.fit_price(rows, th), th)
+    assert e2["refs_compared"] == ["mid"] and e2["rows_dropped_by_fair_requirement"] == 0 and e2["n"] == len(rows)
+
+
+# ---------------------------------------------------------------- when no genome may be written
+def test_no_genome_for_an_asset_without_fair_v1(tmp_path):
+    write(tmp_path, *world(seed=2, windows=3)[:3], windows=3, asset="eth")
+    genome, rep, rows = fit(tmp_path, tmp_path / "out")
+    assert len(rows) > 500 and rep["price_rule"]["bid"]["chosen"] == "touch"  # the rule itself is still fitted
+    assert genome is None and rep["genome"]["status"] == "not_emitted" and not (tmp_path / "out" / "genome.json").exists()
+    assert "no order on an asset with fair-v1" in rep["genome"]["reason"]
+    assert rep["expressible_price_rule"]["rows_dropped_no_fair_model"] == len(rows)
+    assert "NOT EMITTED because" in (tmp_path / "out" / "rule.md").read_text()
+
+
+def test_no_genome_when_it_could_never_quote_or_would_not_act_like_the_wallet(tmp_path, monkeypatch):
+    # both quotes 1 c inside each other around the mid: half-spread ~0, the twin would self-cross
+    frames, orders, tape, _ = world(seed=4, windows=3, ask_fn=lambda k, ms, bb, ba, inv: math.floor((bb + ba) / 2 - 0.7))
+    write(tmp_path / "tight", frames, orders, tape, windows=3)
+    genome, rep, _ = fit(tmp_path / "tight")
+    assert genome is None and rep["expressible_price_rule"]["half_spread_c"] < 0.5
+    assert any("half_spread_c" in x and "self-cross" in x for x in rep["genome"]["reasons"])
+    # one window: no clustered CI
+    write(tmp_path / "one", *world(seed=4, windows=1)[:3], windows=1)
+    genome, rep, _ = fit(tmp_path / "one")
+    assert genome is None and any("1 market window" in x for x in rep["genome"]["reasons"])
+    # the 70 % rule: a genome that would stay silent where the wallet quoted is not emitted
+    write(tmp_path / "ok", *world(seed=4, windows=3)[:3], windows=3)
+    assert fit(tmp_path / "ok")[0] is not None
+    monkeypatch.setattr(rulefit, "MIN_QUOTE_SHARE", 1.01)
+    genome, rep, _ = fit(tmp_path / "ok")
+    assert genome is None and any("would quote" in x for x in rep["genome"]["reasons"])
+    assert rep["genome"]["few_windows"] is True and rep["emitted_genome_check"]["would_quote_share"] > 0.9
+
+
+# ---------------------------------------------------------------- no look-ahead
+def lookahead_diffs(tmp, asof):
+    """Build a world twice: as it was, and with EVERYTHING received at or after one order's
+    placement rewritten (books, the order's own record, prints, a new own fill 1 ms later, BRTI
+    received later, later candidates, later order-tape amounts) plus every ordermatch outcome
+    field of every order. Returns (early rows, early rows whose state changed, later rows whose
+    state changed, checks)."""
+    frames, orders, tape, quotes = world(seed=3, windows=2, candidates=1)
+    cut = orders[len(orders) // 2]
+    P = cut["placed_tw_ns"]
+    t = cut["placed_venue_ms"] - MS
+    write(tmp / "a", frames, orders, tape, quotes, windows=2)
+    brti_lab(tmp / "a" / "lab")
+    future = [book(ms, f"{c}{k}", [(0.01, 1)], [(0.99, 1)], f"m{k}")
+              for ms in range(t, t + 60_000, 500) for k in (0, 1) for c in "UD"]
+    leak = trade(t + 1, cut["token_id"], cut["price"], 500, "0xleak", "m0" if cut["token_id"][1] == "0" else "m1")
+    orders_b = [o | {"outcome": "filled", "reason": "chain", "end_ms": o["end_ms"] + 777, "rest_min_ms": 9,
+                     "rest_max_ms": 9, "remainder": 0.0, "filled": o["size"], "fills_at": [], "n_fills": 3}
+                for o in orders]
+    tape_b = [r | {"fill_amount": 7 * r["fill_amount"]} if r["block_ts"] * NS >= P else r for r in tape]
+    tape_b.append(tape_row("0xleak", "leak", cut["token_id"], cut["price"], 500.0, 500.0, P // NS + 2, MS + t))
+    write(tmp / "b", [f for f in frames if f[0] < t] + future + [leak], orders_b, tape_b,
+          [q for q in quotes if q["tw_ns"] < P], windows=2)
+    brti_lab(tmp / "b" / "lab", bump_received_after=P / NS)
+
+    def table(d):
+        rows = rulefit.decision_table(d / "tape", d / "om", d / "ordertape.jsonl", W, T0, T0 + 3600,
+                                      [d / "tokens.jsonl"], d / "lab", asof)["rows"]
+        return {r["id"]: r for r in rows}
+
+    a, b = table(tmp / "a"), table(tmp / "b")
+    state = lambda r: [r["cutoff_tw_ns"]] + [r[c] for c in STATE_COLS]  # noqa: E731
+    early = [i for i, r in a.items() if r["cutoff_tw_ns"] <= P and i in b]
+    later = [i for i, r in a.items() if r["cutoff_tw_ns"] > P and i in b]
+    checks = {"fair": sum(a[i]["fair_c"] is not None for i in early),
+              "candidates": sum(a[i]["kind"] == "candidate" for i in early),
+              "inventory": sum(bool(a[i]["inv"]) for i in early), "cut_row": cut["order_id"] in early}
+    return early, [i for i in early if state(a[i]) != state(b[i])], [i for i in later if state(a[i]) != state(b[i])], checks
+
+
+@pytest.mark.parametrize("asof", ["placement", "created"])
+def test_state_uses_nothing_received_at_or_after_the_cutoff(tmp_path, asof):
+    early, changed, later_changed, checks = lookahead_diffs(tmp_path, asof)
+    assert len(early) > 150 and changed == []
+    # the comparison has teeth: fair, candidates and inventory are in the early rows, and the rewritten
+    # future does reach the later rows
+    assert checks["fair"] > 100 and checks["candidates"] > 40 and checks["inventory"] > 100 and checks["cut_row"]
+    assert len(later_changed) > 100
+    assert {"gap_s", "px_c", "d_touch_c", "placed_venue_ms"}.isdisjoint(STATE_COLS)
+
+
+@pytest.mark.parametrize("leak", ["inventory", "notional", "fair", "book"])
+def test_the_lookahead_test_catches_the_reviewers_leaks(tmp_path, monkeypatch, leak):
+    """Reviewer s6: a 250 ms inventory leak and a 5 s fair leak used to pass. Each leak below must
+    change at least one early state row."""
+    if leak == "inventory":
+        orig = Inventory.at
+        monkeypatch.setattr(Inventory, "at", lambda self, slug, tw: orig(self, slug, tw + 250_000_000))
+    elif leak == "notional":
+        orig_n = Inventory.notional_at
+        monkeypatch.setattr(Inventory, "notional_at", lambda self, slug, tw: orig_n(self, slug, tw + 250_000_000))
+    elif leak == "fair":
+        orig_f = Fair.at
+        monkeypatch.setattr(Fair, "at", lambda self, info, tw: orig_f(self, info, tw + 5 * NS))
+    else:  # the placement's own record (and anything else with tw == cutoff) answered into the state
+        orig_scan = rulefit.scan
+        monkeypatch.setattr(rulefit, "scan", lambda root, s, a, b, qs, *rest, **kwargs: orig_scan(
+            root, s, a, b, [(q[0] + 1, q[1], q[2]) for q in qs], *rest, **kwargs))
+    _, changed, _, _ = lookahead_diffs(tmp_path, "placement")
+    assert changed != []
+
+
+def test_own_placement_is_not_in_its_state(fitted):
+    rows = fitted[2]
+    # the bid joins a 500 best bid: its own increase (same tw as the cutoff) is not in the state
+    assert all(r["depth_bid"] == 500 and r["d_touch_c"] == 0 for r in rows if r["up_side"] == "bid")
+    assert all(r["since_prev_s"] == 2 for r in rows if r["gap_s"] is not None)
+
+
+def test_narrow_rulefit_range_filters_orders_and_candidates_but_reads_prior_book_state(tmp_path):
+    frames, orders, tape, quotes = world(windows=2, candidates=1)
+    write(tmp_path, frames, orders, tape, quotes, windows=2)
+    start, end = T0 + 10, T0 + 150
+    table = rulefit.decision_table(tmp_path / "tape", tmp_path / "om", tmp_path / "ordertape.jsonl", W,
+                                   start, end, [tmp_path / "tokens.jsonl"], asof="created")
+    expected = {o["order_id"] for o in orders if start * NS <= o["placed_tw_ns"] < end * NS}
+    assert {r["id"] for r in table["rows"] if r["kind"] == "order"} == expected
+    assert table["stats"]["orders_outside_range_dropped"] == len(orders) - len(expected)
+    assert table["inputs"]["candidates"]["outside_range"] > 0
+    assert all(start * 1000 <= s["placed_ms"] < end * 1000 for s in table["specs"])
+    first = min(table["rows"], key=lambda r: r["cutoff_tw_ns"])
+    assert first["mid_c"] is not None
+
+
+def test_manifest_cli_uses_per_wallet_matches_and_separate_summary(fitted, tmp_path, monkeypatch):
+    genome, _, _, data = fitted
+    manifest_path = tmp_path / "manifest.json"
+    own = tmp_path / "wallet-orders.jsonl"
+    own.write_bytes((data / "om" / "orders.jsonl").read_bytes())
+    summary = tmp_path / "match-summary.json"
+    summary.write_bytes(orjson.dumps({"wallets": {W: {"fingerprint": {"total": {"identity_precision_upper": 0.8}}}}}))
+
+    def read(path, wallet, start, end):
+        assert (path, wallet, start, end) == (manifest_path, W, T0, T0 + 3600)
+        return SimpleNamespace(orders=data / "ordertape.jsonl", matched_orders=own, summary=summary)
+
+    monkeypatch.setitem(sys.modules, "doppel.lab.research_manifest", SimpleNamespace(read_reconstruction=read))
+    out = tmp_path / "out"
+    assert main(["--data", str(data / "tape"), "--reconstruct-manifest", str(manifest_path), "--wallet", W,
+                 "--from", str(T0), "--to", str(T0 + 3600), "--tokens", str(data / "tokens.jsonl"),
+                 "--out", str(out)]) == 0
+    assert orjson.loads((out / "genome.json").read_bytes()) == genome
+    report = orjson.loads((out / "fit_report.json").read_bytes())
+    assert report["inputs"]["reconstruct_manifest"] == str(manifest_path)
+    assert report["inputs"]["candidates"]["unavailable"] and report["selection_check"] is None
+
+
+def test_inventory_and_notional_count_only_fills_located_before_the_cutoff():
+    tok = {"U": {"slug": "s", "idx": 0}, "D": {"slug": "s", "idx": 1}}
+    fills = [{"tx": "a", "token": "U", "side": "BUY", "shares": 10.0, "price": 0.4, "block_ts": 100},
+             {"tx": "b", "token": "D", "side": "BUY", "shares": 4.0, "price": 0.7, "block_ts": 100},
+             {"tx": "c", "token": "D", "side": "SELL", "shares": 1.0, "price": 0.5, "block_ts": 50},
+             {"tx": "d", "token": "X", "side": "BUY", "shares": 1.0, "price": 0.5, "block_ts": 50}]
+    inv = Inventory(fills, tok, {"a": 90 * NS, "b": 95 * NS})  # c has no print: block time
+    assert (inv.unmapped, inv.by_block_time) == (1, 1)
+    assert [inv.at("s", t * NS) for t in (50, 51, 90, 91, 95, 96)] == [0, 1, 1, 11, 11, 7]
+    # opening notional as the twin accrues it: c opens 1 Up at 0.5; a adds 10 Up at 0.4; b (4 Down
+    # bought = 4 Up sold) only closes
+    assert [round(inv.notional_at("s", t * NS), 6) for t in (50, 51, 91, 96)] == [0, 0.5, 4.5, 4.5]
+    assert inv.window_notional({"s"}) == [4.5]
+    assert inv.any_between("s", 90 * NS, 96 * NS) and not inv.any_between("s", 90 * NS, 95 * NS)
+    assert inv.at("other", 10**20) == 0 and inv.notional_at("other", 10**20) == 0
+
+
+def test_up_terms_mirror_the_down_token():
+    assert up_order("BUY", 0.3, 0) == ("bid", 30.0) and up_order("SELL", 0.3, 0) == ("ask", 30.0)
+    assert up_order("BUY", 0.3, 1) == ("ask", 70.0) and up_order("SELL", 0.3, 1) == ("bid", 70.0)
+    v = up_view((0.3, 5.0, 0.34, 9.0), 1)  # Down bid 30 x5, ask 34 x9 -> Up bid 66 x9, ask 70 x5
+    assert (v["bb_c"], v["depth_bid"], v["ba_c"], v["depth_ask"], v["mid_c"], v["spread_c"]) == (66, 9, 70, 5, 68, 4)
+    assert up_view(None, 0)["mid_c"] is None and up_view((0.3, 5.0, None, None), 0)["mid_c"] is None
+
+
+# ---------------------------------------------------------------- candidates
+def test_selection_refit_moves_the_rule_when_unfilled_quotes_sit_elsewhere(tmp_path):
+    frames, orders, tape, quotes = world(seed=5, windows=4, candidates=2)
+    doc = {"wallets": {W: {"fingerprint": {"total": {"identity_precision_upper": 0.8}}}}}
+    write(tmp_path, frames, orders, tape, quotes, doc, windows=4)
+    _, rep, rows = fit(tmp_path)
+    sel = rep["selection_check"]
+    assert sel["identity_precision"] == 0.8 and sel["n_candidates"] == len(quotes) == len(orders)
+    assert sel["reading"].startswith("IF THE ATTRIBUTION HELD") and "Not a bound" in sel["reading"]
+    assert rep["inputs"]["candidates"] | {"sampling": 0} == {"cap": 5000, "total": len(quotes), "kept": len(quotes),
+                                                           "outside_range": 0, "seed": rulefit.SEED, "strata": 4,
+                                                           "sampling": 0}
+    # the filled bids sit AT the best bid; the unfilled candidates 3 c behind it, 2 per filled bid
+    # at weight 0.8: the weighted median offset moves from 0 to -3
+    b = sel["sides"]["bid"]["at_verified_ref"]
+    assert b["offset_c"] == {"verified": 0, "pooled": -3, "move": -3, "pooled_ci95": [-3, -3]}
+    assert b["within_1c"]["verified"] == 1 and abs(b["within_1c"]["pooled"] - 1.6 / 2.6) < 0.01
+    assert sel["sides"]["ask"]["n_candidates"] == 0 and sel["sides"]["ask"]["at_verified_ref"]["offset_c"]["move"] == 0
+    # the verified rule itself is untouched by the candidates
+    assert rep["price_rule"]["bid"]["offset_c"]["value"] == 0 and rep["price_rule"]["bid"]["n_rows"] == len(orders) // 2
+    assert sum(r["kind"] == "candidate" for r in rows) == len(quotes)
+    # at half the weight the filled orders hold the median: no move
+    half = fit(tmp_path, precision=0.4)[1]["selection_check"]["sides"]["bid"]["at_verified_ref"]
+    assert half["offset_c"]["move"] == 0
+    # no stated precision -> not refitted, said so
+    (tmp_path / "om" / "ordermatch.json").unlink()
+    assert "not refitted" in fit(tmp_path)[1]["selection_check"]["reason"]
+
+
+def test_candidates_are_streamed_capped_and_stratified_and_memory_does_not_grow(tmp_path):
+    def peak(n_cand, name):
+        frames, orders, tape, quotes = world(seed=6, windows=2, candidates=n_cand)
+        d = tmp_path / name
+        write(d, frames, orders, tape, quotes, windows=2)
+        junk = {"wallet": "0xother", "token_id": "U0", "price": 0.5, "venue_ms": 1, "tw_ns": 1, "size": 97.0}
+        with open(d / "om" / "quotes.jsonl", "ab") as fh:
+            fh.write(jl([junk] * 50))
+        tok = rulefit.token_map(d / "tape", T0, T0 + 3600, [d / "tokens.jsonl"])
+        tracemalloc.start()
+        try:
+            kept, _ = rulefit.sample_quotes(d / "om" / "quotes.jsonl", W, tok, 100)
+            _, top = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert len(kept) == 100
+        return top, d, len(quotes)
+
+    small, _, n_small = peak(4, "small")
+    big, d, n_big = peak(40, "big")
+    assert n_big == 10 * n_small > 10_000
+    assert big < 1.5 * small  # 10x the candidates on disk, the same 100 in memory
+    T = rulefit.decision_table(d / "tape", d / "om", d / "ordertape.jsonl", W, T0, T0 + 3600,
+                               [d / "tokens.jsonl"], max_candidates=100)
+    info = T["inputs"]["candidates"]
+    assert (info["total"], info["kept"], info["cap"], info["strata"]) == (n_big, 100, 100, 2)
+    kept = [r for r in T["rows"] if r["kind"] == "candidate"]
+    assert len(kept) == 100 and sorted(sum(r["window"] == slug(k) for r in kept) for k in (0, 1)) == [50, 50]
+    assert T["stats"]["candidates_in_file"] == n_big
+    # seeded: the same file gives the same sample; under the cap nothing is dropped
+    tok = rulefit.token_map(d / "tape", T0, T0 + 3600, [d / "tokens.jsonl"])
+    a, _ = rulefit.sample_quotes(d / "om" / "quotes.jsonl", W, tok, 100)
+    assert a == rulefit.sample_quotes(d / "om" / "quotes.jsonl", W, tok, 100)[0]
+    assert set(a[0]) == set(rulefit.QUOTE_KEYS)  # needed columns only
+    assert len(rulefit.sample_quotes(d / "om" / "quotes.jsonl", W, tok, 10**6)[0]) == n_big
+    # 7 of 3 strata sizes 10/20/70 -> 1/1/5 (largest remainder), never more than the cap
+    q = [{"wallet": W, "token_id": t, "price": 0.5, "venue_ms": i, "tw_ns": i, "size": 97.0}
+         for t, n in (("x", 10), ("y", 20), ("z", 70)) for i in range(n)]
+    (tmp_path / "q.jsonl").write_bytes(jl(q))
+    got, info = rulefit.sample_quotes(tmp_path / "q.jsonl", W, {}, 7)
+    assert sorted(sum(r["token_id"] == t for r in got) for t in "xyz") == [1, 1, 5] and info["kept"] == 7
+
+
+# ---------------------------------------------------------------- fair
+def test_fair_cache_does_not_mix_horizons_that_share_a_start(tmp_path):
+    """Reviewer s5: a 5m and a 15m window start together; keyed by start alone the 15m window got
+    the 5m window's fair (90.07 instead of 65.14 in the reviewer's run)."""
+    lab = brti_lab(tmp_path / "lab", lo=T0 - 1200, hi=T0 + 1200)
+    i5 = {"asset": "btc", "start": T0, "end": T0 + 300}
+    i15 = {"asset": "btc", "start": T0, "end": T0 + 900}
+    cut = (T0 + 200) * NS
+    f = Fair(lab, T0 - 600, T0 + 1200)
+    a5, a15 = f.at(i5, cut), f.at(i15, cut)
+    assert a15 == Fair(lab, T0 - 600, T0 + 1200).at(i15, cut) and a5 == Fair(lab, T0 - 600, T0 + 1200).at(i5, cut)
+    assert a5 is not None and a15 is not None and abs(a5 - a15) > 1 and len(f.feat) == 2
+    assert f.at(i15, cut) == a15 and f.at(i5, cut) == a5  # either order
+
+
+def test_fair_reference_is_found_and_skipped_cleanly_without_brti(tmp_path, capsys):
+    lab = brti_lab(tmp_path / "lab")
+    fair = Fair(lab, T0, T0 + 900)
+    info = lambda k: {"asset": "btc", "start": T0 + L * k, "end": T0 + L * (k + 1)}  # noqa: E731
+    assert fair.at(info(0), (T0 - 1) * NS) is None and fair.at({**info(0), "asset": "eth"}, (T0 + 50) * NS) is None
+    f50 = fair.at(info(0), (T0 + 50) * NS + 999_999_999)
+    assert f50 is not None and 0 <= f50 <= 100
+
+    def ask_fn(k, ms, bb, ba, inv):
+        v = fair.at(info(k), (MS + ms) * 1_000_000)
+        assert v is not None
+        return round(v + 2 - 0.05 * inv)
+
+    frames, orders, tape, _ = world(seed=9, windows=3, ask_fn=ask_fn)
+    write(tmp_path, frames, orders, tape, windows=3)
+    (lab / "tokens.jsonl").write_bytes((tmp_path / "tokens.jsonl").read_bytes())
+    rc = main(["--data", str(tmp_path / "tape"), "--ordermatch-dir", str(tmp_path / "om"), "--orders",
+               str(tmp_path / "ordertape.jsonl"), "--wallet", W.upper().replace("0X", "0x"), "--from", str(T0),
+               "--to", str(T0 + 3600), "--brti-lab", str(lab), "--out", str(tmp_path / "out")])
+    assert "RULE CONDITIONAL ON FILL" in capsys.readouterr().out
+    rep = orjson.loads((tmp_path / "out" / "fit_report.json").read_bytes())
+    assert rc == (0 if rep["genome"]["id"] else 1) and (tmp_path / "out" / "genome.json").exists() == (rc == 0)
+    ask = rep["price_rule"]["ask"]
+    assert ask["chosen"] == "fair" and ask["ref_coverage"]["fair"] == 1 and abs(ask["intercept_c_with_skew"] - 2) < 0.15
+    assert abs(ask["skew_c_per_contract"]["value"] - 0.05) < 0.01
+    assert rep["price_rule"]["bid"]["chosen"] == "touch" and rep["inputs"]["fair"] is True
+    # with fair supplied the emitted-genome check uses it: no substitution, and the clamp is measured
+    e, ck = rep["expressible_price_rule"], rep["emitted_genome_check"]
+    assert e["refs_compared"] == ["mid", "fair"] and e["rows_dropped_by_fair_requirement"] == 0
+    assert ck["fair_substituted_by_mid"] is False and ck["fair_clamp_binds_share"] is not None
+    # without BRTI: same table, no fair column, the fit falls back to the book references
+    _, rep2, rows2 = fit(tmp_path)
+    assert all(r["fair_c"] is None and r["d_fair_c"] is None for r in rows2)
+    assert rep2["price_rule"]["ask"]["ref_coverage"]["fair"] == 0 and rep2["price_rule"]["ask"]["chosen"] in ("mid", "touch")
+    assert rep2["genome"]["fields"]["maker.min_edge_vs_fair_c"].startswith("default 0")
+    assert rep2["expressible_price_rule"].get("refs_compared", ["mid"]) == ["mid"]
+
+
+# ---------------------------------------------------------------- token map, grid
+def test_token_map_from_rtds_rows_and_unmapped_rows_are_counted(tmp_path):
+    frames, orders, tape, _ = world(seed=11, windows=2)
+    write(tmp_path, frames, orders, tape, windows=2)
+    w = SegmentWriter(tmp_path / "tape", "rtds_a")  # window 0 only, and only its DOWN token
+    w.append(orjson.dumps({"topic": "activity", "type": "trades", "payload": {
+        "transactionHash": "0x1", "proxyWallet": "0xother", "eventSlug": slug(0), "asset": "D0", "side": "BUY",
+        "outcomeIndex": 1, "price": 0.5, "size": 1, "fee": 0.1, "timestamp": T0 + 5}}).decode(), tw=(T0 + 6) * NS)
+    w.close()
+    T = rulefit.decision_table(tmp_path / "tape", tmp_path / "om", tmp_path / "ordertape.jsonl", W, T0, T0 + 3600, [])
+    rows = T["rows"]
+    n0 = sum(o["token_id"] in ("U0", "D0") for o in orders)
+    assert len(rows) == n0 and {r["window"] for r in rows} == {slug(0)}  # U0 mapped as D0's mate
+    assert T["stats"]["tokens_mapped_by_mate"] == 1 and T["stats"]["order_unmapped_token"] == len(orders) - n0
+    assert {r["up_side"] for r in rows if r["token"] == "D0"} == {"ask"}
+    assert {r["up_side"] for r in rows if r["token"] == "U0"} == {"bid"}
+    assert rulefit.token_map(tmp_path / "tape", T0, T0 + 3600, [])["D0"]["idx"] == 1
+    # the participation grid exists although the Up token was mapped only after the scan: it comes
+    # from the Down book, mirrored
+    part = rulefit.fit_participation(T)
+    assert part["windows_seen"] == 1 and part["cells"] >= 27 and part["presence_rate"]["value"] > 0.9
+    assert {k[2] for k in T["res"]["grid"]} == {1}
+    down = next(v for v in T["res"]["grid"].values() if v is not None)
+    u = up_view(down, 1)
+    # The synthetic Down quote can lock the observed book. Its mirror preserves that state,
+    # and the static intent check handles marketable quotes separately.
+    assert u["bb_c"] == pytest.approx(100 * (1 - down[2]))
+    assert u["ba_c"] == pytest.approx(100 * (1 - down[0]))
+    assert 25 <= u["bb_c"] <= u["ba_c"] <= 75
+
+
+# ---------------------------------------------------------------- timing, cancels, ladders
+def test_triggers_and_the_state_just_before_a_cancel(tmp_path):
+    U, mk = "U0", "m0"
+
+    def o(oid, placed, **kw):
+        return {"order_id": oid, "maker": W, "token_id": U, "side": "BUY", "price": 0.5, "size": 100.0,
+                "created_ms": MS + placed - 100, "placed_venue_ms": MS + placed, "placed_tw_ns": (MS + placed) * 1_000_000,
+                "filled": 0.0, "remainder": 100.0, "n_fills": 0, "fills_at": [], "outcome": "unknown",
+                "reason": "censored", "end_ms": None, "rest_min_ms": 0, "rest_max_ms": None,
+                "fill_before_placement": False} | kw
+
+    frames = [book(1000, U, [(0.50, 500)], [(0.54, 400)], mk),
+              pc(2000, U, 0.50, 600, "BUY", mk),      # a
+              pc(3000, U, 0.50, 700, "BUY", mk),      # b: nothing changed since a landed -> timer
+              pc(3500, U, 0.54, 0, "SELL", mk), pc(3501, U, 0.55, 400, "SELL", mk),
+              pc(4000, U, 0.50, 800, "BUY", mk),      # c: the ask moved 1 c -> book_move
+              trade(4200, U, 0.50, 10, "0xf1", mk),   # c is hit for 10
+              pc(4990, U, 0.50, 699, "BUY", mk, ts=5000),  # 101 leave, stamped the cancel's ms: NOT the closest
+              pc(4995, U, 0.51, 50, "BUY", mk),       # someone improves the bid
+              pc(5000, U, 0.50, 599, "BUY", mk),      # a's 100 leave: the closest decrease at that ms
+              pc(6000, U, 0.50, 699, "BUY", mk)]      # d: an own fill since c -> own_fill
+    orders = [o("a", 2000, outcome="cancelled", reason="exact_decrease", end_ms=MS + 5000, rest_min_ms=3000,
+                rest_max_ms=3000), o("b", 3000), o("d", 6000),
+              o("c", 4000, filled=10.0, remainder=90.0, n_fills=1, fills_at=[["0xf1", MS + 4200, 10.0]]),
+              o("x", 2000, maker="0xother"), o("bad", 3000, fill_before_placement=True)]
+    tape = [tape_row("0xf1", "c", U, 0.5, 100.0, 10.0, T0 + 9, MS + 3900)]
+    write(tmp_path, frames, orders, tape, windows=1)
+    args = (tmp_path / "tape", tmp_path / "om", tmp_path / "ordertape.jsonl", W, T0, T0 + 3600, [tmp_path / "tokens.jsonl"])
+    T = rulefit.decision_table(*args)
+    rows = {r["id"]: r for r in T["rows"]}
+    assert list(rows) == ["a", "b", "c", "d"]
+    assert (T["stats"]["orders_other_makers"], T["stats"]["orders_wrong_match_dropped"]) == (1, 1)
+    assert [rows[i]["depth_bid"] for i in "abcd"] == [500, 600, 700, 50]  # size at the best, never its own increase
+    assert [rows[i]["inv"] for i in "abcd"] == [0, 0, 0, 10] and [rows[i]["gap_s"] for i in "abcd"] == [None, 1, 1, 2]
+    assert [rows[i]["notional_usd"] for i in "abcd"] == [0, 0, 0, 5] and rows["d"]["since_prev_s"] == 2
+    assert (rows["d"]["bb_c"], rows["d"]["ba_c"], rows["d"]["d_touch_c"], rows["d"]["tau_s"]) == (51, 55, -1, 6)
+    # two decreases carry the cancel's venue ms and both are within tolerance: the CLOSEST (100, not
+    # 101) is taken, and its record is undone: 0.51 x 50 is already the best (it was not at the first)
+    assert T["res"]["at_cancel"] == {"a": (0.51, 50.0, 0.55, 400.0)}
+    assert (T["stats"]["cancels_asked"], T["stats"]["cancels_state_found"]) == (1, 1)
+    tm = rulefit.fit_timing(T)
+    assert {k: v["value"] for k, v in tm["trigger_shares"].items()} == {
+        "own_fill": 0.3333, "book_move": 0.3333, "timer": 0.3333, "unknown": 0}
+    c = tm["cancel"]
+    assert c["life_ms"]["value"] == 3000 and c["opposite_best_moved_1c"]["value"] == 1
+    assert c["behind_best_at_cancel"]["value"] == 1 and c["replaced_within_1s"]["value"] == 1
+    # --asof created: the state when the order was signed (100 ms before it reached the book)
+    early = rulefit.decision_table(*args, asof="created")["rows"]
+    assert [r["cutoff_tw_ns"] - rows[r["id"]]["cutoff_tw_ns"] for r in early] == [-100_000_000] * 4
+    # a tape with a ``verified`` column: only orders with a verified row survive
+    (tmp_path / "ordertape.jsonl").write_bytes(jl([tape[0] | {"verified": True},
+                                                   tape[0] | {"order_id": "a", "verified": False}]))
+    T2 = rulefit.decision_table(*args)
+    assert [r["id"] for r in T2["rows"]] == ["c"] and T2["stats"]["orders_not_verified_dropped"] == 3
+    (tmp_path / "ordertape.jsonl").write_bytes(jl(tape))
+    # too few orders for a rule: says so and emits NO genome (schema defaults are not this wallet's rule)
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "genome.json").write_text("{}")  # an older run's file must not survive
+    genome, rep, _ = fit(tmp_path, tmp_path / "out")
+    assert rep["price_rule"]["bid"]["chosen"] is None and "reason" in rep["price_rule"]["bid"]
+    assert genome is None and rep["genome"]["status"] == "not_emitted" and rep["genome"]["id"] is None
+    assert not (tmp_path / "out" / "genome.json").exists()
+    assert "NO GENOME EMITTED" in (tmp_path / "out" / "rule.md").read_text()
+    cli = ["--data", str(tmp_path / "tape"), "--ordermatch-dir", str(tmp_path / "om"), "--orders",
+           str(tmp_path / "ordertape.jsonl"), "--from", str(T0), "--to", str(T0 + 3600), "--out", str(tmp_path / "out")]
+    assert main(cli + ["--wallet", W, "--tokens", str(tmp_path / "tokens.jsonl")]) == 1
+    with pytest.raises(SystemExit, match="no order of .* could be put in a window"):
+        main(cli + ["--wallet", W])  # no token map at all
+
+
+def test_ladders_are_counted_from_overlapping_lives_at_distinct_prices():
+    def spec(i, token, side, price, placed, rest_max, rest_min=0):
+        return {"kind": "order", "id": str(i), "token": token, "side": side, "price": price, "placed_ms": placed,
+                "om": {"rest_max_ms": rest_max, "rest_min_ms": rest_min}, "row": {"window": f"w{i % 2}"}}
+
+    specs = [spec(0, "U", "BUY", 0.50, 0, 5000),       # live 0..5000
+             spec(1, "U", "BUY", 0.49, 1000, 1000),    # overlaps 0 at another price: both laddered, depth 2
+             spec(2, "U", "BUY", 0.48, 1500, 100),     # overlaps 0 and 1: depth 3
+             spec(3, "U", "BUY", 0.50, 3000, 100),     # same price as 0, 1 and 2 are gone: not a ladder
+             spec(4, "U", "SELL", 0.55, 1200, 9000),   # other side
+             spec(5, "D", "BUY", 0.47, 1200, 9000),    # other token
+             spec(6, "U", "BUY", 0.40, 6000, None, 50),  # censored: rest_min; 0 ended at 5000
+             spec(7, "U", "BUY", 0.41, 6050, 10),      # 6's life ends AT 6050: no overlap
+             {"kind": "candidate", "id": "c", "token": "U", "side": "BUY", "price": 0.3, "placed_ms": 100, "om": {}}]
+    lad = rulefit.fit_ladder(specs)
+    assert lad["n"] == 8 and lad["ladder_share"]["value"] == 0.375 and lad["depth_max"] == 3
+    assert lad["depth"]["p50"] == 1 and rulefit.fit_ladder([])["n"] == 0
+
+
+def test_a_laddering_wallet_is_flagged_even_when_each_level_fits_tightly(tmp_path):
+    """Two bids per step, at the best and 1 c behind: the residual IQR stays under 2 c, so only
+    the overlap count can see the ladder."""
+    frames, orders, tape, _ = world(seed=8, windows=3)
+    extra = []
+    for o in [o for o in orders if o["token_id"].startswith("U")]:
+        ms = o["placed_venue_ms"] - MS + 5
+        p = round(o["price"] - 0.01, 2)
+        frames.append(pc(ms, o["token_id"], p, 98, "BUY", "m" + o["token_id"][1:]))
+        extra.append(o | {"order_id": o["order_id"] + "b", "price": p, "size": 98.0, "placed_venue_ms": MS + ms,
+                          "placed_tw_ns": (MS + ms) * 1_000_000, "filled": 0.0, "fills_at": [], "remainder": 98.0})
+    write(tmp_path, frames, orders + extra, tape, windows=3)
+    _, rep, _ = fit(tmp_path)
+    assert rep["ladder"]["ladder_share"]["value"] > 0.6 and rep["ladder"]["depth_max"] == 2
+    assert rep["price_rule"]["bid"]["residual_iqr_c"] < 2
+    item = next(c for c in rep["cannot_express"] if c["item"] == "bid: several price levels")
+    assert item["measured"]["ladder_share"] == rep["ladder"]["ladder_share"]["value"]

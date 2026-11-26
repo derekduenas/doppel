@@ -73,6 +73,28 @@ def load_raw(root: Path, include_live: bool = True) -> dict[int, float]:
     return out
 
 
+def load_raw_rcv(root: Path, include_live: bool = True) -> dict[int, tuple[float, float]]:
+    """Like ``load_raw`` but each second carries OUR receive time (unix s), with the twin's rules
+    (``twin.features.RefStore``): PERELMAN's ``received`` stamp, else publication + 1 s; live poller
+    seconds at the record's ``tw``. Analyses that evaluate fair at a decision time must use only
+    seconds received by then (E29; Astra audit 2026-11-26)."""
+    out: dict[int, tuple[float, float]] = {}
+    for f in sorted((root / "ref_brti_raw").glob("*/*.dtape.zst")):
+        for rec in read_segment(f, verify=True):
+            if rec["raw"]:
+                d = orjson.loads(rec["raw"])
+                t_ms = int(d["t_ms"])
+                rc = d.get("received")
+                rcv = t_ms / 1000.0 + 1.0 if rc is None else (float(rc) / 1000.0 if float(rc) > 1e11 else float(rc))
+                out[t_ms // 1000] = (float(d["v"]), rcv)
+    if include_live:
+        for f in sorted((root / "ref_brti_live").glob("*/*.dtape.zst")):
+            for rec in read_segment(f, verify=True):
+                for t_ms, v in (rec.get("meta") or {}).get("new") or []:
+                    out.setdefault(int(t_ms) // 1000, (float(v), rec["tw"] / 1e9))
+    return out
+
+
 def _live_values(root: Path):
     for f in sorted((root / "ref_brti_live").glob("*/*.dtape.zst")):
         for rec in read_segment(f, verify=True):

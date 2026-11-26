@@ -113,6 +113,7 @@ async def run(data: Path, only: set[str], seconds: float | None) -> int:
 def verify(data: Path) -> int:
     import hashlib
     bad = 0
+    checked = 0
     for man in sorted(data.glob("*/manifest.jsonl")):
         latest: dict[str, dict] = {}  # a file reopened after a restart has several lines; last wins
         for line in man.read_bytes().splitlines():
@@ -124,14 +125,21 @@ def verify(data: Path) -> int:
             if not f.exists() and not f.parent.exists():   # whole day pruned by the janitor (A3-7)
                 print(f"PURGED {man.parent.name}/{m['file']} (day deleted by retention)")
                 continue
-            ok_hash = f.exists() and hashlib.sha256(f.read_bytes()).hexdigest() == m["sha256"]
+            checked += 1
+            ok_hash = False
+            if f.is_file():
+                with f.open("rb") as handle:
+                    ok_hash = hashlib.file_digest(handle, "sha256").hexdigest() == m["sha256"]
             try:
-                n = sum(1 for _ in read_segment(f, verify=True)) if f.exists() else -1
+                n = sum(1 for _ in read_segment(f, verify=True, strict=True)) if f.is_file() else -1
             except ValueError:
                 n = -2
             ok = ok_hash and n >= m["records"]
             bad += not ok
             print(f"{'OK ' if ok else 'BAD'} {man.parent.name}/{m['file']} records={n}/{m['records']} sha={'ok' if ok_hash else 'MISMATCH'}")
+    if not checked:
+        print("verify: no retained, manifested segments to check")
+        return 1
     print("verify:", "PASS" if bad == 0 else f"FAIL ({bad})")
     return 1 if bad else 0
 

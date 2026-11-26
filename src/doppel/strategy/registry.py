@@ -177,7 +177,7 @@ class Registry:
                 fcntl.flock(fh, fcntl.LOCK_UN)
 
     def register(self, genome: Genome | dict, family: str, hypothesis: str,
-                 data_window: tuple[TimeLike, TimeLike]) -> dict:
+                 data_window: tuple[TimeLike, TimeLike], *, evaluation_protocol: dict | None = None) -> dict:
         """Preregister ``genome`` in ``family`` with its evaluation window (start, end). The window
         must start after now. Returns the registration record (the existing one if the id is
         already registered: no-op)."""
@@ -212,7 +212,8 @@ class Registry:
                     "family": family.strip(), "hypothesis": hypothesis.strip(),
                     "eval_window": {"start": iso(start), "end": iso(end), "start_s": start, "end_s": end},
                     "code_sha": code.get("sha"), "code_dirty": code.get("dirty"),
-                    "genome": orjson.loads(orjson.dumps(to_dict(g)))}
+                    "genome": orjson.loads(orjson.dumps(to_dict(g))),
+                    **({"evaluation_protocol": evaluation_protocol} if evaluation_protocol is not None else {})}
         return self._append(build)
 
     def record_result(self, genome_id: str, verdict: dict, data_range: tuple[int, int] | None = None) -> dict:
@@ -220,8 +221,8 @@ class Registry:
         H1: net per window > 0. Refused before the evaluation window has closed.
 
         Binding (Astra audit 2026-11-26): a twin verdict counts only if ``data_range`` is exactly the
-        preregistered [start, end) window; anything else is refused. A manual verdict (``p_source``
-        "manual") is recorded but never binding, so it can never make a family winner."""
+        preregistered [start, end) window; anything else is refused. Manual and imported verdicts
+        are recorded as nonbinding."""
         if not isinstance(verdict, dict) or "p_value" not in verdict:
             raise RegistryError("verdict must be a dict with p_value (one-sided, H1: net per window > 0)")
         p = verdict["p_value"]
@@ -241,15 +242,22 @@ class Registry:
                 raise RegistryError(f"evaluation window closes {reg['eval_window']['end']}: a result before "
                                     "then is not on the preregistered window")
             manual = vd.get("p_source") == "manual"
+            nonbinding = manual or vd.get("p_source") == "imported"
+            protocol = reg.get("evaluation_protocol")
+            if protocol is not None and not nonbinding:
+                actual = vd.get("evaluation")
+                if (vd.get("p_source") != "twin-replay" or not isinstance(actual, dict)
+                        or any(actual.get(k) != v for k, v in protocol.items())):
+                    raise RegistryError("result does not match the preregistered evaluation protocol")
             if not manual:
                 w = reg["eval_window"]
-                if data_range is None or [int(data_range[0]), int(data_range[1])] != [int(w["start_s"]), int(w["end_s"])]:
+                if data_range != (w["start_s"], w["end_s"]):
                     raise RegistryError(f"twin results cover {data_range}, not the preregistered window "
                                         f"[{w['start_s']}, {w['end_s']}) ({w['start']} .. {w['end']})")
             prior = sum(1 for r in recs if r["kind"] == "result" and r["genome_id"] == genome_id
                         and r.get("binding"))
             return {"kind": "result", "tw": int(now * 1e9), "genome_id": genome_id,
-                    "family": reg["family"], "binding": (not manual) and prior == 0,
+                    "family": reg["family"], "binding": (not nonbinding) and prior == 0,
                     "data_range": list(data_range) if data_range else None, "verdict": vd}
         return self._append(build)
 

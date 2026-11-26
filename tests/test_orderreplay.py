@@ -246,6 +246,36 @@ def test_old_ordermatch_rows_are_refused(tmp_path):
         run(tmp_path / "tape", tmp_path / "om", T0, T0 + 3600)
 
 
+def test_ambiguous_placement_keeps_bracket_violation_visible(tmp_path):
+    frames = [
+        book(0, "A", bids=[(0.5, 100)]),
+        pc(1000, "A", 0.5, 150, "BUY"),
+        trade(1400, "A", 0.5, 130, "SELL", "other"),
+        pc(1401, "A", 0.5, 20, "BUY"),
+        pc(1600, "A", 0.5, 70, "BUY"),
+        trade(2400, "A", 0.5, 10, "SELL", "own"),
+        pc(2401, "A", 0.5, 60, "BUY"),
+        pc(2600, "A", 0.5, 110, "BUY"),  # same size too late to be this order
+        pc(3800, "A", 0.5, 70, "BUY"),
+    ]
+    tape_root = tmp_path / "tape"
+    write_tape(tape_root, frames)
+    p = ordermatch.Params()
+    tape = ordermatch.build_tape(tape_root, ["clob_btc_5m"], T0, T0 + 3600, {"A"}, [], p)
+    order = ordermatch.Order("o1", "wallet", "A", "BUY", 0.5, 50.0, MS + 900, {"own": (10.0, T0 + 3)})
+    matches = ordermatch.match_placements([order], tape, p)
+    row = ordermatch.classify(order, *matches["o1"], tape, set(), p)
+    assert row["placement_candidates"] == 2
+    match_dir = tmp_path / "om"
+    write_dir(match_dir, [row])
+    doc, (out,) = run(tape_root, match_dir, T0, T0 + 3600)
+    assert out["placement_candidates"] == 2 and out["pessimistic"]["filled"] == 40
+    b = doc["bracket_violations"]
+    assert b["pessimistic_overfilled"] == 1
+    assert b["by_placement_evidence"]["multiple_candidates"] == {
+        "orders": 1, "pessimistic_overfilled": 1, "optimistic_underfilled": 0}
+
+
 def test_cli_after_ordermatch_end_to_end(tmp_path, capsys):
     """ordermatch's own output drives the replay: a FIFO fill behind a queue is reproduced exactly."""
     frames = [
@@ -280,3 +310,74 @@ def test_cli_after_ordermatch_end_to_end(tmp_path, capsys):
     assert row["optimistic"]["fills"] == [[MS + 2000, 50.0, "trade"]]  # same total, all of it early
     text = capsys.readouterr().out
     assert "LIMIT: conditional on a real fill" in text and "adapter gate: 2/2" in text
+
+
+def test_mirrored_sweep_delivers_to_the_better_maker_level(tmp_path):
+    """Apex regression for a 97-cent bid inside a 4-cent BUY aggregate on its mate."""
+    tx = "0x" + "12" * 32
+    order_id = "34" * 32
+    condition = "56" * 32
+    market = "0x" + condition
+    tape = tmp_path / "tape"
+    write_tape(tape, [
+        book(0, "101", bids=[(0.97, 342)], market=market),
+        book(0, "102", asks=[(0.03, 342)], market=market),
+        pc(1000, "101", 0.97, 442, "BUY", market),
+        trade(1700, "102", 0.04, 1005.14, "BUY", tx, market),
+    ])
+    matched = tmp_path / "matched"
+    write_dir(matched, [orow(order_id, "BUY", 0.97, 100, 1000, 1700, "filled:chain",
+                             100, [(tx, 1700, 100)], "101")])
+    _, (baseline,) = run(tape, matched, T0, T0 + 2)
+    assert (baseline["fills_seen"], baseline["fills_routed"], baseline["fills_delivered"]) == (1, 0, 0)
+    # Per maker level in the 97-cent bid's view: 419.45 at 97 cents, 585.69 at 96.
+    common = {"tx": tx, "condition_id": condition, "n_makers": 3, "maker": "0x" + "78" * 20}
+    rows = [
+        ("taker", "102", "BUY", 0.04, 2500, 36_011_100, "01" * 32),
+        ("maker", "101", "BUY", 0.97, 100, 97_000_000, order_id),
+        ("maker", "102", "SELL", 0.03, 319.45, 319_450_000, "02" * 32),
+        ("maker", "102", "SELL", 0.04, 585.69, 585_690_000, "03" * 32),
+    ]
+    orders = tmp_path / "orders.jsonl"
+    with orders.open("wb") as file:
+        for role, token, side, limit, qty, filled, oid in rows:
+            cash, shares = round(limit * qty * 1e6), round(qty * 1e6)
+            maker_amount, taker_amount = (cash, shares) if side == "BUY" else (shares, cash)
+            file.write(orjson.dumps(common | {"role": role, "token_id": token, "side": side, "limit": limit,
+                                   "size": qty, "fill_amount": filled, "order_id": oid, "maker_amount": maker_amount,
+                                   "taker_amount": taker_amount, "verified": oid == order_id}) + b"\n")
+    _, (resolved,) = run(tape, matched, T0, T0 + 2, orders=orders)
+    assert (resolved["fills_seen"], resolved["fills_routed"], resolved["fills_delivered"]) == (1, 1, 1)
+    assert (resolved["fills_raw_routed"], resolved["fills_allocated_routed"]) == (0, 1)
+
+
+def test_partial_and_repeated_public_frames_cannot_spend_a_call_twice(tmp_path):
+    frames = [book(0, "A", market="f1"), book(0, "B", market="f1"),
+              pc(900, "A", .5, 100, "BUY", "f1"),
+              trade(1100, "A", .5, 10, "SELL", "tx", "f1"),
+              trade(1200, "A", .5, 30, "SELL", "tx", "f1"),
+              trade(1300, "B", .5, 30, "BUY", "tx", "f1"),
+              trade(1400, "A", .5, 30, "SELL", "tx", "f1")]
+    write_tape(tmp_path / "tape", frames)
+    write_dir(tmp_path / "om", [orow("x", "BUY", .5, 100, 900, 1800, "cancelled:exact_decrease",
+                                     30, [("tx", 1200, 30)])])
+    tx = {"tx": "tx", "condition_id": "f1", "n_makers": 1, "verified": True, "token_id": "A"}
+    rows = [tx | dict(role="maker", order_id="x", side="BUY", maker_amount=50_000_000,
+                      taker_amount=100_000_000, fill_amount=15_000_000),
+            tx | dict(role="taker", order_id="other", side="SELL", maker_amount=30_000_000,
+                      taker_amount=15_000_000, fill_amount=30_000_000)]
+    source = tmp_path / "decoded.jsonl"
+    source.write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in rows))
+    doc, (r,) = run(tmp_path / "tape", tmp_path / "om", T0, T0 + 2, orders=source)
+    assert r["pessimistic"]["fills"] == [[MS + 1200, 30, "trade"]]
+    assert r["fills_allocated_routed"] == 1 and r["unresolved_same_side_prints_while_live"] == 1
+    assert doc["counts"]["public_prints:quantity_mismatch"] == 1
+    assert doc["counts"]["mirror_dup_prints"] == doc["counts"]["repeat_allocated_prints"] == 1
+    assert doc["bracket_violations"]["by_price_evidence"]["unresolved"]["orders"] == 1
+
+
+def test_earlier_replay_end_excludes_later_known_cancel(tmp_path):
+    write_tape(tmp_path / "tape", FRAMES)
+    write_dir(tmp_path / "om", [ORDERS[0] | {"end_ms": MS + 3000}])
+    doc, (r,) = run(tmp_path / "tape", tmp_path / "om", T0, T0 + 3)
+    assert r["cut"] == "tape_end" and doc["counts"]["headline_orders"] == 0

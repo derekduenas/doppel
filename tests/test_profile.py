@@ -166,6 +166,10 @@ def test_parquet_and_jsonl_give_the_same_fingerprint(tmp_path):
     assert fingerprint(wp) == fingerprint(wj)
     assert wp["input"]["unflagged_input"] is False and wj["input"]["unflagged_input"] is True
     assert len(load_rows(j)[0]) == 240
+    start = rows[0]["block_ts"]
+    for p in (tmp_path / "tape", j):
+        bounded, _ = load_rows(p, {W}, (start + 1, start + 6))
+        assert [r["block_ts"] for r in bounded] == list(range(start + 1, start + 6))
 
 
 def test_only_verified_rows_count_when_the_column_exists():

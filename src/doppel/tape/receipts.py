@@ -25,7 +25,7 @@ def stream_hour_summary(path: Path) -> dict:
     first = last = None
     crc_ok = True
     try:
-        for rec in read_segment(path, verify=True):
+        for rec in read_segment(path, verify=True, strict=True):
             n += 1
             m = rec.get("meta") or {}
             if "ctl" in m:

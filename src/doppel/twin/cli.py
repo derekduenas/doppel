@@ -34,7 +34,8 @@ def code_sha256() -> str:
     lab, tape = SRC.parent / "lab", SRC.parent / "tape"
     files = sorted(SRC.glob("*.py")) + [SRC.parent / "strategy" / "genome.py", lab / "fair.py",
                                         lab / "flow.py", lab / "ledger.py", lab / "brti_import.py",
-                                        tape / "segment.py", tape / "universe.py"]  # audit A3-3
+                                        lab / "dossier.py", lab / "census.py", lab / "scan.py",
+                                        lab / "refprice.py", tape / "segment.py", tape / "universe.py"]
     h = hashlib.sha256()
     for f in files:
         h.update(f.name.encode() + b"\0" + f.read_bytes())

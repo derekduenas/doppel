@@ -124,6 +124,17 @@ def test_store_block_time_saves_the_block_request():
     assert [c[1] for c in calls].count("eth_getBlockByNumber") == 1
 
 
+def test_first_interrupted_flush_is_invisible_to_readers(tmp_path, monkeypatch):
+    def crash(*args):
+        raise RuntimeError("crash")
+
+    monkeypatch.setattr(ot, "_commit", crash)
+    with pytest.raises(RuntimeError, match="crash"):
+        ot.run([("0x01", BLOCK_TS, BLOCK)], _pool(_chain())[0], tmp_path)
+    assert list(tmp_path.glob("day=*/*.parquet"))
+    assert ot.committed_parts(tmp_path, allow_legacy=True) == []
+
+
 def test_resume_never_duplicates(tmp_path, monkeypatch):
     todo = [(f"0x{i:02x}", BLOCK_TS, BLOCK) for i in range(10)]
     out = tmp_path / "orders"
@@ -141,6 +152,7 @@ def test_resume_never_duplicates(tmp_path, monkeypatch):
         m.setattr(ot, "_commit", boom)
         ot.run(todo, _pool(_chain())[0], out, workers=2, flush_txs=3)
     assert len(_rows(out)) == 24  # the orphan part is on disk
+    assert sum(pq.read_metadata(p).num_rows for p in ot.committed_parts(out)) == 15
 
     # run 3: drops the orphan, fetches only what is not committed
     calls = []
@@ -169,6 +181,26 @@ def test_missing_and_failed_txs_are_retried_by_the_next_run(tmp_path):
     s = ot.run(todo, _pool(transport, attempts=2)[0], tmp_path)
     assert (s["txs_decoded"], s["txs_missing"], s["txs_failed"], s["txs_not_match_orders"]) == (1, 1, 1, 1)
     assert ot.load_done(tmp_path)[0] == {"0x00", "0x03"}
+
+
+def test_a_missing_part_refetches_only_its_transactions(tmp_path):
+    todo = [(TX, BLOCK_TS, BLOCK), ("0x0b", BLOCK_TS + 86400, BLOCK)]
+    ot.run(todo, _pool(_chain())[0], tmp_path)
+    parts = sorted(tmp_path.glob("day=*/*.parquet"))
+    assert len(parts) == 2
+    parts[1].unlink()
+    assert ot.has_missing_parts(tmp_path)
+
+    calls = []
+    kept = ot.run(todo[:1], _pool(_chain(calls))[0], tmp_path)
+    assert kept["txs_already_done"] == 1 and not calls
+    assert parts[0].is_file() and not ot.has_missing_parts(tmp_path)
+
+    result = ot.run(todo, _pool(_chain(calls))[0], tmp_path)
+    assert [c[2] for c in calls] == ["0x0b"]
+    assert (result["txs_already_done"], result["txs_decoded"]) == (1, 1)
+    rows = _rows(tmp_path)
+    assert len(rows) == 6 and len({(r["tx"], r["order_id"]) for r in rows}) == 6
 
 
 def test_backoff_and_benching():
@@ -237,6 +269,30 @@ def test_verification_against_the_fill_store(tmp_path):
     assert sum(x is True for x in by.values()) == 2 and (s["orders"], s["txs_decoded"]) == (12, 4)
 
 
+def test_cached_verification_refreshes_against_current_claims_without_rpc(tmp_path):
+    todo = [(TX, BLOCK_TS, BLOCK), ("0x0b", BLOCK_TS, BLOCK)]
+    second = decode_match(FX["input"], FX["to"])[1]
+    claim = (second["maker"], second["order_id"])
+    ot.run(todo, _pool(_chain())[0], tmp_path,
+           expected=lambda txs: {tx: {(W0, OID)} for tx in txs})
+    assert {(r["tx"], r["order_id"]) for r in _rows(tmp_path) if r["verified"]} == {
+        (TX, OID), ("0x0b", OID)}
+
+    calls = []
+    result = ot.run(todo[:1], _pool(_chain(calls))[0], tmp_path,
+                    expected=lambda txs: {tx: {claim, (WB, OID)} for tx in txs})
+    assert not calls
+    assert (result["txs_reverified"], result["txs_decoded"], result["orders"]) == (1, 0, 0)
+    assert result["verify"]["per_wallet"][WB]["fills_matched"] == 0
+    assert result["verify"]["per_wallet"][claim[0]]["fills_matched"] == 1
+    assert {(r["tx"], r["order_id"]) for r in _rows(tmp_path) if r["verified"]} == {
+        (TX, claim[1]), ("0x0b", OID)}
+
+    result = ot.run(todo[:1], _pool(_chain(calls))[0], tmp_path, expected=lambda txs: {})
+    assert not calls and result["verify"]["fills_expected"] == 0
+    assert all(r["verified"] is None for r in _rows(tmp_path) if r["tx"] == TX)
+
+
 def test_timestamp_flags(tmp_path):
     f = ot.ts_flag
     assert f(BLOCK_TS * 1000 - 914, BLOCK_TS) is None
@@ -287,3 +343,12 @@ def test_cli_cohort_mode_prints_one_json_summary(tmp_path, capsys):
     f = tmp_path / "w.txt"
     f.write_text(f"{WA}\n{WB}\n")
     assert ot._list(str(f)) == [WA, WB]
+
+
+def test_decode_requires_every_declared_integer_word():
+    import pytest
+
+    with pytest.raises(ValueError, match="truncated integer array"):
+        ot._uints((2).to_bytes(32, "big") + bytes(32), 0)
+    with pytest.raises(ValueError, match="invalid word offset"):
+        ot._uints(bytes(32), 32)

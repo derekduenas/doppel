@@ -56,6 +56,12 @@ Two streams need venue auth. Neither key is stored in this repo, in `/opt/doppel
 At ~17 GB/day, keep 14 days hot on local disk and ship closed segments (with manifest lines) to object
 storage nightly. Parquet compaction lands in M1.
 
+`python3 ops/archive_tape.py --source TAPE --destination ARCHIVE --through YYYYMMDD/HH --streams STREAM ...`
+copies segments before the exclusive UTC hour on an independent filesystem. It checks each sealed
+segment's SHA-256, carries its manifest and any hourly receipts, and checks free space before
+copying. The script reports manifest entries that have already disappeared from the source.
+A copy on Apex's root filesystem survives the tape-volume janitor and still shares Apex's host.
+
 ## Deployment log
 - **2026-11-25 ~17:58Z**: deployed 20fd3f6 to Apex (atlas-do) as a stopgap host. Code in `/opt/doppel`
   (`DEPLOYED_COMMIT`), venv from `ops/requirements.lock`, user `doppel`, data on the attached volume

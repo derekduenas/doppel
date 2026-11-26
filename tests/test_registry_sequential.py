@@ -182,7 +182,7 @@ def test_real_registry_copy_still_verifies(tmp_path):
     assert (root / "registry" / "genomes.jsonl").read_bytes() == original == REAL.read_bytes()
 
 
-def test_cli_monitor(tmp_path, capsys):
+def test_cli_monitor(tmp_path, capsys, monkeypatch):
     root = tmp_path / "repo"
     reg, clock, ids = _setup(root)
     res = tmp_path / "res.json"
@@ -194,9 +194,16 @@ def test_cli_monitor(tmp_path, capsys):
     assert cli(["monitor", "--root", str(root), "--genome", ids[0][:10], "--results", str(res)]) == 0
     out = capsys.readouterr().out
     assert "EARLY_PASS" in out and "not recorded" in out and reg.path.read_bytes() == before
-    assert cli(["monitor", "--root", str(root), "--genome", str(gpath), "--results", str(res), "--record"]) == 0
+    assert cli(["monitor", "--root", str(root), "--genome", str(gpath), "--results", str(res), "--record"]) == 2
+    assert reg.path.read_bytes() == before
+    def replay(data, lab, registration, through):
+        assert data == tmp_path and through == END and registration["genome_id"] == ids[0]
+        return _results(ids[0], 25.0)["windows"], {"code_sha256": "ab"*32, "range": [START, END],
+                                                     "input_sha256": "cd"*32}
+    monkeypatch.setattr("doppel.twin.evaluate.replay_snapshot", replay)
+    assert cli(["monitor", "--root", str(root), "--genome", str(gpath), "--data", str(tmp_path), "--record"]) == 0
     out = capsys.readouterr().out
     assert "recorded early_pass" in out and len(reg.lines()) == 4
-    assert reg.records()[-1]["source"]["results_sha256"] == hashlib.sha256(res.read_bytes()).hexdigest()
+    assert reg.records()[-1]["source"]["evaluation"]["input_sha256"] == "cd"*32
     assert cli(["monitor", "--root", str(root), "--genome", "zz", "--results", str(res)]) == 2
     assert cli(["verify", "--root", str(root)]) == 0
