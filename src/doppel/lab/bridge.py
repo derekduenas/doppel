@@ -35,7 +35,9 @@ b. S5 hedge miss. Hypothetical resting Kalshi YES bid b_K = floor_cent(PM bid - 
    at fill + requote. Hedge: sell YES on PM US at its best bid known at fill + L. Pair net =
    h - b_K - fee_PM(h) - kalshi maker fee; miss = net < 0; slip = -net on a miss; a fill whose PM
    US book is unknown at fill + L is ``unknown`` (neither hit nor miss). Expectancy = mean net over
-   known fills (also shown: the strategies-page formula (1-miss)*m - miss*E[slip|miss]).
+   known fills (also shown: the strategies-page formula (1-miss)*m - miss*E[slip|miss]). Headline
+   numbers keep one fill per hedge horizon (a fill within L of the previous counted fill is
+   dropped), so the result does not scale with --requote-ms; ``raw`` keeps every fill.
    Biases: the fill rule needs the price to trade THROUGH us or an ask to rest at our price, so it
    undercounts fills and over-represents adverse ones (miss rate biased UP); a post-only seller
    that would have been rejected by our bid is counted as a fill (rule ii); our own order would
@@ -400,7 +402,25 @@ def s5_window(pm: Series, ks: Series, kp: list[Print], start: int, end: int, m_c
     return fills, cnt
 
 
+def dedup_fills(fs: list[dict], L: float) -> list[dict]:
+    """Drop fills within L of the previous COUNTED fill: one fill per hedge horizon, so a single
+    sell-off re-filling the re-armed quote every requote interval counts once."""
+    out: list[dict] = []
+    for f in fs:
+        if not out or f["t"] >= out[-1]["t"] + int(L * NS):
+            out.append(f)
+    return out
+
+
 def s5_summary(per_w: list[list[dict]], m_c: int, L: float) -> dict:
+    """Headline on de-duplicated fills (``dedup_fills``); ``raw`` = every fill."""
+    row = _s5_stats([dedup_fills(fs, L) for fs in per_w], m_c, L)
+    raw = _s5_stats(per_w, m_c, L)
+    row["raw"] = {k: raw[k] for k in ("fills", "known", "miss_rate", "slip_given_miss_c", "expectancy_c")}
+    return row
+
+
+def _s5_stats(per_w: list[list[dict]], m_c: int, L: float) -> dict:
     W = len(per_w)
     known, miss, net, slip = np.zeros(W), np.zeros(W), np.zeros(W), np.zeros(W)
     fills = unknown = book = depth = stale = 0
@@ -478,6 +498,18 @@ def s6_rows(per_w: list[tuple[list, Series]], start_end: list[tuple[int, int]], 
 
 
 # ---------------------------------------------------------------------------------------- run
+def _crossed(s: Series, g: np.ndarray) -> float:
+    """Share of grid points with a known two-sided book that is crossed (bid >= ask): a tripwire for
+    a misread NO side (NO levels are taken as NO bids)."""
+    n = c = 0
+    for tw in g[::10]:
+        v = s.at(int(tw))
+        if v is not None and v[0] is not None and v[2] is not None:
+            n += 1
+            c += v[0] >= v[2] - EPS
+    return round(c / n, 4) if n else 0.0
+
+
 def _when(s: str) -> int:
     if s.isdigit():
         return int(s)
@@ -495,7 +527,8 @@ def load_kalshi(root: Path, t0: int, t1: int) -> tuple[dict[str, Series], dict[s
         else:
             prints.setdefault(t, []).append(x)
     info = {"stats": kb.stats, "seq_gaps": len(kb.gaps), "gaps_first": kb.gaps[:50]}
-    return {t: Series(v) for t, v in tops.items()}, prints, info
+    # ctl records are stamped at write time and may sit microseconds out of order: stable sort
+    return {t: Series(sorted(v, key=lambda e: e[0])) for t, v in tops.items()}, prints, info
 
 
 def run(data: Path, kdata: Path, t0: int, t1: int, cfg: Cfg = Cfg()) -> dict:
@@ -530,7 +563,8 @@ def run(data: Path, kdata: Path, t0: int, t1: int, cfg: Cfg = Cfg()) -> dict:
                              "grid_known_pm": round(float(np.isfinite(mp).mean()), 4),
                              "grid_known_kalshi": round(float(np.isfinite(mk).mean()), 4),
                              "mid_gap_c_p50": round(float(np.median(gap)), 3),
-                             "mid_gap_abs_c_p50": round(float(np.median(np.abs(gap))), 3)}})
+                             "mid_gap_abs_c_p50": round(float(np.median(np.abs(gap))), 3),
+                             "kalshi_crossed_share": _crossed(ks, g)}})
     W = len(wins)
     res: dict = {"params": {"from": t0, "to": t1, "size": cfg.size, "requote_s": cfg.requote_s,
                             "pmus_coef": cfg.pmus_coef, "pmus_rebate": cfg.pmus_rebate,
@@ -603,19 +637,21 @@ def summary_lines(res: dict) -> list[str]:
     ll = res["leadlag"]
     out = [f"windows: {len(res['windows'])} analysed, {len(res['skipped'])} skipped; "
            f"kalshi_ws frames {res['kalshi_ws']['stats']['frames']}, seq gaps {res['kalshi_ws']['seq_gaps']}, "
-           f"unparsed {res['kalshi_ws']['stats']['unparsed']}"]
+           f"unparsed {res['kalshi_ws']['stats']['unparsed']}, "
+           f"delta_without_book {res['kalshi_ws']['stats']['delta_without_book']} (expected > 0 only at replay start)"]
     if res["windows"]:
         g = sorted(w["mid_gap_abs_c_p50"] for w in res["windows"])
-        out.append(f"pairing check: median |PM - Kalshi mid| per window p50 {g[len(g) // 2]:.2f}c, max {g[-1]:.2f}c")
+        out.append(f"pairing check: median |PM - Kalshi mid| per window p50 {g[len(g) // 2]:.2f}c, max {g[-1]:.2f}c; "
+                   f"max Kalshi crossed share {max(w['kalshi_crossed_share'] for w in res['windows'])}")
     out.append(f"lead-lag: verdict {ll['verdict_1s']}; net-follow diff (K->P minus P->K) "
                + ", ".join(f"{h} {v['est']} {v['ci']}" for h, v in ll["net_follow_diff_k_minus_p"].items()))
     out.append(f"  K->P events {ll['kalshi_to_pmus']['events']} median delay {ll['kalshi_to_pmus']['median_delay_s']} s; "
                f"P->K events {ll['pmus_to_kalshi']['events']} median delay {ll['pmus_to_kalshi']['median_delay_s']} s; "
                f"xcorr peak lag {ll['peak_abs_corr_lag_s']} s, lead_score_1s {ll['lead_score_1s']}")
-    out.append("S5 (side m L: fills known miss [ci] slip|miss expectancy [ci] c/pair):")
+    out.append("S5, one fill per hedge horizon (side m L: fills known miss [ci] slip|miss expectancy [ci] c/pair | raw fills miss exp):")
     for r in res["s5"]:
         out.append(f"  {r['side']:3} {r['m_c']}c {r['L_ms']:4}ms: {r['fills']:5} {r['known']:5} "
-                   f"{r['miss_rate']} {r['miss_rate_ci']} {r['slip_given_miss_c']} {r['expectancy_c']} {r['expectancy_ci_c']}")
+                   f"{r['miss_rate']} {r['miss_rate_ci']} {r['slip_given_miss_c']} {r['expectancy_c']} {r['expectancy_ci_c']} | {r['raw']['fills']} {r['raw']['miss_rate']} {r['raw']['expectancy_c']}")
     out.append("S6 (print side, +s: n rel_mean_c [ci] p10/p50/p90):")
     for r in res["s6"]:
         q = r["rel_q_c"] or {}

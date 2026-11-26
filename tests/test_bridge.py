@@ -198,6 +198,10 @@ def _write(root: Path):
                                "msg": {"market_ticker": TK, "price_dollars": f"{p:.4f}", "delta_fp": f"{d:.2f}",
                                        "side": side}}).decode(), tw=at(t))
         seq += 1
+    # a YES seller at 0.48 on the trade sid: through our 0.49 bid (PM bid 0.50 -> q 0.49)
+    k.append(orjson.dumps({"type": "trade", "sid": 2, "seq": 1,
+                           "msg": {"market_ticker": TK, "yes_price_dollars": "0.4800", "no_price_dollars": "0.5200",
+                                   "count_fp": "3.00", "taker_side": "no", "ts_ms": 1}}).decode(), tw=at(150))
     k.close()
 
 
@@ -208,7 +212,8 @@ def test_run_end_to_end(tmp_path: Path, capsys):
     res = orjson.loads(out.read_bytes())
     assert [w["ticker"] for w in res["windows"]] == [TK] and res["skipped"] == []
     w = res["windows"][0]
-    assert w["mid_gap_abs_c_p50"] == 0.0 and w["kalshi_prints"] == 0 and w["pm_prints"] == 1
+    assert w["mid_gap_abs_c_p50"] == 0.0 and w["kalshi_prints"] == 1 and w["pm_prints"] == 1
+    assert w["kalshi_crossed_share"] == 0.0
     assert res["kalshi_ws"]["stats"]["seq_gaps"] == 0 and res["kalshi_ws"]["stats"]["unparsed"] == 0
     ll = res["leadlag"]
     # Kalshi +1c at 100.0 (mid .50 -> .51 after both deltas), PM US follows at 100.3; down 1c at 200.1 -> PM 200.4
@@ -218,6 +223,12 @@ def test_run_end_to_end(tmp_path: Path, capsys):
     assert ll["peak_abs_corr_lag_s"] == 0.3 and ll["verdict_1s"].startswith("undetermined")
     assert {(r["side"], r["m_c"], r["L_ms"]) for r in res["s5"]} == {
         (s, m, L) for s in ("yes", "no") for m in (0, 1, 2) for L in (250, 1000)}
+    s5 = {(r["side"], r["m_c"], r["L_ms"]): r for r in res["s5"]}
+    # hedge at PM bid 0.50: net = 0.50 - 0.49 - 0.0051 = +0.49c
+    assert (s5[("yes", 0, 250)]["fills"], s5[("yes", 0, 250)]["miss_rate"]) == (1, 0.0)
+    assert s5[("yes", 0, 250)]["expectancy_c"] == pytest.approx(0.49)
+    assert s5[("yes", 1, 250)]["fills"] == 0                          # q 0.48: print not through
+    assert all(s5[("no", m, L)]["fills"] == 0 for m in (0, 1, 2) for L in (250, 1000))
     s6 = {(r["print_side"], r["delta_s"]): r for r in res["s6"]}
     assert s6[("buy", 0.0)]["rel_mean_c"] == pytest.approx(1.0)          # 0.52 - Kalshi ask 0.51
     assert "lead-lag" in capsys.readouterr().out
@@ -228,3 +239,14 @@ def test_s5_quotes_from_window_start_on_a_pre_window_book():
     ks = Series([(at(-30), top(0.48, 0.51))])
     fills, cnt = br.s5_window(pm, ks, [Print(at(20), TK, 0.48, 1, "no")], S, S + 900, 0, Cfg())
     assert cnt["placed"] == 2 and [f["t"] for f in fills] == [at(20)]   # placed at 5.0, re-armed at 20.1
+
+
+def test_s5_dedup_one_fill_per_hedge_horizon():
+    pm = Series([(at(6), top(0.50, 0.52))])
+    ks = Series([(at(6), top(0.48, 0.51))])
+    kp = [Print(at(20 + 0.15 * i), TK, 0.48, 1, "no") for i in range(4)]   # 20.0, 20.15, 20.3, 20.45
+    fills, _ = br.s5_window(pm, ks, kp, S, S + 900, 0, Cfg())
+    assert len(fills) == 4                                   # re-armed 100 ms after each fill
+    r = br.s5_summary([fills], 0, 0.25)
+    assert r["fills"] == 2 and r["raw"]["fills"] == 4        # counted: 20.0, 20.3
+    assert br.s5_summary([fills], 0, 1.0)["fills"] == 1
