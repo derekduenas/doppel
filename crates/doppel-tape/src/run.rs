@@ -12,7 +12,7 @@ use tokio::sync::watch;
 use crate::clock::wall_ns;
 use crate::http::RateLimiter;
 use crate::kalshi::{KalshiBooks, KalshiBrti, KalshiWs};
-use crate::l2::{SpotL2, L2_VENUES};
+use crate::l2::{RestL2, SpotL2, L2_REST_VENUES, L2_VENUES};
 use crate::pmus::PmusMarketsWs;
 use crate::recorder::{spawn_writer, stats_map, Recorder, Stats, WriterThread, DEFAULT_QUEUE};
 use crate::universe::{IntlUniverse, ASSETS, HZ};
@@ -36,7 +36,7 @@ pub fn all_streams() -> Vec<String> {
 /// Spot L2 book streams (`spot_l2_<venue>`). Opt-in only: `all` does not include them, so a unit
 /// without `--only` keeps recording exactly what it did before.
 pub fn l2_streams() -> Vec<String> {
-    L2_VENUES.iter().map(|v| format!("spot_l2_{v}")).collect()
+    L2_VENUES.iter().chain(&L2_REST_VENUES).map(|v| format!("spot_l2_{v}")).collect()
 }
 
 /// Resolve `--only` names: `clob_intl` = every CLOB shard, `kalshi_brti` = `ref_brti_live`
@@ -131,7 +131,11 @@ fn spawn_source(name: &str, rec: Recorder, stop: watch::Receiver<bool>, kalshi_l
         "spot_kraken" => tokio::spawn(run_ws(KrakenTrades, rec, stop, o())),
         "spot_bitstamp" => tokio::spawn(run_ws(BitstampTrades, rec, stop, o())),
         n if n.starts_with("spot_l2_") => {
-            let v = SpotL2::new(&n["spot_l2_".len()..]).unwrap_or_else(|| panic!("no source for {n}"));
+            let venue = &n["spot_l2_".len()..];
+            if let Some(r) = RestL2::new(venue) {
+                return tokio::spawn(r.run(rec, stop));
+            }
+            let v = SpotL2::new(venue).unwrap_or_else(|| panic!("no source for {n}"));
             tokio::spawn(run_ws(v, rec, stop, o()))
         }
         n if n.starts_with("clob_") => {
@@ -225,9 +229,10 @@ mod tests {
         // spot L2 books are opt-in: `all` (the default) does not start them
         assert!(resolve_streams(&s(&["all"])).unwrap().iter().all(|n| !n.starts_with("spot_l2")));
         assert_eq!(resolve_streams(&s(&["spot_l2"])).unwrap(), l2_streams());
-        assert_eq!(l2_streams().len(), 6);
+        assert_eq!(l2_streams().len(), 7);
+        assert_eq!(l2_streams().last().unwrap(), "spot_l2_lmax");
         assert_eq!(resolve_streams(&s(&["spot_l2_kraken", "spot_kraken"])).unwrap(), s(&["spot_kraken", "spot_l2_kraken"]));
-        assert_eq!(resolve_streams(&s(&["all", "spot_l2"])).unwrap().len(), 18 + 6);
+        assert_eq!(resolve_streams(&s(&["all", "spot_l2"])).unwrap().len(), 18 + 7);
     }
 
     #[test]

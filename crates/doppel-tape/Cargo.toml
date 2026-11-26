@@ -9,6 +9,10 @@ description = "DOPPEL tape recorder (Rust port of src/doppel/tape), byte-compati
 name = "doppel-taped"
 path = "src/main.rs"
 
+[[bin]]
+name = "doppel-replica-replay"
+path = "src/bin/replica_replay.rs"
+
 # Versions are pinned exactly; Cargo.lock is committed.
 [dependencies]
 tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
@@ -30,8 +34,8 @@ base64 = "=0.22.1"
 rand = "=0.8.8"
 libc = "=0.2.191"
 toml = "=0.8.23"
+# replica + book decoders for doppel-replica-replay (doppel-fair depends on no tape code)
+doppel-fair = { path = "../doppel-fair" }
 
 [dev-dependencies]
 tempfile = "=3.27.0"
-# tests only: the recorder's tape round-trips through the offline book decoder
-doppel-fair = { path = "../doppel-fair" }

@@ -4,3 +4,7 @@ members = ["crates/doppel-tape", "crates/doppel-fair"]
 
 [profile.release]
 debug = 1
+
+# the replica is ~30x slower unoptimized; the tape replay test runs it thousands of times
+[profile.dev.package.doppel-fair]
+opt-level = 3
