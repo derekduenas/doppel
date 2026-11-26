@@ -171,7 +171,13 @@ def run(root: Path, lab: Path, max_age: float = 1.0, skew: float = 0.5, persist:
             res["equivalence"]["strike_match"] += abs(eq["strike_diff"]) < 0.005
             if pmm["settle"] is not None and meta.get("result") in ("yes", "no"):
                 pm_up = pmm["settle"] >= pmm["ptb"]
-                res["equivalence"]["result_match"] += pm_up == (meta["result"] == "yes")
+                ok = pm_up == (meta["result"] == "yes")
+                res["equivalence"]["result_match"] += ok
+                if not ok:
+                    res["equivalence"].setdefault("mismatches", []).append(
+                        {"slug": slug, "kalshi": t, "ptb": pmm["ptb"], "pm_settle": pmm["settle"],
+                         "kalshi_strike": meta.get("strike"), "kalshi_result": meta["result"],
+                         "kalshi_expiration_value": meta.get("expiration_value")})
         A, B, gaps = [], [], []
         for s in range(start + 5, start + 900 - 5):
             pt, kt = asof(prow, s, max_age, True), asof(krow, s, max_age, True)
