@@ -85,7 +85,7 @@ footer{font-size:.82rem;color:var(--muted);border-top:1px solid var(--line);padd
   <div class="eyebrow">DOPPEL · blueprint v3 · 2026-11-26</div>
   <h1>DOPPEL</h1>
   <p class="lede">Learn who is right on Polymarket international and why, then make markets on Polymarket US with that knowledge, hedged on Kalshi's identical contract. Every strategy is a sealed genome that must beat fees in an honest replay before it touches money.</p>
-  <div class="meta"><span class="chip" style="color:var(--ok);border-color:var(--ok);background:var(--ok-soft)">recording live · 18 streams</span><span class="chip">152 tests · type-clean</span><span class="chip">H1 sealed · verdict Nov 29</span><span class="chip">Goldsky $17 of $70</span><span class="chip live">no live orders</span></div>
+  <div class="meta"><span class="chip" style="color:var(--ok);border-color:var(--ok);background:var(--ok-soft)">recording live · 18 streams</span><span class="chip">232 tests · type-clean</span><span class="chip">H1 sealed · verdict Nov 29</span><span class="chip">Goldsky $17 of $70</span><span class="chip live">no live orders</span></div>
 </header>
 
 <section class="stack">
@@ -94,7 +94,7 @@ footer{font-size:.82rem;color:var(--muted);border-top:1px solid var(--line);padd
   <div class="facts">
     <div class="fact"><span class="k">Live</span><strong>Data and research core</strong><span>Recorders on Apex, exact wallet ledger (G0: 42 of 43 match Polymarket), census, dossiers, policy inversion, fair-v1 on raw BRTI, flow guard, genome extraction, sealed registry, and the twin.</span></div>
     <div class="fact"><span class="k">Proven on our data</span><strong>The settlement and the venues</strong><span>Polymarket US windows settle on a published 60 s BRTI average (exact to half a cent). Polymarket US 15m and Kalshi 15m are the same contract. The money in intl crypto windows goes to makers.</span></div>
-    <div class="fact"><span class="k">Open</span><strong>Whether a strategy beats fees</strong><span>H1 (plain maker) is sealed and scored Nov 29. Early diagnostics lean negative, as expected for an unguarded maker. H2 (flow-guarded) is next. No strategy has passed yet.</span></div>
+    <div class="fact"><span class="k">Open</span><strong>Whether a strategy beats fees</strong><span>H1 (plain maker) is sealed and scored Nov 29. Early diagnostics lean negative, as expected for an unguarded maker. H2, H3 and H4 are sealed too. No strategy has passed yet.</span></div>
   </div>
 </section>
 
@@ -106,11 +106,11 @@ footer{font-size:.82rem;color:var(--muted);border-top:1px solid var(--line);padd
     <tbody>
       <tr><td>Intl wallet identity streams publicly, about 2 s after each print</td><td>RTDS: maker and taker rows, 97% of chain trades in covered markets</td><td>A live "who is trading" signal, used by the flow guard</td></tr>
       <tr><td>Polymarket US settles on the published rolling 60 s BRTI average</td><td>Raw BRTI rolling mean = published series, error $0.0025</td><td>Exact settlement for every backtest; raw BRTI is the fair-value input</td></tr>
-      <tr><td>The displayed average lags raw BRTI</td><td>fair-v1 beats the series model at every horizon (Brier 0.015 vs 0.048 at 30 s left)</td><td>Reading raw BRTI is a structural information edge</td></tr>
+      <tr><td>The displayed average lags raw BRTI</td><td>fair-v1 beats the series model at every 5m horizon and 8 of 9 15m horizons (Brier 0.015 vs 0.048 at 30 s left)</td><td>Reading raw BRTI is a structural information edge</td></tr>
       <tr><td>Polymarket US REST books are 8–20 s stale</td><td>88% of polls match an older WebSocket book</td><td>WebSocket only; two analyses corrected</td></tr>
       <tr><td>Polymarket US price history looks ahead</td><td>Its minute points match the live book 1–3 minutes later</td><td>Banned; only our own tape is used</td></tr>
       <tr><td>Polymarket US 15m = Kalshi 15m</td><td>Same strike and settlement to the cent, 10 of 10 windows</td><td>Kalshi is the hedge venue</td></tr>
-      <tr><td>The cross-venue arb is about zero</td><td>0 persistent episodes on fresh books ($3.2k on stale ones)</td><td>Hedge, don't arbitrage</td></tr>
+      <tr><td>The cross-venue arb is small and fee-bound</td><td>At the 0.095 fee: $1.70 persistent on fresh books ($3.2k on stale ones). At the API fee with its 70% rebate: 14 episodes, $28.20 in ~3.5 h (E25); Kalshi leg still REST</td><td>Hedge first; the rest-on-Kalshi bridge (S5) is tested on live Kalshi books</td></tr>
       <tr><td>Makers earn, takers lose</td><td>Census: makers ~$60k/day across the top 100, late takers negative</td><td>First strategy family is a maker</td></tr>
       <tr><td>Public Polymarket US prints cover 28–85% of volume</td><td>Prints vs the venue's sharesTraded counter</td><td>Twin verdicts need ≥90% coverage; shadow paper is the backstop</td></tr>
       <tr><td>Polymarket perps are transparent per address</td><td>Public fills, positions and P&amp;L by address</td><td>M6 can dissect perps operators fully</td></tr>
@@ -142,7 +142,7 @@ footer{font-size:.82rem;color:var(--muted);border-top:1px solid var(--line);padd
     <thead><tr><th>Family</th><th>Rule</th><th>Test window</th><th>Pass rule</th></tr></thead>
     <tbody>
       <tr><td><strong>H1</strong> · 6 variants</td><td>Quote Polymarket US BTC 5m around fair-v1 ± 1/2/3¢, optional pause on fast BRTI moves</td><td>Nov 26 00:00 → Nov 29 00:00 UTC (sealed 23:33 UTC)</td><td>Lower bound of the 95% CI on net ¢ per window above 0 after fees, on ≥300 windows, surviving Holm across 6</td></tr>
-      <tr><td><strong>H2</strong> · being sealed</td><td>H1 plus a pause when intl informed flow in the last 30 s exceeds a threshold</td><td>Nov 27 00:00 → Nov 30 00:00 UTC</td><td>Same rule, plus guarded vs unguarded compared on identical windows</td></tr>
+      <tr><td><strong>H2</strong> · sealed</td><td>H1 plus a pause when intl informed flow in the last 30 s exceeds a threshold</td><td>Nov 27 00:00 → Nov 30 00:00 UTC</td><td>Same rule, plus guarded vs unguarded compared on identical windows</td></tr>
     </tbody>
   </table></div>
 </section>
@@ -193,5 +193,5 @@ footer{font-size:.82rem;color:var(--muted);border-top:1px solid var(--line);padd
   </div>
 </section>
 
-<footer>Repo <span class="mono">github.com/derekduenas/doppel</span> (private) with an Apex mirror. Evidence: <span class="mono">evidence/2026-11-25-probes/FINDINGS.md</span> (E1–E23). Roadmap: <span class="mono">docs/ROADMAP.md</span>. Registry: <span class="mono">registry/genomes.jsonl</span>.</footer>
+<footer>Repo <span class="mono">github.com/derekduenas/doppel</span> (private) with an Apex mirror. Evidence: <span class="mono">evidence/2026-11-25-probes/FINDINGS.md</span> (E1–E29). Roadmap: <span class="mono">docs/ROADMAP.md</span>. Registry: <span class="mono">registry/genomes.jsonl</span>.</footer>
 </div>

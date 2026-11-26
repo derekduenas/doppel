@@ -105,7 +105,7 @@ dl.spec dt{font-weight:600;opacity:.8}dl.spec dd{margin:0}
     <dt>Costs</dt><dd>PM US makers pay 0. API takers: 0.0695·p(1−p) per contract, 70% rebated to Dec 31 (net ≈0.021·p(1−p): 0.52¢ at 50¢). Kalshi KXBTC15M: makers 0, takers ⌈0.07·p(1−p)⌉ to the cent.</dd>
     <dt>Clock rule</dt><dd>A decision at second d sees only data we RECEIVED by d. Orders and cancels land 250 ms later in the twin.</dd>
     <dt>Fill model</dt><dd>Pessimistic queue: we join behind displayed size; only prints at our price burn the queue; cancellations never help us; a print through our price fills us; a book that crosses our quote without a print fills us (the adverse fill a naive replay misses). Maker verdicts need ≥90% of venue volume seen as prints.</dd>
-    <dt>Risk envelope</dt><dd>Per genome: |inventory| ≤ 40 contracts, ≤ $40 at risk per window, one window at a time, stand down after −$25 in a UTC day, kill on −$25 drawdown. riskd enforces the same limits live.</dd>
+    <dt>Risk envelope</dt><dd>Per genome: |inventory| ≤ 40 contracts, ≤ $40 at risk per window, one window at a time, stand down after −$25 in a UTC day, kill on −$25 drawdown. riskd (not built yet) will enforce the same limits live.</dd>
     <dt>Verdict</dt><dd>PASS only if the lower 95% bound (block bootstrap, 12-window blocks) of net ¢ per window is above 0 after fees, on ≥300 windows, surviving Holm within its family. Then a commercial hurdle: lower-bound $/day after $60/month operating cost, without incentives.</dd>
   </dl>
 </section>

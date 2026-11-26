@@ -6,9 +6,9 @@
 ## Install (Ubuntu host)
 ```sh
 sudo useradd --system --home /var/lib/doppel --shell /usr/sbin/nologin doppel
-sudo mkdir -p /opt/doppel /var/lib/doppel/tape && sudo chown doppel: /var/lib/doppel -R
+sudo mkdir -p /opt/doppel /mnt/volume_nyc1_1793485122853/doppel/tape && sudo chown doppel: /var/lib/doppel -R
 # copy the repo to /opt/doppel (git archive | tar), then:
-cd /opt/doppel && uv sync --frozen --no-dev
+cd /opt/doppel && python3 -m venv .venv && .venv/bin/pip install -r ops/requirements.lock && .venv/bin/pip install --no-deps .   # what ops/deploy.sh does
 sudo cp ops/systemd/doppel-tape.service /etc/systemd/system/ && sudo systemctl daemon-reload
 sudo systemctl enable --now doppel-tape
 ```
@@ -43,9 +43,9 @@ Two streams need venue auth. Neither key is stored in this repo, in `/opt/doppel
   `ref_*` streams are never touched by the janitor.
 
 ## Health
-- `cat /var/lib/doppel/tape/status.json`: per-source msgs, reconnects, stalls, last-message age.
-- `ls /var/lib/doppel/tape/receipts/YYYYMMDD/`: hourly receipts (built automatically at each hour change).
-- `doppel-tape verify --data /var/lib/doppel/tape`: sha256 and CRC over every closed segment.
+- `cat /mnt/volume_nyc1_1793485122853/doppel/tape/status.json`: per-source msgs, reconnects, stalls, last-message age.
+- `ls /mnt/volume_nyc1_1793485122853/doppel/tape/receipts/YYYYMMDD/`: hourly receipts (built automatically at each hour change).
+- `doppel-tape verify --data /mnt/volume_nyc1_1793485122853/doppel/tape`: sha256 and CRC over every closed segment.
 - `pmus_ws`: `heartbeats` should rise, `subscribed` (open requests) should be 8 (2 horizons x current
   and next window x book and trades), up to 12 while an ended window lingers, and `sub_errors` / `resubscribes` should stay
   small. `ref_brti_live`: `http_401` / `http_403` mean the profile or the signature is wrong.
@@ -60,11 +60,11 @@ storage nightly. Parquet compaction lands in M1.
 - **2026-11-25 ~17:58Z**: deployed 20fd3f6 to Apex (atlas-do) as a stopgap host. Code in `/opt/doppel`
   (`DEPLOYED_COMMIT`), venv from `ops/requirements.lock`, user `doppel`, data on the attached volume
   `/mnt/volume_nyc1_1793485122853/doppel/tape`. `doppel-janitor.timer` deletes the oldest closed day when
-  that volume has < 12 GB free. At ~17 GB/day the volume holds **~3 days rolling**. Move to the dedicated
+  that volume has < 12 GB free. At ~17 GB/day (Python) plus the Rust shadow while it runs, the volume holds **~3 days rolling**; the janitor prunes the shadow first. Move to the dedicated
   research box or object storage before that history matters. First check: 15/15 streams live, 83 MB,
   ~0.4 core; PM US books 200 for btc/eth/sol/xrp.
 - Deploy method: `git archive HEAD | ssh atlas-do` into `/opt/doppel.new`, venv build, atomic swap,
-  then `systemctl restart doppel-tape`.
+  then `systemctl restart doppel-tape` only with `ops/deploy.sh --restart-tape`.
 
 ## Rust recorder binary
 

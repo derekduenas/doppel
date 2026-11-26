@@ -1,3 +1,10 @@
+> **Status note (2026-11-26, audit A4-F6).** This is the v2 design document. Where it disagrees with the
+> build, the build wins: DOPPEL runs on Apex (stopgap host, read-only Kalshi profile and the PM US
+> signer socket), and PM US API takers pay 0.0695 with a 70% rebate to 2026-12-31 (E25), not 0.095.
+> **Hypothesis labels:** in this document H2–H5 are design ideas. In the registry, H1 = fair-value maker,
+> H2 = flow-guarded maker, H3 = four-arm flow-guard trial (+ block placebo), H4 = edge-selective maker;
+> designed-but-unsealed strategies are S5–S9 (`docs/site/strategies.html`). G0 needs ≥50 comparable wallets.
+
 # DOPPEL — System Blueprint v2 (ground-up)
 
 *2026-11-25 · new standalone project at `~/doppel` · paper/research until the owner arms live trading*
@@ -42,7 +49,7 @@ making, and from "maybe someday" to a first-dollar path through the PM US 5m mak
 
 | Change | v1 | v2 | Why (evidence) |
 |---|---|---|---|
-| **Add** real-time identity tape | Chain/Goldsky only (t3 ≥ 1 block) | RTDS `activity/trades` maker+taker rows, ×2 redundant sockets, reconciled to chain | E1–E5: free, role-labeled, ~2.2 s behind the print |
+| **Add** real-time identity tape | Chain/Goldsky only (t3 ≥ 1 block) | RTDS `activity/trades` maker+taker rows, ×2 redundant sockets, reconciled to chain | E1–E5: free, role-labeled, ~2 s behind the print |
 | **Add** live operator labels on every fill | Batch atlas | Streaming "who is trading right now" state, per window | turns the atlas into a sensor |
 | **Add** 5m complex fair-value engine | Implicit | First-class component with three settlement replicas | E7, E8: same windows, different indexes and fees |
 | **Re-rank** first strategy | Latency taker clone | **PM US 5m/15m maker** guarded by intl flow; taker clones second | E8: US taker fee 0.095 (≈2.4¢ at 50¢) punishes takers and pays patient makers |

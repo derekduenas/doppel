@@ -254,7 +254,3 @@ class Features:
                 x["mid_up_c"] = 50.0 * (bb + ba)
                 x["spread_c"] = 100.0 * (ba - bb)
         return x
-
-
-def book_age_ok(book: Book, t_ns: int, rest: bool, rest_max_age_s: float) -> bool:
-    return (not rest) or (t_ns - book.tw) <= rest_max_age_s * NS

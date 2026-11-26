@@ -41,10 +41,10 @@ bound (one bad quote appears in many pairs); ``leg_once_dollars`` uses each leg'
 from __future__ import annotations
 
 import argparse
+import hashlib
 import bisect
 import math
 import re
-import subprocess
 import sys
 import time
 import urllib.parse
@@ -492,7 +492,7 @@ def load_books(root: Path, keys: dict[str, set[str]], t0: float, t1: float,
     if kalshi_stream not in KALSHI_STREAMS:
         raise ValueError(f"unknown kalshi stream {kalshi_stream}")
     if kalshi_stream == "kalshi_ws":
-        raise NotImplementedError("kalshi_ws recorder not built yet: pin its message format, then add a parser")
+        raise NotImplementedError("kalshi_ws is recorded by the Rust recorder (tape-rust); the Python parser is not written yet")
     for f in _segments(root, kalshi_stream, lo, hi):
         for rec in read_segment(f, verify=True):
             m = rec.get("meta") or {}
@@ -652,12 +652,8 @@ def scan_class(members: list[Contract], books: dict[tuple[str, str], Book], t0: 
 
 
 def _code_sha() -> str | None:
-    try:
-        r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=Path(__file__).parent, capture_output=True,
-                           text=True, timeout=5)
-        return r.stdout.strip() or None
-    except Exception:  # noqa: BLE001
-        return None
+    """sha256 of this module's source (git is absent in the deployed tree, audit A3-11)."""
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 
 def scan(cache: dict, root: Path, t0: int, t1: int, params: Params = Params(), fees: Fees = Fees(),

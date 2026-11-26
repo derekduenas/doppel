@@ -1,5 +1,13 @@
 # DOPPEL roadmap
 
+> **Status 2026-11-26:** built and merged: W1 twin, W2 extraction + registry (+ C6 anytime-valid monitor,
+> DNA layer), W3 flow guard, W6 Rust fast-fair (replica exact vs PERELMAN; 2.4–5.5 ms, over the 1 ms
+> budget; not wired, needs spot L2 streams), W11 desk (`doppel-desk build`). Known gaps (audit A3-9):
+> nothing reads `vsmarket-latest.json` yet; `kalshi_ws` is only in tape-rust and has no Python parser;
+> the Rust recorder builds no hourly receipts (Python must keep doing it after cutover); doppel-fair has
+> no consumer yet. Preregistered H1–H4 drawdown kills ($25) have low power over 3 days (E30).
+
+
 Status as of 2026-11-25. The detailed design is in [BLUEPRINT.md](BLUEPRINT.md). Each milestone ends on its
 acceptance test or a recorded kill.
 
@@ -72,7 +80,7 @@ Verified before adopting: PM US API fees (E25, already fixed); Kalshi KXBTC15M/K
 |---|---|---|---|
 | C1 | **Passive-Kalshi → IOC PM US bridge** (Kalshi maker 0 fee, PM US API taker ≈0.021 net) | Breakeven falls from ~4.1c to ~0.5c at 50c. NOT riskless: the Kalshi resting fill arrives exactly when PM US has moved (legging risk); must be scored on `kalshi_ws` with the hedge price after the fill, and the rebate ends 12-31 | genome H5 once `kalshi_ws` is cut over (scanner + A3b) |
 | C2 | **Shadow-BRTI from constituent L2** (Coinbase, Kraken, Bitstamp, Gemini, LMAX…) | Disseminated BRTI is 1 Hz; constituents lead. PERELMAN already has a CF v17 replica (`~/perelman/brti.py`, `books.py`): port it to Rust; needs spot **L2** streams (we record trades only) | W6, next after cutover |
-| C3 | **Pre-identity toxicity prior ("clock 0")**: predict a print's eventual wallet informedness from anonymous CLOB features (size, sweep depth, burst, deviation from fair) at receive time; RTDS identity then updates it | Closes most of the 2.2 s identity gap; we already join CLOB prints to RTDS by tx hash, so labels exist | lab study now; H3's anonymous arm is the baseline it must beat |
+| C3 | **Pre-identity toxicity prior ("clock 0")**: predict a print's eventual wallet informedness from anonymous CLOB features (size, sweep depth, burst, deviation from fair) at receive time; RTDS identity then updates it | Closes most of the ~2 s identity gap; we already join CLOB prints to RTDS by tx hash, so labels exist | lab study now; H3's anonymous arm is the baseline it must beat |
 | C4 | **Logit-scaled spreads** (half-spread ∝ p(1−p)) as a genome option | Fees are ∝ p(1−p); flat cents over-widen near 0/1 and under-widen near 50c | genome v1.1 field (new families only; sealed ids unchanged) |
 | C5 | **PM US single-instrument netting / capital velocity** in the twin and allocator | Selling YES against long YES frees collateral at once, so intra-window round trips recycle capital; cross-venue pairs lock it until settlement | twin `capital_locked_usd_s` + shadow cost in the allocator (W9) |
 | C6 | **Anytime-valid e-processes** for shadow/paper gates, Romano-Wolf for batch | Lets us monitor every window and kill early without p-hacking (also our open "early KILL" item) | **merged 2026-11-26** (`doppel-genome monitor`). Power note: the e-process bound is the genome's worst-case loss per window (100 × max_notional_per_window), so H1–H4 (±4,000¢) will rarely stop early; new families (S5+) preregister notional caps sized to what they actually trade so early KILL has teeth |

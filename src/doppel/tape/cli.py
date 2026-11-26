@@ -121,6 +121,9 @@ def verify(data: Path) -> int:
                 latest[m["file"]] = m
         for m in latest.values():
             f = man.parent / m["file"]
+            if not f.exists() and not f.parent.exists():   # whole day pruned by the janitor (A3-7)
+                print(f"PURGED {man.parent.name}/{m['file']} (day deleted by retention)")
+                continue
             ok_hash = f.exists() and hashlib.sha256(f.read_bytes()).hexdigest() == m["sha256"]
             try:
                 n = sum(1 for _ in read_segment(f, verify=True)) if f.exists() else -1

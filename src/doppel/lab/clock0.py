@@ -1,5 +1,5 @@
 """C3 "clock 0": can an ANONYMOUS intl CLOB print predict its taker's informedness before RTDS names
-the wallet (~2.2 s later)?
+the wallet (~2 s later)?
 
 Unit: one taker transaction (all ``last_trade_price`` prints sharing a tx hash in one asset).
 Labels come from RTDS, joined by tx hash, and are NEVER features:
