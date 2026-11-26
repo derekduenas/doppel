@@ -55,6 +55,7 @@ class Book:
     asks: tuple[tuple[float, float], ...]
     shares_traded: float | None = None
     open: bool = True
+    last_trade_px: float | None = None   # stats.lastTradePx: price of the venue's latest execution
 
     @property
     def best_bid(self) -> float | None:
@@ -150,11 +151,63 @@ def _levels(rows, descending: bool, depth: int) -> tuple[tuple[float, float], ..
 def parse_book(md: dict, tw: int, depth: int = 10) -> Book:
     st = md.get("state")
     stats = md.get("stats") if isinstance(md.get("stats"), dict) else {}
+    ltp = (stats or {}).get("lastTradePx")
     return Book(tw=tw, bids=_levels(md.get("bids"), True, depth), asks=_levels(md.get("offers"), False, depth),
-                shares_traded=_num((stats or {}).get("sharesTraded")), open=st in OPEN_STATES)
+                shares_traded=_num((stats or {}).get("sharesTraded")), open=st in OPEN_STATES,
+                last_trade_px=_num(ltp.get("value") if isinstance(ltp, dict) else ltp))
 
 
 AGGRESSOR = {"ORDER_SIDE_BUY": "buy", "ORDER_SIDE_SELL": "sell"}
+INFERRED = "inferred:"
+
+
+def _is_inferred(t: "Trade") -> bool:
+    return (t.id or "").startswith(INFERRED)
+
+
+INFER_GRACE_NS = 2_000_000_000   # prints may arrive after the book that already counts them
+
+
+def infer_unprinted(books: list[Book], prints: list["Trade"]) -> list["Trade"]:
+    """Executions the venue counted in ``sharesTraded`` but never published as trade prints (E31:
+    ~25% of PM US BTC 5m volume). Cumulative accounting: at each book, unprinted = (volume since the
+    first book) - (prints received up to INFER_GRACE_NS after it) - (already inferred). The grace
+    stops a print that arrives just after the book reflecting it from being inferred a second time;
+    it only decides WHETHER an execution was unprinted, never when anything is known (the inferred
+    trade is stamped at the book's receive time). Each residual
+    becomes one trade at the book's ``lastTradePx``, received at the book's time (no earlier), with
+    the aggressor implied by the PREVIOUS book: at/below its best bid = seller hit the bid, at/above
+    its best ask = buyer lifted the ask; inside the spread = the nearer side."""
+    vb = [b for b in books if b.shares_traded is not None]
+    if len(vb) < 2:
+        return []
+    out: list[Trade] = []
+    base = vb[0].shares_traded or 0.0
+    pr = sorted(prints, key=lambda t: t.tw)
+    i = 0
+    printed = done = 0.0
+    for prev, b in zip(vb, vb[1:]):
+        while i < len(pr) and pr[i].tw <= b.tw + INFER_GRACE_NS:
+            if pr[i].tw > vb[0].tw:
+                printed += pr[i].qty
+            i += 1
+        resid = (b.shares_traded or 0.0) - base - printed - done
+        px = b.last_trade_px
+        if resid <= 1e-6 or px is None or not 0.0 < px < 1.0:
+            continue
+        bb, ba = prev.best_bid, prev.best_ask
+        if bb is not None and px <= bb + 1e-9:
+            agg = "sell"
+        elif ba is not None and px >= ba - 1e-9:
+            agg = "buy"
+        elif bb is not None and ba is not None:
+            agg = "sell" if px - bb <= ba - px else "buy"
+        else:
+            continue
+        q = round(resid, 6)
+        out.append(Trade(tw=b.tw, t_exch=None, price=px, qty=q, aggressor=agg, id=f"{INFERRED}{b.tw}"))
+        done += q
+    return out
 
 
 def parse_trade(tr: dict, tw: int) -> Trade | None:
@@ -405,16 +458,21 @@ def _assemble(parsed: dict, asset: str, horizon: str, start: int) -> WindowTape:
             seen.add(key)
             trades.append(tr)
     trades.sort(key=lambda t: (t.tw, t.id or ""))
+    inferred = infer_unprinted(wt.books, trades) if wt.source == "ws" else []
+    trades = sorted(trades + inferred, key=lambda t: (t.tw, t.id or ""))
     wt.trades = trades if wt.source == "ws" else []
     in_win = [t for t in wt.trades if t.t_venue < end * NS]
     last_book = next((b for b in reversed(wt.books) if b.shares_traded is not None and b.tw < hi), None)
     # trade-feed completeness: prints seen between two snapshots vs the venue's sharesTraded change
     vb = [b for b in wt.books if b.shares_traded is not None]
-    coverage = None
+    coverage = coverage_all = inferred_share = None
     if wt.source == "ws" and len(vb) >= 2 and (vb[-1].shares_traded or 0.0) - (vb[0].shares_traded or 0.0) > 0:
         dv = (vb[-1].shares_traded or 0.0) - (vb[0].shares_traded or 0.0)
-        seen_q = sum(t.qty for t in wt.trades if vb[0].tw < t.tw <= vb[-1].tw)
+        seen_q = sum(t.qty for t in wt.trades if vb[0].tw < t.tw <= vb[-1].tw and not _is_inferred(t))
+        inf_q = sum(t.qty for t in wt.trades if vb[0].tw < t.tw <= vb[-1].tw and _is_inferred(t))
         coverage = round(seen_q / dv, 4)
+        coverage_all = round((seen_q + inf_q) / dv, 4)
+        inferred_share = round(inf_q / dv, 4)
     wt.stats = {"books": len(wt.books), "trades": len(wt.trades), "trades_dup": dup,
                 "trades_skipped": skipped, "gap_events": len(wt.gaps),
                 "trade_gap_events": sum(1 for t in trade_gaps if lo <= t < hi),
@@ -422,5 +480,8 @@ def _assemble(parsed: dict, asset: str, horizon: str, start: int) -> WindowTape:
                 "trade_volume": round(sum(t.qty for t in in_win), 4),
                 "venue_volume": last_book.shares_traded if last_book else None,
                 "trade_coverage": coverage,
+                "trade_coverage_with_inferred": coverage_all,
+                "inferred_share": inferred_share,
+                "inferred_trades": sum(1 for t in wt.trades if _is_inferred(t)),
                 "ws_trades_without_book": len(trades) if wt.source != "ws" else 0}
     return wt

@@ -205,7 +205,8 @@ def _maker_summary(ev: list[dict], mk: list[dict]) -> dict:
                 "fill_rate": _ratio(filled, quoted),
                 "mean_quote_live_s": round(live / placed, 3) if placed else None,
                 "fills_via_trade": sum(1 for f in mk if f["via"] == "trade"),
-                "fills_via_book_cross": sum(1 for f in mk if f["via"] == "book_cross")})
+                "fills_via_book_cross": sum(1 for f in mk if f["via"] == "book_cross"),
+                "fills_via_inferred": sum(1 for f in mk if f["via"] == "inferred")})
     return out
 
 

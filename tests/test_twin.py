@@ -586,3 +586,19 @@ def test_flow_genome_windows_without_rtds_are_excluded(tmp_path):
     p.write_bytes(b"")
     assert rtds_hours_present(tmp_path, h + 10, h + 3000)
     assert not rtds_hours_present(tmp_path, h + 3000, h + 3700)   # next hour missing
+
+
+def test_infer_unprinted_volume_cumulative_and_sided():
+    """E31: volume the venue counted but never printed becomes inferred trades, counted once."""
+    from doppel.twin.tape import Book, Trade, infer_unprinted
+    S = 1_000_000_000
+    B = lambda t, sh, ltp: Book(tw=int(t * S), bids=((0.48, 100.0),), asks=((0.52, 100.0),), shares_traded=sh,
+                               last_trade_px=ltp)
+    books = [B(0, 1000.0, 0.50), B(10, 1100.0, 0.48), B(20, 1150.0, 0.52), B(30, 1150.0, 0.52)]
+    prints = [Trade(tw=5 * S, t_exch=None, price=0.48, qty=60.0, aggressor="sell"),
+              Trade(tw=int(20.5 * S), t_exch=None, price=0.52, qty=50.0, aggressor="buy")]  # 0.5 s after book@20
+    inf = infer_unprinted(books, prints)
+    # book@10: 100 traded, 60 printed -> 40 inferred at 0.48 (at the bid = seller hit it), stamped at 10 s
+    assert [(t.tw, t.qty, t.price, t.aggressor) for t in inf] == [(10 * S, 40.0, 0.48, "sell")]
+    # book@20's 50 were printed 0.5 s later (inside the 2 s grace): not inferred again
+    assert sum(t.qty for t in inf) + sum(p.qty for p in prints) == 150.0   # every contract exactly once

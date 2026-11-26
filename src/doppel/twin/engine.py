@@ -71,7 +71,9 @@ class SimConfig:
     rest_max_age_s: float = 3.0         # diagnostics only (REST is stale): older snapshot = no book
     markouts_s: tuple[int, ...] = (1, 5, 30)
     depth_levels: int = 10              # book levels kept per side
-    min_trade_coverage: float = 0.9     # maker windows need this share of sharesTraded seen as prints;
+    max_inferred_share: float = 0.4     # E31: at most this share of volume may be inferred (unprinted)
+    min_trade_coverage: float = 0.9     # maker windows need this share of sharesTraded seen as prints
+                                        # PLUS inferred unprinted executions (E31);
                                         # below 0.9 the run is DIAGNOSTIC (missed prints are mostly
                                         # adverse fills, so low coverage flatters a maker)
 
@@ -298,7 +300,8 @@ class WindowSim:
                 avail -= burn
             f = floor2(min(q.remaining, avail, self._room("buy" if side == "bid" else "sell", q.price, self.inv)))
             if f >= MIN_QTY:
-                self._maker_fill(tr.tw, q, f, via="trade", ref_qty=tr.qty)
+                self._maker_fill(tr.tw, q, f, via="inferred" if (tr.id or "").startswith("inferred:") else "trade",
+                                 ref_qty=tr.qty)
                 avail -= f
 
     # ------------------------------------------------------------------ decisions
@@ -604,7 +607,8 @@ def window_head(wt: WindowTape, ref: WindowRef) -> dict:
 MIN_TRADE_COVERAGE = 0.9   # maker windows need >= 90% of the venue's traded volume seen as prints
 
 
-def exclusion(g: Genome, wt: WindowTape, ref: WindowRef, min_cov: float = MIN_TRADE_COVERAGE) -> str | None:
+def exclusion(g: Genome, wt: WindowTape, ref: WindowRef, min_cov: float = MIN_TRADE_COVERAGE,
+              max_inferred: float = 0.4) -> str | None:
     """Why a window cannot count toward a verdict (None = it counts).
 
     A maker is only scored where the trade feed is verifiably complete: missed prints are missed
@@ -625,7 +629,9 @@ def exclusion(g: Genome, wt: WindowTape, ref: WindowRef, min_cov: float = MIN_TR
             return "no_trade_feed"
         if any(wt.start * NS <= t < wt.end * NS for t in wt.gaps) or (wt.stats.get("trade_gap_events") or 0) > 0:
             return "feed_gap"
-        cov = wt.stats.get("trade_coverage")
+        cov = wt.stats.get("trade_coverage_with_inferred", wt.stats.get("trade_coverage"))
+        if (wt.stats.get("inferred_share") or 0.0) > max_inferred:
+            return "unprinted_volume_high"
         if cov is None and (wt.stats.get("venue_volume") or 0) > 0:
             return "unknown_trade_coverage"   # audit A2-8: unknown coverage used to pass
         if cov is not None and cov < min_cov:
@@ -640,7 +646,7 @@ def run_windows(g: Genome, items: Iterable[tuple[WindowTape, WindowRef]], cfg: S
     settled: list[tuple[int, float]] = []          # (end, net_usd) of simulated windows
     spans: list[tuple[int, int]] = []              # (first fill ns, end ns) of windows with fills
     for wt, ref in items:
-        why = exclusion(g, wt, ref, cfg.min_trade_coverage)
+        why = exclusion(g, wt, ref, cfg.min_trade_coverage, cfg.max_inferred_share)
         if why == "stale_rest_diagnostic" and ref.outcome is not None:
             res = WindowSim(g, wt, ref, cfg, features=features_factory(g, ref, cfg) if features_factory else None).run()
             out.append({**res, "eligible": False, "excluded": why})
