@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import hashlib
 import os
+import tempfile
 import time
 import zlib
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -25,6 +26,33 @@ import orjson
 import zstandard
 
 FLUSH_INTERVAL_S = 1.0
+
+
+def sync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def atomic_write(path: Path, data: bytes, *, replace: bool = True) -> None:
+    """Publish complete bytes, including across concurrent readers and process restarts."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix="." + path.name, delete=False) as tmp:
+        partial = Path(tmp.name)
+        try:
+            tmp.write(data)
+            tmp.flush()
+            os.fchmod(tmp.fileno(), path.stat().st_mode & 0o777 if path.exists() else 0o644)
+            os.fsync(tmp.fileno())
+            if replace:
+                os.replace(partial, path)
+            else:
+                os.link(partial, path)
+            sync_directory(path.parent)
+        finally:
+            partial.unlink(missing_ok=True)
 
 
 def segment_path(root: Path, stream: str, wall_ns: int) -> Path:
@@ -47,6 +75,7 @@ class SegmentWriter:
     root: Path
     stream: str
     level: int = 6
+    initial_seq: InitVar[int] = 0
     _path: Path | None = None
     _fh: BinaryIO | None = None
     _buf: list[bytes] = field(default_factory=list)
@@ -56,10 +85,10 @@ class SegmentWriter:
     _cctx: Any = None
     _hash: Any = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, initial_seq: int) -> None:
         self.root = Path(self.root)
         self._cctx = zstandard.ZstdCompressor(level=self.level)
-        self._seq = self._resume_seq()
+        self._seq = max(initial_seq, self._resume_seq())
 
     # -- public -------------------------------------------------------------------------------
     def append(self, raw: str | bytes, tw: int | None = None, tm: int | None = None,

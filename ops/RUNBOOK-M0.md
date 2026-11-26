@@ -44,7 +44,19 @@ Two streams need venue auth. Neither key is stored in this repo, in `/opt/doppel
 
 ## Health
 - `cat /mnt/volume_nyc1_1793485122853/doppel/tape/status.json`: per-source msgs, reconnects, stalls, last-message age.
-- `ls /mnt/volume_nyc1_1793485122853/doppel/tape/receipts/YYYYMMDD/`: hourly receipts (built automatically at each hour change).
+- `ls /mnt/volume_nyc1_1793485122853/doppel/tape/receipts/YYYYMMDD/` lists the retained hourly receipts.
+  With the reviewed v2 producer installed, each final receipt pins compressed byte length and
+  SHA-256 to a published segment revision. The Apex recorder waits for the raw BRTI importer
+  to commit a publication at or beyond the start of the following UTC hour. The 15-minute import
+  timer can therefore delay an hourly receipt. The recorder retries pending hours after restart.
+  Original receipts survive reruns. A completed hour missing its expected raw BRTI stream has
+  an explicit `missing_expected_streams` entry and cannot support a binding evaluation.
+- The reviewed importer stages revisions in `ref_brti_raw/.import-work` and resumes prepared
+  transactions on retry. `ref_brti_raw/import-watermark.json` records the last committed
+  publication in milliseconds. Previously unseen older observations are retained separately
+  in `ref_brti_raw/import-amendments.jsonl` with their original receive time. Sealed evaluations
+  use the committed stream. Preserve any amendments with the importer state when investigating
+  upstream data revisions.
 - `doppel-tape verify --data /mnt/volume_nyc1_1793485122853/doppel/tape`: sha256 and CRC over every closed segment.
 - `pmus_ws`: `heartbeats` should rise, `subscribed` (open requests) should be 8 (2 horizons x current
   and next window x book and trades), up to 12 while an ended window lingers, and `sub_errors` / `resubscribes` should stay
