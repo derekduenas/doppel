@@ -588,13 +588,21 @@ async fn brti_polls_signed_and_backs_off_on_429() {
 // ------------------------------------------------------------------------------------------------
 // Kalshi WS
 
-#[tokio::test]
-async fn kalshi_ws_signed_subscribe_rollover_and_seq_gap() {
-    let d = setup();
+struct KalshiMock {
+    url: String,
+    rest: String,
+    profile: PathBuf,
+    cmds: Arc<Mutex<Vec<Value>>>,
+    sig_ok: Arc<Mutex<Vec<(String, bool)>>>,
+}
+
+/// A Kalshi-like WS server plus REST universe. `gap`: the first subscription's book skips a seq.
+/// `reject_updates`: every update_subscription is answered with an error.
+async fn kalshi_mock(d: &Path, gap: bool, reject_updates: bool) -> KalshiMock {
     let (pem, vk) = ed_key();
-    let profile = d.path().join("kalshi-profile.json");
+    let profile = d.join("kalshi-profile.json");
     std::fs::write(&profile, json!({"key_id": "kid-ws", "private_key_pem": pem}).to_string()).unwrap();
-    // REST universe: one open market per series; after a few calls BTC rolls to a new ticker
+    // REST universe: one open market per series; after the first listing BTC rolls to a new ticker
     let calls = Arc::new(Mutex::new(0));
     let c2 = calls.clone();
     let (rest, _seen) = http_server(move |head| {
@@ -608,7 +616,7 @@ async fn kalshi_ws_signed_subscribe_rollover_and_seq_gap() {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("ws://{}/trade-api/ws/v2", l.local_addr().unwrap());
     let cmds: Arc<Mutex<Vec<Value>>> = Arc::default();
-    let sig_ok = Arc::new(Mutex::new(Vec::new()));
+    let sig_ok: Arc<Mutex<Vec<(String, bool)>>> = Arc::default();
     let (cmds2, sig2) = (cmds.clone(), sig_ok.clone());
     tokio::spawn(async move {
         let Ok((s, _)) = l.accept().await else { return };
@@ -624,54 +632,73 @@ async fn kalshi_ws_signed_subscribe_rollover_and_seq_gap() {
             let c: Value = serde_json::from_str(t.as_str()).unwrap();
             cmds2.lock().unwrap().push(c.clone());
             let id = c["id"].as_u64().unwrap();
+            let mut send = Vec::new();
             match c["cmd"].as_str().unwrap() {
                 "subscribe" => {
                     let first = sid == 0;
                     let (a, b) = (sid + 1, sid + 2);
                     sid += 2;
                     for (s, ch) in [(a, "orderbook_delta"), (b, "trade")] {
-                        let m = json!({"id": id, "type": "subscribed", "msg": {"channel": ch, "sid": s}});
-                        ws.send(Message::Text(m.to_string().into())).await.unwrap();
+                        send.push(json!({"id": id, "type": "subscribed", "msg": {"channel": ch, "sid": s}}));
                     }
-                    let t = "KXBTC15M-A";
-                    let seqs: &[u64] = if first { &[1, 2, 4] } else { &[1, 2, 3] }; // first one has a gap
-                    for (i, q) in seqs.iter().enumerate() {
-                        let typ = if i == 0 { "orderbook_snapshot" } else { "orderbook_delta" };
-                        let m = json!({"type": typ, "sid": a, "seq": q, "msg": {"market_ticker": t}});
-                        ws.send(Message::Text(m.to_string().into())).await.unwrap();
+                    let mut q = 0;
+                    for tk in c["params"]["market_tickers"].as_array().unwrap() {
+                        q += 1;
+                        send.push(json!({"type": "orderbook_snapshot", "sid": a, "seq": q, "msg": {"market_ticker": tk}}));
                     }
-                    let m = json!({"type": "trade", "sid": b, "seq": 1, "msg": {"market_ticker": t}});
-                    ws.send(Message::Text(m.to_string().into())).await.unwrap();
+                    q += if gap && first { 2 } else { 1 };
+                    send.push(json!({"type": "orderbook_delta", "sid": a, "seq": q, "msg": {"market_ticker": "KXBTC15M-A"}}));
+                    send.push(json!({"type": "trade", "sid": b, "seq": 1, "msg": {"market_ticker": "KXBTC15M-A"}}));
                 }
                 "unsubscribe" => {
                     for s in c["params"]["sids"].as_array().unwrap() {
-                        let m = json!({"id": id, "sid": s, "seq": 99, "type": "unsubscribed"});
-                        ws.send(Message::Text(m.to_string().into())).await.unwrap();
+                        send.push(json!({"id": id, "sid": s, "seq": 99, "type": "unsubscribed"}));
                     }
                 }
-                _ => {
-                    let m = json!({"id": id, "type": "ok", "msg": {}});
-                    ws.send(Message::Text(m.to_string().into())).await.unwrap();
+                "update_subscription" if reject_updates => {
+                    send.push(json!({"id": id, "type": "error", "msg": {"code": 13, "msg": "unsupported action"}}));
                 }
+                _ => {
+                    send.push(json!({"id": id, "type": "ok", "msg": {}}));
+                    if c["params"]["action"] == "add_markets" && c["params"]["sids"][0].as_u64() == Some(sid - 1) {
+                        for tk in c["params"]["market_tickers"].as_array().unwrap() {
+                            send.push(json!({"type": "orderbook_snapshot", "sid": sid - 1, "msg": {"market_ticker": tk}}));
+                        }
+                    }
+                }
+            }
+            for m in send {
+                ws.send(Message::Text(m.to_string().into())).await.unwrap();
             }
         }
     });
-    let (rec, wt) = writer(d.path(), "kalshi_ws");
+    KalshiMock { url, rest: format!("{rest}/trade-api/v2"), profile, cmds, sig_ok }
+}
+
+async fn run_kalshi(d: &Path, m: &KalshiMock, ms: u64) -> (Vec<Value>, Vec<Value>, Arc<doppel_tape::recorder::Stats>) {
+    let (rec, wt) = writer(d, "kalshi_ws");
     let stats = rec.stats.clone();
     let mut v = KalshiWs::new();
-    v.url = url;
-    v.profile_path = Some(profile);
-    v.universe = doppel_tape::universe::KalshiUniverse::new(&format!("{rest}/trade-api/v2"));
+    v.url = m.url.clone();
+    v.profile_path = Some(m.profile.clone());
+    v.universe = doppel_tape::universe::KalshiUniverse::new(&m.rest);
     v.universe.refresh = Duration::from_millis(500);
     let (tx, rx) = watch::channel(false);
     let h = tokio::spawn(run_ws(v, rec, rx, fast()));
-    tokio::time::sleep(Duration::from_millis(3500)).await;
+    tokio::time::sleep(Duration::from_millis(ms)).await;
     tx.send(true).unwrap();
     tokio::time::timeout(Duration::from_secs(5), h).await.unwrap().unwrap();
     wt.join();
+    let cmds = m.cmds.lock().unwrap().clone();
+    (cmds, tape(d, "kalshi_ws"), stats)
+}
 
-    assert_eq!(sig_ok.lock().unwrap().clone(), vec![("kid-ws".to_string(), true)]);
-    let cmds = cmds.lock().unwrap().clone();
+#[tokio::test]
+async fn kalshi_ws_signed_subscribe_rollover_and_seq_gap() {
+    let d = setup();
+    let m = kalshi_mock(d.path(), true, false).await;
+    let (cmds, recs, stats) = run_kalshi(d.path(), &m, 3500).await;
+    assert_eq!(m.sig_ok.lock().unwrap().clone(), vec![("kid-ws".to_string(), true)]);
     let names: Vec<&str> = cmds.iter().map(|c| c["cmd"].as_str().unwrap()).collect();
     assert_eq!(&names[..3], ["subscribe", "unsubscribe", "subscribe"], "{cmds:?}");
     assert_eq!(cmds[0]["params"]["channels"], json!(["orderbook_delta", "trade"]));
@@ -684,14 +711,63 @@ async fn kalshi_ws_signed_subscribe_rollover_and_seq_gap() {
         && c["params"]["sids"] == json!([3])));
     assert!(upd.iter().any(|c| c["params"]["action"] == "add_markets" && c["params"]["sids"] == json!([4])));
     assert!(upd.iter().any(|c| c["params"]["action"] == "delete_markets" && c["params"]["market_tickers"] == json!(["KXBTC15M-A"])));
-    let recs = tape(d.path(), "kalshi_ws");
     let c = ctls(&recs);
     assert!(c.contains(&"seq_gap".to_string()) && c.contains(&"resubscribe".to_string()), "{c:?}");
     let gap = recs.iter().find(|r| r["meta"]["ctl"] == "seq_gap").unwrap();
-    assert_eq!(gap["meta"], json!({"ctl": "seq_gap", "sid": 1, "channel": "orderbook_delta", "expected": 3, "got": 4}));
+    assert_eq!(gap["meta"], json!({"ctl": "seq_gap", "sid": 1, "channel": "orderbook_delta", "expected": 5, "got": 6}));
     assert_eq!(stats.extra("seq_gaps").unwrap(), 1);
+    assert_eq!(stats.extra("resubscribes").unwrap(), 1);
+    assert!(!c.contains(&"no_data".to_string()) && !c.contains(&"sub_error".to_string()), "{c:?}");
     // every server frame is recorded raw
-    assert!(recs.iter().filter(|r| r["raw"].as_str().unwrap().contains("orderbook_delta")).count() >= 4);
+    assert!(recs.iter().filter(|r| r["raw"].as_str().unwrap().contains("orderbook_snapshot")).count() >= 9);
     let text = serde_json::to_string(&recs).unwrap();
     assert!(!text.contains("PRIVATE KEY"));
+}
+
+#[tokio::test]
+async fn kalshi_ws_rejected_update_resubscribes_with_new_set() {
+    let d = setup();
+    let m = kalshi_mock(d.path(), false, true).await;
+    let (cmds, recs, stats) = run_kalshi(d.path(), &m, 2500).await;
+    let names: Vec<&str> = cmds.iter().map(|c| c["cmd"].as_str().unwrap()).collect();
+    let first_upd = names.iter().position(|n| *n == "update_subscription").expect("an update was sent");
+    let unsub = names.iter().position(|n| *n == "unsubscribe").expect("rejected update -> unsubscribe");
+    assert!(unsub > first_upd);
+    let resub = &cmds[names.iter().rposition(|n| *n == "subscribe").unwrap()];
+    assert_eq!(resub["params"]["market_tickers"], json!(["KXBTC15M-B", "KXETH15M-A", "KXSOL15M-A", "KXXRP15M-A"]));
+    let c = ctls(&recs);
+    assert!(c.contains(&"sub_error".to_string()), "{c:?}");
+    let r = recs.iter().find(|r| r["meta"]["ctl"] == "resubscribe").unwrap();
+    assert_eq!(r["meta"]["why"], "update_error");
+    assert_eq!(stats.extra("resubscribes").unwrap(), 1);
+}
+
+#[test]
+fn kalshi_ws_deadlines() {
+    let d = setup();
+    let (rec, _wt) = writer(d.path(), "k");
+    let mut v = KalshiWs::new();
+    v.ack_timeout = Duration::ZERO;
+    let mut out = Out::new();
+    let want: std::collections::BTreeSet<String> = ["T-1".to_string()].into();
+    v.update_tickers(&rec, &mut out, want.clone());
+    assert_eq!(out.len(), 1);
+    // only one of the two acks arrives: reconnect instead of waiting forever
+    v.handle(&json!({"id": 1, "type": "subscribed", "msg": {"channel": "trade", "sid": 7}}).to_string(), &rec, &mut out);
+    v.check_deadlines(&rec, &mut out);
+    assert_eq!(v.take_reconnect().as_deref(), Some("subscribe_ack_timeout"));
+
+    // both acks but no snapshot for a ticker within the deadline: no_data -> resubscribe
+    let mut v = KalshiWs::new();
+    v.snapshot_timeout = Duration::ZERO;
+    let mut out = Out::new();
+    v.update_tickers(&rec, &mut out, want);
+    for (sid, ch) in [(1, "orderbook_delta"), (2, "trade")] {
+        v.handle(&json!({"id": 1, "type": "subscribed", "msg": {"channel": ch, "sid": sid}}).to_string(), &rec, &mut out);
+    }
+    out.clear();
+    v.check_deadlines(&rec, &mut out);
+    let sent: Vec<Value> = out.iter().map(|s| serde_json::from_str(s).unwrap()).collect();
+    assert_eq!(sent, vec![json!({"id": 2, "cmd": "unsubscribe", "params": {"sids": [1, 2]}})]);
+    assert_eq!(rec.stats.extra("resubscribes").unwrap(), 1);
 }

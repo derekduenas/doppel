@@ -137,6 +137,7 @@ pub struct KalshiUniverse {
     pub per_series: usize,
     pub refresh: Duration,
     tickers: Vec<String>,
+    last: HashMap<String, Vec<String>>,
     at: Option<Instant>,
 }
 
@@ -148,6 +149,7 @@ impl KalshiUniverse {
             per_series: 2,
             refresh: Duration::from_secs(20),
             tickers: Vec::new(),
+            last: HashMap::new(),
             at: None,
         }
     }
@@ -165,7 +167,6 @@ impl KalshiUniverse {
             return Ok(self.tickers.clone());
         }
         let mut found = Vec::new();
-        let mut ok = false;
         for s in &self.series {
             let r = client
                 .get(format!("{}/markets", self.base))
@@ -174,9 +175,10 @@ impl KalshiUniverse {
                 .await
                 .map_err(|e| format!("markets: {}", crate::http::err_kind(&e)))?;
             if !r.status().is_success() {
+                // e.g. 429: keep this series' last good listing (Python cached the gap for 20 s too)
+                found.extend(self.last.get(s).cloned().unwrap_or_default());
                 continue;
             }
-            ok = true;
             let v = json_body(r).await?;
             let mut mk: Vec<(String, String)> = v
                 .get("markets")
@@ -192,10 +194,9 @@ impl KalshiUniverse {
                 })
                 .unwrap_or_default();
             mk.sort();
-            found.extend(mk.into_iter().take(self.per_series).map(|(_, t)| t));
-        }
-        if !ok && !self.series.is_empty() {
-            return Err("markets: no series listed".to_string());
+            let got: Vec<String> = mk.into_iter().take(self.per_series).map(|(_, t)| t).collect();
+            self.last.insert(s.clone(), got.clone());
+            found.extend(got);
         }
         self.tickers = found.clone();
         self.at = Some(Instant::now());

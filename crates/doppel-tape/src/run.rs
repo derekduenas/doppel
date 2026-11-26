@@ -167,8 +167,12 @@ pub async fn run(cfg: Config) -> std::io::Result<()> {
             _ = sigterm.recv() => break,
             _ = tokio::signal::ctrl_c() => break,
         }
-        if let Err(e) = write_status(&cfg.data, started, &stats) {
-            eprintln!("doppel-taped: status.json: {e}");
+        // file I/O off the runtime workers: a stalled disk must not stall the socket readers
+        let (d, s) = (cfg.data.clone(), stats.clone());
+        match tokio::task::spawn_blocking(move || write_status(&d, started, &s)).await {
+            Ok(Err(e)) => eprintln!("doppel-taped: status.json: {e}"),
+            Err(e) => eprintln!("doppel-taped: status task: {e}"),
+            Ok(Ok(())) => {}
         }
         if cfg.seconds.is_some_and(|s| started.elapsed().as_secs_f64() >= s) {
             break;
@@ -180,7 +184,8 @@ pub async fn run(cfg: Config) -> std::io::Result<()> {
             eprintln!("doppel-taped: a source did not stop within 10 s");
         }
     }
-    let _ = write_status(&cfg.data, started, &stats);
+    let (d, s) = (cfg.data.clone(), stats.clone());
+    let _ = tokio::task::spawn_blocking(move || write_status(&d, started, &s)).await;
     // every Recorder is gone with its task: writers drain, flush, close and manifest
     tokio::task::spawn_blocking(move || writers.into_iter().for_each(WriterThread::join)).await.ok();
     Ok(())

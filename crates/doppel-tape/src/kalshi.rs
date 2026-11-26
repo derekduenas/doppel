@@ -337,7 +337,12 @@ pub struct KalshiWs {
     pub rest_base: String,
     pub profile_path: Option<PathBuf>,
     pub universe: KalshiUniverse,
+    /// unsubscribe -> unsubscribed round trip during a re-subscribe
     pub resub_timeout: Duration,
+    /// subscribe -> both `subscribed` acks
+    pub ack_timeout: Duration,
+    /// a subscribed ticker must produce its `orderbook_snapshot` within this
+    pub snapshot_timeout: Duration,
     cred: Option<Credential>,
     client: reqwest::Client,
     next_id: u64,
@@ -347,6 +352,11 @@ pub struct KalshiWs {
     pub sids: BTreeMap<u64, String>,
     last_seq: HashMap<u64, u64>,
     sub_id: Option<u64>,
+    sub_sent: Option<Instant>,
+    /// ids of update_subscription commands not yet answered with ok
+    pending_updates: HashSet<u64>,
+    /// subscribed tickers still waiting for their first snapshot, with the time they were asked for
+    awaiting_snapshot: HashMap<String, Instant>,
     resub_since: Option<Instant>,
     retry_at: Option<Instant>,
     reconnect: Option<String>,
@@ -362,6 +372,8 @@ impl KalshiWs {
             profile_path: None,
             universe: KalshiUniverse::new(KALSHI_REST),
             resub_timeout: Duration::from_secs(5),
+            ack_timeout: Duration::from_secs(10),
+            snapshot_timeout: Duration::from_secs(15),
             cred: None,
             client: crate::http::client(10),
             next_id: 0,
@@ -369,6 +381,9 @@ impl KalshiWs {
             sids: BTreeMap::new(),
             last_seq: HashMap::new(),
             sub_id: None,
+            sub_sent: None,
+            pending_updates: HashSet::new(),
+            awaiting_snapshot: HashMap::new(),
             resub_since: None,
             retry_at: None,
             reconnect: None,
@@ -380,15 +395,31 @@ impl KalshiWs {
         self.next_id
     }
 
+    fn reset(&mut self) {
+        self.tickers.clear();
+        self.sids.clear();
+        self.last_seq.clear();
+        self.sub_id = None;
+        self.sub_sent = None;
+        self.pending_updates.clear();
+        self.awaiting_snapshot.clear();
+        self.resub_since = None;
+        self.retry_at = None;
+        self.reconnect = None;
+    }
+
     fn subscribe(&mut self, rec: &Recorder, out: &mut Out, want: &BTreeSet<String>) {
         let id = self.id();
         let tickers: Vec<_> = want.iter().cloned().collect();
         out.push(json!({"id": id, "cmd": "subscribe", "params": {"channels": CHANNELS, "market_tickers": tickers}}).to_string());
         rec.ctl("subscribe", json!({"id": id, "channels": CHANNELS, "tickers": tickers}));
         self.sub_id = Some(id);
+        self.sub_sent = Some(Instant::now());
         self.tickers = want.clone();
         self.sids.clear();
         self.last_seq.clear();
+        self.pending_updates.clear();
+        self.awaiting_snapshot = want.iter().map(|t| (t.clone(), Instant::now())).collect();
         self.retry_at = None;
     }
 
@@ -407,11 +438,15 @@ impl KalshiWs {
         let id = self.id();
         out.push(json!({"id": id, "cmd": "unsubscribe", "params": {"sids": sids}}).to_string());
         self.last_seq.clear();
+        self.pending_updates.clear();
         self.resub_since = Some(Instant::now());
     }
 
     /// Apply a fresh ticker set to the live subscription.
     pub fn update_tickers(&mut self, rec: &Recorder, out: &mut Out, want: BTreeSet<String>) {
+        if want.is_empty() && !self.tickers.is_empty() {
+            return; // an empty listing (e.g. REST 429s) never tears down a live subscription
+        }
         if self.resub_since.is_some() {
             self.tickers = want; // applied by the re-subscribe
             return;
@@ -423,7 +458,7 @@ impl KalshiWs {
             return;
         }
         if self.sids.len() < CHANNELS.len() {
-            return; // wait for both subscribed acks
+            return; // wait for both subscribed acks (ack_timeout reconnects if they never come)
         }
         let added: Vec<_> = want.difference(&self.tickers).cloned().collect();
         let removed: Vec<_> = self.tickers.difference(&want).cloned().collect();
@@ -431,25 +466,59 @@ impl KalshiWs {
         if !added.is_empty() {
             for sid in &sids {
                 let id = self.id();
+                self.pending_updates.insert(id);
                 out.push(json!({"id": id, "cmd": "update_subscription", "params": {"sids": [sid], "market_tickers": added, "action": "add_markets"}}).to_string());
             }
             rec.ctl("subscribe_add", json!({"tickers": added}));
+            for t in &added {
+                self.awaiting_snapshot.insert(t.clone(), Instant::now());
+            }
         }
         if !removed.is_empty() {
             for sid in &sids {
                 let id = self.id();
+                self.pending_updates.insert(id);
                 out.push(json!({"id": id, "cmd": "update_subscription", "params": {"sids": [sid], "market_tickers": removed, "action": "delete_markets"}}).to_string());
             }
             rec.ctl("unsubscribe", json!({"tickers": removed}));
+            for t in &removed {
+                self.awaiting_snapshot.remove(t);
+            }
         }
         self.tickers = want;
         rec.stats.set_extra("subscribed", self.tickers.len());
+    }
+
+    /// Deadlines: subscribe acks, re-subscribe round trip, first snapshot per ticker.
+    pub fn check_deadlines(&mut self, rec: &Recorder, out: &mut Out) {
+        if let Some(t) = self.resub_since {
+            if t.elapsed() >= self.resub_timeout {
+                self.reconnect = Some("resubscribe_timeout".into());
+            }
+            return;
+        }
+        if self.sub_id.is_some() && self.sids.len() < CHANNELS.len() && self.sub_sent.is_some_and(|t| t.elapsed() >= self.ack_timeout) {
+            rec.ctl("no_ack", json!({"id": self.sub_id, "sids": self.sids.keys().collect::<Vec<_>>()}));
+            self.reconnect = Some("subscribe_ack_timeout".into());
+            return;
+        }
+        let mut late: Vec<String> =
+            self.awaiting_snapshot.iter().filter(|(_, t)| t.elapsed() >= self.snapshot_timeout).map(|(k, _)| k.clone()).collect();
+        if !late.is_empty() {
+            late.sort();
+            rec.ctl("no_data", json!({"missing": late, "waited_s": self.snapshot_timeout.as_secs_f64()}));
+            for t in &late {
+                self.awaiting_snapshot.remove(t); // re-armed by the re-subscribe
+            }
+            self.resubscribe(rec, out, "no_data");
+        }
     }
 
     pub fn handle(&mut self, raw: &str, rec: &Recorder, out: &mut Out) {
         let Ok(Value::Object(d)) = serde_json::from_str::<Value>(raw) else { return };
         let typ = d.get("type").and_then(Value::as_str).unwrap_or("");
         let msg = d.get("msg");
+        let id = d.get("id").and_then(Value::as_u64);
         match typ {
             "subscribed" => {
                 let sid = msg.and_then(|m| m.get("sid")).and_then(Value::as_u64);
@@ -458,6 +527,12 @@ impl KalshiWs {
                     self.sids.insert(sid, ch.to_string());
                 }
                 rec.stats.set_extra("subscribed", self.tickers.len());
+                return;
+            }
+            "ok" => {
+                if let Some(id) = id {
+                    self.pending_updates.remove(&id);
+                }
                 return;
             }
             "unsubscribed" => {
@@ -478,20 +553,28 @@ impl KalshiWs {
             }
             "error" => {
                 rec.stats.incr("sub_errors");
-                let id = d.get("id").cloned().unwrap_or(Value::Null);
                 let code = msg.and_then(|m| m.get("code")).cloned().unwrap_or(Value::Null);
                 let text: String = msg.and_then(|m| m.get("msg")).and_then(Value::as_str).unwrap_or("").chars().take(300).collect();
                 rec.ctl("sub_error", json!({"id": id, "code": code, "error": text}));
-                if id.as_u64().is_some() && id.as_u64() == self.sub_id && self.sids.is_empty() {
+                if id.is_some() && id == self.sub_id && self.sids.is_empty() {
                     self.sub_id = None; // the subscribe itself failed: retry later
+                    self.sub_sent = None;
+                    self.awaiting_snapshot.clear();
                     self.retry_at = Some(Instant::now() + Duration::from_secs(5));
-                }
-                if let Some(sid) = d.get("sid").and_then(Value::as_u64) {
+                } else if id.is_some_and(|i| self.pending_updates.remove(&i)) {
+                    // add/delete_markets rejected: the live set is not what we think it is
+                    self.resubscribe(rec, out, "update_error");
+                } else if let Some(sid) = d.get("sid").and_then(Value::as_u64) {
                     // a running subscription was ended by the server (codes 10/25)
                     self.sids.remove(&sid);
                     self.resubscribe(rec, out, "server_error");
                 }
                 return;
+            }
+            "orderbook_snapshot" => {
+                if let Some(t) = msg.and_then(|m| m.get("market_ticker")).and_then(Value::as_str) {
+                    self.awaiting_snapshot.remove(t);
+                }
             }
             _ => {}
         }
@@ -545,13 +628,7 @@ impl WsVenue for KalshiWs {
         Ok(c.headers(&url_path(&self.url)))
     }
     async fn on_open(&mut self, rec: &Recorder, out: &mut Out) -> Result<(), String> {
-        self.tickers.clear();
-        self.sids.clear();
-        self.last_seq.clear();
-        self.sub_id = None;
-        self.resub_since = None;
-        self.retry_at = None;
-        self.reconnect = None;
+        self.reset();
         let want: BTreeSet<String> = match self.universe.tickers(&self.client).await {
             Ok(t) => t.into_iter().collect(),
             Err(e) => {
@@ -563,11 +640,9 @@ impl WsVenue for KalshiWs {
         Ok(())
     }
     async fn on_tick(&mut self, rec: &Recorder, out: &mut Out) -> Result<(), String> {
-        if let Some(t) = self.resub_since {
-            if t.elapsed() >= self.resub_timeout {
-                self.reconnect = Some("resubscribe_timeout".into());
-                return Ok(());
-            }
+        self.check_deadlines(rec, out);
+        if self.reconnect.is_some() || self.resub_since.is_some() {
+            return Ok(());
         }
         if !self.universe.due() && (self.sub_id.is_some() || self.retry_at.is_some_and(|t| Instant::now() < t)) {
             return Ok(());

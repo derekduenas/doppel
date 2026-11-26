@@ -231,9 +231,36 @@ pub fn resume_seq(root: &Path, stream: &str) -> io::Result<u64> {
         }
     }
     if let Some(newest) = newest_segment(&sdir)? {
-        for rec in read_segment(&newest, false)? {
-            last = last.max(rec.get("seq").and_then(Value::as_u64).unwrap_or(0));
+        last = last.max(max_seq(&newest)?);
+    }
+    Ok(last)
+}
+
+/// Highest `seq` in a segment, streaming (memory: one chunk plus one line), tolerant of a
+/// truncated tail.
+fn max_seq(path: &Path) -> io::Result<u64> {
+    #[derive(serde::Deserialize)]
+    struct Seq {
+        seq: u64,
+    }
+    let mut dec = zstd::stream::read::Decoder::new(File::open(path)?)?;
+    let mut buf = Vec::new();
+    let mut chunk = vec![0u8; 1 << 16];
+    let mut last = 0;
+    loop {
+        let n = match dec.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        buf.extend_from_slice(&chunk[..n]);
+        let mut start = 0;
+        while let Some(i) = buf[start..].iter().position(|b| *b == b'\n') {
+            if let Ok(s) = serde_json::from_slice::<Seq>(&buf[start..start + i]) {
+                last = last.max(s.seq);
+            }
+            start += i + 1;
         }
+        buf.drain(..start);
     }
     Ok(last)
 }

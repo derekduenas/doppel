@@ -20,7 +20,9 @@ use serde_json::{json, Map, Value};
 use crate::clock::{mono_ns, wall_ns};
 use crate::segment::{SegmentWriter, FLUSH_INTERVAL};
 
-pub const DEFAULT_QUEUE: usize = 65_536;
+/// Records per stream channel. Bounded by count: at ~4 KB a record this is ~16 MB per stream, so a
+/// disk stall turns into explicit `backpressure_drop` markers well before the unit's memory cap.
+pub const DEFAULT_QUEUE: usize = 4096;
 
 /// Per-source counters behind status.json (same keys as Python's `SourceStats.as_dict`).
 #[derive(Default)]
