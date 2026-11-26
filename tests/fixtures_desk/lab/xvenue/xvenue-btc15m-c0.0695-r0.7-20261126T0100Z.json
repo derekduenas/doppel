@@ -1,0 +1,27 @@
+{
+  "windows": [],
+  "equivalence": {
+    "checked": 13,
+    "strike_match": 13,
+    "result_match": 13
+  },
+  "params": {
+    "max_age_s": 3,
+    "max_skew_s": 2,
+    "persist_s": 2
+  },
+  "summary": {
+    "windows": 14,
+    "arb_seconds": 310,
+    "episodes": 14,
+    "episode_dollars": 28.2,
+    "episode_dollars_ex_last60s": 20.1,
+    "windows_with_arb": 9,
+    "arb_dollars_upper_total": 140.0,
+    "note": "upper bound"
+  },
+  "fees": {
+    "pmus_coef": 0.0695,
+    "pmus_rebate": 0.7
+  }
+}

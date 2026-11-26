@@ -1,0 +1,36 @@
+{
+  "tw": 1796104796000000000,
+  "pid": 4242,
+  "uptime_s": 86000,
+  "sources": {
+    "rtds_a": {
+      "msgs": 120345,
+      "reconnects": 2,
+      "stalls": 1,
+      "errors": 0,
+      "connected": true,
+      "last_msg_age_s": 0.4,
+      "last_error": null
+    },
+    "pmus_ws_5m": {
+      "msgs": 50211,
+      "reconnects": 0,
+      "stalls": 0,
+      "errors": 3,
+      "connected": true,
+      "last_msg_age_s": 1.2,
+      "last_error": "ConnectionClosedError: </script><b>x</b>",
+      "heartbeats": 40
+    },
+    "kalshi_books": {
+      "msgs": 900,
+      "reconnects": 0,
+      "stalls": 0,
+      "errors": 0,
+      "connected": false,
+      "last_msg_age_s": 95.0,
+      "last_error": null,
+      "targets": 4
+    }
+  }
+}

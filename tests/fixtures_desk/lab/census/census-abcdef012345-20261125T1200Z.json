@@ -1,0 +1,17 @@
+{
+  "cohort_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+  "built_tw": 1795612800000000000,
+  "wallets": {},
+  "by_label": {
+    "cand:MIXED": {
+      "wallets": 9,
+      "per_day": 1.0,
+      "positive": 1
+    }
+  },
+  "selfcheck": {
+    "window_specialists": 0,
+    "ok": 0,
+    "rate": null
+  }
+}
