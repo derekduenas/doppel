@@ -11,6 +11,17 @@
         "takes": 0
       }
     },
+    "0bb14d76313d905c32c4d8751a1eb50d23e411bce3e7bdda73c882e284f5c058": {
+      "expression_sha256": "91956257beb6dc129f0f22d83627a0e7fef5aec3fefec2a31350a481837d49b8",
+      "n": 4000,
+      "name": "h3-placebo-block",
+      "stats": {
+        "paused": 2493,
+        "quote_both": 970,
+        "quote_one": 537,
+        "takes": 0
+      }
+    },
     "0f6ca81ce041c4b54ff758f2db83d2457c0b4d6a2a3d45af82d06a19ae2d717a": {
       "expression_sha256": "ddf9a589c8e4c2282e44c27242ddd037e740f1997f87ad03ea3c4312051934b0",
       "n": 4000,
