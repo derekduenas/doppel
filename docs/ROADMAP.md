@@ -46,6 +46,22 @@ deterministic code and preregistered gates decide.
    the population mean); feeds W3.
 6. **Decay / regime detection:** BOCPD + e-processes on live edge per genome; feeds W9.
 
+## Astra review (2026-11-26), adopted
+
+Objective for every component: **which action adds the most net dollars to the portfolio at affordable risk.**
+Sometimes that is posting, keeping queue, cancelling, hedging, or sitting out.
+
+| # | Item | Status |
+|---|---|---|
+| A1 | Fill-conditional edge: settlement distribution + execution model + portfolio value | E24 measured on public prints; feeds W10 fill/adverse model |
+| A2 | Flow guard test that can fail: base / anonymous / identified / rate-matched placebo + delay sweep | **H3 sealed** (window 11-27..11-30) |
+| A3a | Same-settlement structural scanner (ordered strikes, both venues), prospective, incl. one-leg failures | agent building |
+| A3b | Hedge-priced market making (US quote from the distribution of the executable Kalshi hedge) | needs `kalshi_ws` (Rust recorder) |
+| A3c | Cancel-vs-keep policy; 5 Hz raw BRTI lead in the final minute | after Rust fast-fair |
+| A4 | Research agents write competing explanations + a distinguishing future observation; deterministic evaluator alone sees locked windows; experiments ranked by $ of decision changed per cost | planned (M5) |
+| A5 | Two-venue reconciled portfolio replay (shared cash, inventory, queue, hedge depth; partial fills, lost acks, restart) | planned after `kalshi_ws` |
+| A6 | Commercial hurdle replaces "$ > 0": lower bound $/day after operating cost, best-day share, ex-incentives | **in twin verdict** |
+
 ## M6: Perps expansion (PM intl perps as the lab, Kalshi perps as the venue)
 
 **Why.** The crypto-window census says the money goes to makers. Perps are the deepest continuous
