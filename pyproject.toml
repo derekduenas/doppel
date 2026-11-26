@@ -67,3 +67,4 @@ packages = ["src/doppel"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+pythonpath = ["."]   # tests import ops/ scripts (e.g. ops.archive_tape); deploy.sh runs plain pytest
