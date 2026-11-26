@@ -36,7 +36,8 @@ from ..tape.sources.base import SSL_CTX, UA
 
 KALSHI = "https://api.elections.kalshi.com/trade-api/v2"
 PMUS = "https://gateway.polymarket.us/v1"
-PMUS_COEF = 0.095
+PMUS_COEF = 0.095  # gateway feeCoefficient; docs: API takers 0.0695 (+70% rebate to 2026-12-31). Override: --pmus-coef
+PMUS_REBATE = 0.0  # fraction of the PM US taker fee rebated (API promo: 0.70)
 KALSHI_COEF = 0.07
 
 
@@ -52,7 +53,7 @@ def _iso(s: str) -> int:
 
 def pmus_fee(p: float, n: float = 1.0) -> float:
     """Dollars for n contracts at price p, cent half-even (Python round = banker's)."""
-    return round(PMUS_COEF * n * p * (1 - p), 2)
+    return round(round(PMUS_COEF * n * p * (1 - p), 2) * (1 - PMUS_REBATE), 4)
 
 
 def kalshi_fee(p: float, n: float = 1.0) -> float:
@@ -218,12 +219,18 @@ def run(root: Path, lab: Path, max_age: float = 1.0, skew: float = 0.5, persist:
 
 
 def main(argv=None) -> int:
+    global PMUS_COEF, PMUS_REBATE
     ap = argparse.ArgumentParser(prog="doppel-xvenue")
     ap.add_argument("--data", type=Path, required=True)
     ap.add_argument("--lab", type=Path, required=True)
+    ap.add_argument("--pmus-coef", type=float, default=PMUS_COEF)
+    ap.add_argument("--pmus-rebate", type=float, default=0.0, help="API promo 0.70 through 2026-12-31")
     a = ap.parse_args(argv)
+    PMUS_COEF, PMUS_REBATE = a.pmus_coef, a.pmus_rebate
     res = run(a.data, a.lab)
-    out = a.lab / "xvenue" / f"xvenue-btc15m-{time.strftime('%Y%m%dT%H%MZ', time.gmtime())}.json"
+    res["fees"] = {"pmus_coef": PMUS_COEF, "pmus_rebate": PMUS_REBATE}
+    tag = f"c{PMUS_COEF:g}-r{PMUS_REBATE:g}"
+    out = a.lab / "xvenue" / f"xvenue-btc15m-{tag}-{time.strftime('%Y%m%dT%H%MZ', time.gmtime())}.json"
     out.write_bytes(orjson.dumps(res, option=orjson.OPT_INDENT_2))
     print("equivalence:", res["equivalence"])
     print("summary:", res["summary"])
