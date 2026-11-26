@@ -8,13 +8,20 @@
 //!   jump is recorded as `ctl: seq_gap` and the connection is dropped, so the reconnect brings a
 //!   fresh snapshot and a fresh sequence (Gemini's docs prescribe exactly this). `run_ws`'s
 //!   backoff rate-limits repeated gaps.
-//! - Crypto.com deltas carry `pu` = previous `u`: same handling.
+//! - Crypto.com is subscribed as PERELMAN does (`book.BTC_USD.150`, full 150-level snapshots,
+//!   ~2.3/s). Its delta mode exists only at depth 50 ("Unsupported depth/interval combination" at
+//!   150, probed 2026-11-26); should deltas arrive, `pu` must equal the previous `u`.
 //! - Kraken has no sequence, only a CRC32 of the top 10 levels; it is checked offline by the
 //!   decoder (keeping book state out of the recorder).
 //! - A backpressure drop leaves a hole in the tape even though the socket is fine, so delta venues
 //!   reconnect for a fresh snapshot when `backpressure_drops` moves.
+//!
+//! Heartbeats are recorded (they carry the sequence) and so keep the stall watchdog quiet; a
+//! subscription the venue rejected would then look healthy forever. So every venue must also
+//! deliver a book frame at least every `no_data_s`, or the connection is dropped (`ctl: no_data`).
 
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -39,7 +46,10 @@ enum V {
 
 pub struct SpotL2 {
     pub url: String,
+    /// longest wait for a book frame (snapshot or delta) before reconnecting
+    pub no_data_s: f64,
     v: V,
+    last_book: Instant,
     last_seq: Option<u64>,
     drops_seen: u64,
     reconnect: Option<String>,
@@ -65,11 +75,24 @@ impl SpotL2 {
             V::Cryptocom => "wss://stream.crypto.com/exchange/v1/market",
             V::Bullish => "wss://api.exchange.bullish.com/trading-api/v1/market-data/orderbook",
         };
-        Some(Self { url: url.into(), v, last_seq: None, drops_seen: 0, reconnect: None })
+        Some(Self { url: url.into(), no_data_s: 30.0, v, last_book: Instant::now(), last_seq: None, drops_seen: 0, reconnect: None })
     }
 
     fn incremental(&self) -> bool {
-        matches!(self.v, V::Coinbase | V::Kraken | V::Gemini | V::Cryptocom)
+        matches!(self.v, V::Coinbase | V::Kraken | V::Gemini)
+    }
+
+    /// A frame that carries book data (not an ack, heartbeat, pong or error).
+    fn is_book(&self, m: &Value) -> bool {
+        let s = |v: Option<&Value>| v.and_then(Value::as_str).unwrap_or("").to_string();
+        match self.v {
+            V::Coinbase => s(m.get("channel")) == "l2_data",
+            V::Kraken => s(m.get("channel")) == "book",
+            V::Bitstamp => s(m.get("event")) == "data",
+            V::Gemini => s(m.get("type")) == "update",
+            V::Cryptocom => s(m.get("result").and_then(|r| r.get("channel"))).starts_with("book"),
+            V::Bullish => s(m.get("dataType")) == "V1TALevel2",
+        }
     }
 
     fn subscriptions(&self) -> Vec<Value> {
@@ -81,9 +104,7 @@ impl SpotL2 {
             V::Kraken => vec![json!({"method": "subscribe", "params": {"channel": "book", "symbol": ["BTC/USD"], "depth": 1000}})],
             V::Bitstamp => vec![json!({"event": "bts:subscribe", "data": {"channel": "order_book_btcusd"}})],
             V::Gemini => vec![], // the URL is the subscription
-            V::Cryptocom => vec![
-                json!({"id": 1, "method": "subscribe", "params": {"channels": ["book.BTC_USD.150"], "book_subscription_type": "SNAPSHOT_AND_UPDATE"}}),
-            ],
+            V::Cryptocom => vec![json!({"id": 1, "method": "subscribe", "params": {"channels": ["book.BTC_USD.150"]}})],
             V::Bullish => vec![
                 json!({"jsonrpc": "2.0", "type": "command", "method": "subscribe", "params": {"topic": "l2Orderbook", "symbol": "BTCUSD"}, "id": "1"}),
             ],
@@ -112,6 +133,9 @@ impl SpotL2 {
             return; // already leaving this connection
         }
         let Ok(m) = serde_json::from_str::<Value>(raw) else { return };
+        if self.is_book(&m) {
+            self.last_book = Instant::now();
+        }
         match self.v {
             V::Coinbase => {
                 if let Some(s) = m.get("sequence_num").and_then(Value::as_u64) {
@@ -171,16 +195,18 @@ impl WsVenue for SpotL2 {
         (self.v == V::Bullish).then_some((BULLISH_PING, 30.0))
     }
     fn wants_feedback(&self) -> bool {
-        matches!(self.v, V::Coinbase | V::Gemini | V::Cryptocom | V::Bitstamp)
+        true
     }
     async fn prepare(&mut self, rec: &Recorder) -> bool {
-        rec.stats.set_extra("seq_gaps", 0);
-        rec.stats.set_extra("resyncs", 0);
+        for k in ["seq_gaps", "resyncs", "no_data"] {
+            rec.stats.set_extra(k, 0);
+        }
         true
     }
     async fn on_open(&mut self, rec: &Recorder, out: &mut Out) -> Result<(), String> {
         self.last_seq = None;
         self.reconnect = None;
+        self.last_book = Instant::now();
         self.drops_seen = rec.stats.backpressure_drops.load(Ordering::Relaxed);
         let subs = self.subscriptions();
         for s in &subs {
@@ -196,6 +222,11 @@ impl WsVenue for SpotL2 {
             self.reconnect = Some("backpressure_drop".into());
         }
         self.drops_seen = drops;
+        if self.reconnect.is_none() && self.last_book.elapsed() > Duration::from_secs_f64(self.no_data_s) {
+            rec.stats.incr("no_data");
+            rec.ctl("no_data", json!({"waited_s": self.no_data_s}));
+            self.reconnect = Some("no_data".into());
+        }
         Ok(())
     }
     fn on_feedback(&mut self, raw: &str, rec: &Recorder, out: &mut Out) {
@@ -276,6 +307,31 @@ mod tests {
         assert_eq!(bs.take_reconnect(), None);
         k.on_tick(&r, &mut out).await.unwrap();
         assert_eq!(k.take_reconnect(), None);
+        drop(r);
+        w.join();
+    }
+
+    #[tokio::test]
+    async fn heartbeats_alone_trigger_no_data() {
+        let (_d, r, w) = rec();
+        let mut out = Out::new();
+        let mut c = SpotL2::new("cryptocom").unwrap();
+        c.no_data_s = 0.2;
+        c.on_open(&r, &mut out).await.unwrap();
+        // a rejected subscription (seen live at depth 150 in delta mode), then only heartbeats
+        c.handle(r#"{"id":1,"method":"subscribe","code":40003,"message":"Unsupported depth/interval combination"}"#, &r, &mut out);
+        c.on_tick(&r, &mut out).await.unwrap();
+        assert_eq!(c.take_reconnect(), None);
+        std::thread::sleep(Duration::from_millis(150));
+        c.handle(&json!({"result": {"channel": "book", "data": [{"u": 1}]}}).to_string(), &r, &mut out);
+        std::thread::sleep(Duration::from_millis(150));
+        c.handle(r#"{"id":5,"method":"public/heartbeat","code":0}"#, &r, &mut out);
+        c.on_tick(&r, &mut out).await.unwrap();
+        assert_eq!(c.take_reconnect(), None, "a book frame 150 ms ago");
+        std::thread::sleep(Duration::from_millis(150));
+        c.on_tick(&r, &mut out).await.unwrap();
+        assert_eq!(c.take_reconnect().as_deref(), Some("no_data"));
+        assert_eq!(r.stats.extra("no_data").unwrap(), 1);
         drop(r);
         w.join();
     }
