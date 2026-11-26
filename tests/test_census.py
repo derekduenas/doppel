@@ -43,3 +43,21 @@ def test_rebates_attributed_by_window_share(tmp_path):
     inc, wv, av, real = attribute_income(rows, tm, ivs)
     assert wv == 100.0 and av == 1000.0 and real == 40.0
     assert inc == {"maker_rebate": 3.0, "taker_rebate": 1.0, "reward_income": 0.0}  # 10 % share
+
+
+def test_sell_only_minter_is_a_complete_set_maker(tmp_path):
+    """Audit 2026-11-26: a maker that mints and SELLS both sides locks a complete set too."""
+    tm = TokenMap(tmp_path / "t.jsonl")
+    slug = f"btc-updown-5m-{S}"
+    tm.m = {"U": {"token": "U", "status": "resolved", "payout": 1.0, "slug": slug, "idx": 0},
+            "D": {"token": "D", "status": "resolved", "payout": 0.0, "slug": slug, "idx": 1}}
+    rows = [{"token_id": "U", "side": "SELL", "amount_shares": 10, "amount_usdc": 5.2, "price": 0.52,
+             "fee": 0.0, "order_type": "maker", "block_timestamp": S + 100},
+            {"token_id": "D", "side": "SELL", "amount_shares": 10, "amount_usdc": 4.9, "price": 0.49,
+             "fee": 0.0, "order_type": "maker", "block_timestamp": S + 110}]
+    fp = fingerprint(rows, tm, lambda w: True)
+    # short 10 Up (pays 10) + short 10 Down (pays 0) for 10.1 proceeds = +0.1 regardless of outcome
+    assert fp["gross"] == 0.1 and fp["locked"] == 0.1 and fp["directional"] == 0.0
+    assert fp["windows"] == 1 and fp["paired_windows"] == 1 and fp["sell_paired_windows"] == 1
+    assert label(fp) == "COMPLETE_SET_MAKER"
+    assert fp["px_entry_p50"] == 0.495  # 1 - 0.52, 1 - 0.49

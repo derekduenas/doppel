@@ -469,3 +469,13 @@ def test_fit_drops_all_nan_and_constant_columns():
     assert names[0] in res["features_dropped"] and names[1] in res["features_dropped"]
     assert res["auc_hgb"] > 0.9
     assert _fit(X[:300], np.zeros(300, int), X[300:], y[300:])["status"] == "insufficient"
+
+
+def test_inventory_counts_short_pairs_of_a_mint_and_sell_maker(tmp_path):
+    """Audit 2026-11-26: selling both Up and Down (mint-and-sell) is a complete set, like buying both."""
+    tm = _tmap(tmp_path, [_tok("U", SLUG, 0, 1.0), _tok("D", SLUG, 1, 0.0)])
+    rows = [_row(0, "U", "SELL", 0.52, sh=10.0, t=START + 1), _row(1, "D", "SELL", 0.49, sh=10.0, t=START + 2)]
+    fills, _ = enrich(rows, tm, BookIndex().finalize(), None)
+    summ, wins = dz.inventory(fills)
+    assert wins[0]["pairs"] == pytest.approx(10.0)
+    assert summ["paired_share_of_gross"] == pytest.approx(0.5)

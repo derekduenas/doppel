@@ -47,7 +47,10 @@ def fingerprint(rows: list[dict], tmap: TokenMap, in_scope) -> dict | None:
     Window-centric accounting: a window is in scope as a whole (all of its fills count), so a
     position is never split across an interval edge. ``run`` selects windows whose END falls inside
     one of G0's snapshot intervals, the same intervals the API income and G0 use."""
-    wins = defaultdict(lambda: {0: [0.0, 0.0], 1: [0.0, 0.0]})  # idx -> [shares bought, cost]
+    # idx -> [shares bought, cost, shares sold, proceeds]. Selling a token you never bought is a short
+    # (on intl CTF: mint Up+Down for $1, sell both), so a complete set can be locked from either side:
+    # buy both for < $1, or sell both for > $1 (audit 2026-11-26: sell-only minters were "directional").
+    wins = defaultdict(lambda: {0: [0.0, 0.0, 0.0, 0.0], 1: [0.0, 0.0, 0.0, 0.0]})
     tok = defaultdict(lambda: [0.0, 0.0, 0.0])  # pos, cash, fees
     notional = maker = 0.0
     taker_tte, px_entry, buys, n = [], [], 0, 0
@@ -65,32 +68,41 @@ def fingerprint(rows: list[dict], tmap: TokenMap, in_scope) -> dict | None:
             taker_tte.append(w["end"] - r["block_timestamp"])
         t = tok[r["token_id"]]
         t[2] += float(r.get("fee") or 0.0)
+        b = wins[w["slug"]][info["idx"]]
         if r["side"] == "BUY":
             buys += 1
             px_entry.append(float(r["price"]))
             t[0] += sh
             t[1] -= usd
-            b = wins[w["slug"]][info["idx"]]
             b[0] += sh
             b[1] += usd
         else:
+            # entry price of the exposure acquired: selling X at p = buying its complement at 1 - p
+            px_entry.append(1.0 - float(r["price"]))
             t[0] -= sh
             t[1] += usd
+            b[2] += sh
+            b[3] += usd
     if n == 0:
         return None
     gross = sum(info_pnl for info_pnl in (
         (tmap.m[k]["payout"] * v[0] + v[1]) for k, v in tok.items()))
     fees = sum(v[2] for v in tok.values())
     locked = 0.0
-    paired_windows = 0
+    paired_windows = sell_paired = 0
     for sides in wins.values():
         up, dn = sides[0], sides[1]
+        paired = False
         q = min(up[0], dn[0])
-        if q <= 0:
-            continue
-        paired_windows += 1
-        cost = up[1] / up[0] + dn[1] / dn[0]
-        locked += q * (1.0 - cost)
+        if q > 0:
+            paired = True
+            locked += q * (1.0 - (up[1] / up[0] + dn[1] / dn[0]))
+        qs = min(up[2], dn[2])
+        if qs > 0:
+            paired = True
+            sell_paired += 1
+            locked += qs * ((up[3] / up[2] + dn[3] / dn[2]) - 1.0)
+        paired_windows += paired
     return {"fills": n, "notional": round(notional, 2), "gross": round(gross, 2),
             "fees": round(fees, 2), "locked": round(locked, 2),
             "directional": round(gross - locked, 2),
@@ -98,7 +110,8 @@ def fingerprint(rows: list[dict], tmap: TokenMap, in_scope) -> dict | None:
             "taker_tte_p50": st.median(taker_tte) if taker_tte else None,
             "px_entry_p50": round(st.median(px_entry), 4) if px_entry else None,
             "px_ge95_share": round(sum(p >= 0.95 for p in px_entry) / len(px_entry), 4) if px_entry else None,
-            "buy_share": round(buys / n, 4), "windows": len(wins), "paired_windows": paired_windows}
+            "buy_share": round(buys / n, 4), "windows": len(wins), "paired_windows": paired_windows,
+            "sell_paired_windows": sell_paired}
 
 
 def attribute_income(rows: list[dict], tmap: TokenMap, ivs: list[dict]):

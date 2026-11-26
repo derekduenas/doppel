@@ -476,7 +476,9 @@ def inventory(fills: list[dict]) -> tuple[dict, list[dict]]:
         wins.append({"slug": slug, "asset": fs[0]["asset"], "hz": fs[0]["hz"],
                      "start": fs[0]["start"], "fills": len(fs),
                      "up_close": up, "down_close": dn, "gross": gross, "net_close": net,
-                     "pairs": min(max(up, 0.0), max(dn, 0.0)), "peak": peak,
+                     # long pair (bought both) or short pair (sold both: mint-and-sell maker)
+                     "pairs": min(max(up, 0.0), max(dn, 0.0)) + min(max(-up, 0.0), max(-dn, 0.0)),
+                     "peak": peak,
                      "flat": abs(net) <= 0.05 * gross if gross else True,
                      "settle_usd": sum(pnl) if all(math.isfinite(p) for p in pnl) else None})
 
