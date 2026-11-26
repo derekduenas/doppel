@@ -1,7 +1,7 @@
 //! Spot L2 order books for the BRTI constituents (`spot_l2_<venue>`), BTC-USD only. Subscriptions
 //! and channels are PERELMAN `recorder.py` FEEDS (verified live 2026-11-24); frames are recorded
-//! raw and decoded offline by `doppel_fair::venue`. LMAX Digital is not here: it has no public
-//! WebSocket (PERELMAN polls its REST book).
+//! raw and decoded offline by `doppel_fair::venue`. LMAX Digital has no public WebSocket, so
+//! [`RestL2`] polls its REST book once a second, as PERELMAN `rest_poll` does.
 //!
 //! Continuity, for the venues that send deltas:
 //! - Coinbase `sequence_num` and Gemini `socket_sequence` count every frame on the connection; a
@@ -26,11 +26,20 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use crate::recorder::Recorder;
-use crate::ws::{Out, WsVenue};
+use tokio::sync::watch;
 
-/// Stream suffixes, in start order.
+use crate::clock::{mono_ns, wall_ns};
+use crate::http::{err_kind, RateLimiter};
+use crate::recorder::Recorder;
+use crate::ws::{sleep_or_stop, Out, WsVenue};
+
+/// WebSocket stream suffixes, in start order.
 pub const L2_VENUES: [&str; 6] = ["coinbase", "kraken", "bitstamp", "gemini", "cryptocom", "bullish"];
+/// REST-polled stream suffixes ([`RestL2`]).
+pub const L2_REST_VENUES: [&str; 1] = ["lmax"];
+
+/// PERELMAN `REST_FEEDS["lmax"]`.
+pub const LMAX_URL: &str = "https://public-data-api.london-digital.lmax.com/v1/orderbook/btc-usd";
 
 const BULLISH_PING: &str = r#"{"jsonrpc":"2.0","type":"command","method":"keepalivePing","params":{},"id":"0"}"#;
 
@@ -241,6 +250,77 @@ impl WsVenue for SpotL2 {
     }
 }
 
+/// A REST book polled once a second (PERELMAN `rest_poll`): 3 s timeout, and after any failure
+/// (transport error, non-200, or a body without `bids` and `asks` arrays) a back-off of 5 s
+/// doubling to 300 s, so a rate limit is not kept alive by our own retries. Every response body is
+/// recorded raw with `{status, sent_tw, sent_tm}`; transport errors are `ctl: poll_error`.
+pub struct RestL2 {
+    pub url: String,
+    pub limiter: RateLimiter,
+    backoff_s: f64,
+}
+
+impl RestL2 {
+    /// `venue` is one of [`L2_REST_VENUES`].
+    pub fn new(venue: &str) -> Option<Self> {
+        let url = match venue {
+            "lmax" => LMAX_URL,
+            _ => return None,
+        };
+        Some(Self { url: url.into(), limiter: RateLimiter::new(1.0, 1), backoff_s: 0.0 })
+    }
+
+    pub async fn run(mut self, rec: Recorder, mut stop: watch::Receiver<bool>) {
+        let client = crate::http::client(3);
+        while !*stop.borrow() {
+            tokio::select! {
+                _ = self.limiter.take() => {}
+                _ = stop.changed() => break,
+            }
+            if let Some(wait) = self.poll(&client, &rec).await {
+                rec.ctl("backoff", json!({"wait_s": wait}));
+                sleep_or_stop(Duration::from_secs_f64(wait), &mut stop).await;
+            }
+        }
+        rec.stats.set_connected(false);
+    }
+
+    /// One request. Returns the back-off to wait after a failure.
+    pub async fn poll(&mut self, client: &reqwest::Client, rec: &Recorder) -> Option<f64> {
+        let (sent_w, sent_m) = (wall_ns(), mono_ns());
+        let res = async {
+            let r = client.get(&self.url).send().await?;
+            let status = r.status().as_u16();
+            Ok::<_, reqwest::Error>((status, r.text().await?))
+        }
+        .await;
+        let ok = match res {
+            Ok((status, body)) => {
+                if status != 200 {
+                    rec.stats.incr(&format!("http_{status}"));
+                }
+                let ok = status == 200 && is_rest_book(&body);
+                rec.record_at(body, wall_ns(), mono_ns(), Some(json!({"status": status, "sent_tw": sent_w, "sent_tm": sent_m})));
+                ok
+            }
+            Err(e) => {
+                rec.stats.error(format!("poll: {}", err_kind(&e)));
+                rec.ctl("poll_error", json!({"err": err_kind(&e)}));
+                false
+            }
+        };
+        rec.stats.set_connected(ok);
+        self.backoff_s = if ok { 0.0 } else { (2.0 * self.backoff_s).clamp(5.0, 300.0) };
+        (!ok).then_some(self.backoff_s)
+    }
+}
+
+/// A body PERELMAN's REST parser would read: `bids` and `asks` arrays.
+fn is_rest_book(body: &str) -> bool {
+    let has = |j: &Value, k: &str| j.get(k).is_some_and(Value::is_array);
+    serde_json::from_str::<Value>(body).is_ok_and(|j| has(&j, "bids") && has(&j, "asks"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,7 +365,7 @@ mod tests {
         let mut b = SpotL2::new("bitstamp").unwrap();
         b.handle(r#"{"event":"bts:request_reconnect","channel":"","data":""}"#, &r, &mut out);
         assert_eq!(b.take_reconnect().as_deref(), Some("request_reconnect"));
-        assert!(SpotL2::new("lmax").is_none());
+        assert!(SpotL2::new("lmax").is_none() && RestL2::new("lmax").is_some() && RestL2::new("coinbase").is_none());
         assert_eq!(r.stats.extra("seq_gaps").unwrap(), 3);
         drop(r);
         w.join();

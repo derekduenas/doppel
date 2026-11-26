@@ -1,6 +1,6 @@
 //! Local mock tests: WebSocket watchdog, PM US signer headers per connect and no redirects,
 //! PM US rollover, Kalshi signing (generated keys), BRTI signed poll + 429, Kalshi WS seq gap,
-//! spot L2 seq gap and tape decode.
+//! spot L2 seq gap and tape decode, LMAX REST poll back-off.
 //! No test touches a real venue.
 
 // The handshake callback signature (Result<Response, ErrorResponse>) is fixed by tungstenite.
@@ -851,4 +851,59 @@ async fn spot_l2_coinbase_gap_reconnects_and_tape_decodes() {
     assert_eq!((s.bids, s.asks), (vec![(100.5, 2.0), (100.0, 1.0)], vec![(101.0, 1.0)]));
     // the shutdown `disconnect` ends continuity
     assert!(book.snapshot().is_none());
+}
+
+// ------------------------------------------------------------------------------------------------
+// spot L2 over REST: LMAX polls, failures back off and reset the decoded book
+
+#[tokio::test]
+async fn lmax_rest_poll_records_backs_off_and_decodes() {
+    let d = setup();
+    let book = r#"{"instrument_id":"btc-usd","timestamp":"2026-11-26T15:28:49.000Z","status":"OPEN","bids":[{"price":"60208.200000","quantity":"1.0000"}],"asks":[{"price":"60216.000000","quantity":"0.0800"}]}"#;
+    let n = Arc::new(Mutex::new(0));
+    let n2 = n.clone();
+    let (base, seen) = http_server(move |_| {
+        let mut g = n2.lock().unwrap();
+        *g += 1;
+        match *g {
+            1 | 5 => (200, String::new(), book.to_string()),
+            2 => (429, String::new(), r#"{"error":"rate limited"}"#.to_string()),
+            3 => (502, String::new(), "<html>bad gateway</html>".to_string()),
+            _ => (200, String::new(), "<html>maintenance</html>".to_string()),
+        }
+    })
+    .await;
+    let (rec, wt) = writer(d.path(), "spot_l2_lmax");
+    let stats = rec.stats.clone();
+    let mut p = doppel_tape::l2::RestL2::new("lmax").unwrap();
+    assert_eq!(p.url, "https://public-data-api.london-digital.lmax.com/v1/orderbook/btc-usd");
+    p.url = format!("{base}/v1/orderbook/btc-usd");
+    let client = doppel_tape::http::client(3);
+    let mut waits = Vec::new();
+    for _ in 0..5 {
+        waits.push(p.poll(&client, &rec).await);
+    }
+    // PERELMAN rest_poll: 5 s, doubling, reset by a good book
+    assert_eq!(waits, [None, Some(5.0), Some(10.0), Some(20.0), None]);
+    p.url = "http://127.0.0.1:1/v1/orderbook/btc-usd".into(); // nothing listens: transport error
+    assert_eq!(p.poll(&client, &rec).await, Some(5.0));
+    drop(rec);
+    wt.join();
+    assert!(seen.lock().unwrap()[0].starts_with("GET /v1/orderbook/btc-usd "));
+    assert_eq!(stats.extra("http_429").unwrap(), 1);
+    let recs = tape(d.path(), "spot_l2_lmax");
+    let status: Vec<_> = recs.iter().map(|r| r["meta"]["status"].clone()).collect();
+    assert_eq!(status[..5], [json!(200), json!(429), json!(502), json!(200), json!(200)]);
+    assert_eq!(recs[5]["meta"], json!({"ctl": "poll_error", "err": "Connect"}));
+    assert!(recs[0]["meta"]["sent_tw"].as_i64().unwrap() <= recs[0]["tw"].as_i64().unwrap());
+    // offline: only the good polls give a book, every failure resets it
+    let mut v = doppel_fair::venue::VenueBook::new(doppel_fair::venue::Venue::Lmax);
+    let valid: Vec<bool> = recs
+        .iter()
+        .map(|r| {
+            v.apply_record(r["raw"].as_str().unwrap(), r["tw"].as_i64().unwrap(), r.get("meta")).unwrap();
+            v.snapshot().is_some()
+        })
+        .collect();
+    assert_eq!(valid, [true, false, false, false, true, false]);
 }

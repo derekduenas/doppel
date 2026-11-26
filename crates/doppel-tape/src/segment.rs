@@ -288,31 +288,36 @@ fn newest_segment(sdir: &Path) -> io::Result<Option<PathBuf>> {
 /// Read all records of a segment. A truncated or corrupt tail ends the read (records already
 /// decoded are kept). With `verify`, a CRC mismatch is an error.
 pub fn read_segment(path: &Path, verify: bool) -> io::Result<Vec<Value>> {
-    let mut dec = zstd::stream::read::Decoder::new(File::open(path)?)?;
-    let mut data = Vec::new();
-    let mut chunk = vec![0u8; 1 << 16];
-    loop {
-        match dec.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => data.extend_from_slice(&chunk[..n]),
-            Err(_) => break, // truncated tail frame from a crash
-        }
-    }
-    let mut out = Vec::new();
-    for line in data.split(|b| *b == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(rec) = serde_json::from_slice::<Value>(line) else { continue };
-        if verify {
-            let raw = rec.get("raw").and_then(Value::as_str).unwrap_or("");
-            if Some(u64::from(crc32fast::hash(raw.as_bytes()))) != rec.get("crc").and_then(Value::as_u64) {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, format!("CRC mismatch in {}", path.display())));
+    segment_records(path, verify)?.collect()
+}
+
+/// [`read_segment`] as a stream, one record at a time in file order (memory: one line). After a
+/// CRC error (with `verify`) the stream ends.
+pub fn segment_records(path: &Path, verify: bool) -> io::Result<impl Iterator<Item = io::Result<Value>>> {
+    let mut rd = BufReader::with_capacity(1 << 16, zstd::stream::read::Decoder::new(File::open(path)?)?);
+    let path = path.to_path_buf();
+    let mut line = Vec::new();
+    let mut done = false;
+    Ok(std::iter::from_fn(move || {
+        while !done {
+            line.clear();
+            match rd.read_until(b'\n', &mut line) {
+                Ok(0) => return None,
+                Ok(_) => {}
+                Err(_) => done = true, // a truncated tail frame from a crash: keep what decoded
             }
+            let Ok(rec) = serde_json::from_slice::<Value>(line.strip_suffix(b"\n").unwrap_or(&line)) else { continue };
+            if verify {
+                let raw = rec.get("raw").and_then(Value::as_str).unwrap_or("");
+                if Some(u64::from(crc32fast::hash(raw.as_bytes()))) != rec.get("crc").and_then(Value::as_u64) {
+                    done = true;
+                    return Some(Err(io::Error::new(io::ErrorKind::InvalidData, format!("CRC mismatch in {}", path.display()))));
+                }
+            }
+            return Some(Ok(rec));
         }
-        out.push(rec);
-    }
-    Ok(out)
+        None
+    }))
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ pub mod kalshi;
 pub mod l2;
 pub mod pmus;
 pub mod recorder;
+pub mod replay;
 pub mod run;
 pub mod segment;
 pub mod universe;

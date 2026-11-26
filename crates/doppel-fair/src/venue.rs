@@ -1,7 +1,7 @@
 //! Per-venue L2 frame decoders: port of the WebSocket handlers in PERELMAN `books.py` (`coinbase_at`,
-//! `kraken`, `bitstamp`, `gemini`, `cryptocom`, `bullish`). They rebuild an [`L2Book`] from the raw
-//! frames that `doppel-taped` records in the `spot_l2_<venue>` streams and hand the replica a
-//! [`BookSnapshot`].
+//! `kraken`, `bitstamp`, `gemini`, `cryptocom`, `bullish`) and of the LMAX REST parser in
+//! `recorder.py` `REST_FEEDS`. They rebuild an [`L2Book`] from the raw frames that `doppel-taped`
+//! records in the `spot_l2_<venue>` streams and hand the replica a [`BookSnapshot`].
 //!
 //! Integrity checks beyond `books.py`:
 //! - Coinbase `sequence_num` and Gemini `socket_sequence` (per connection, every frame) and
@@ -35,11 +35,14 @@ pub enum Venue {
     Bitstamp,
     Gemini,
     Cryptocom,
+    Lmax,
     Bullish,
 }
 
 impl Venue {
-    pub const ALL: [Venue; 6] = [Venue::Coinbase, Venue::Kraken, Venue::Bitstamp, Venue::Gemini, Venue::Cryptocom, Venue::Bullish];
+    /// PERELMAN `recorder.py` FEEDS order.
+    pub const ALL: [Venue; 7] =
+        [Venue::Coinbase, Venue::Kraken, Venue::Bitstamp, Venue::Gemini, Venue::Cryptocom, Venue::Lmax, Venue::Bullish];
 
     /// The name in `spot_l2_<name>` and in the replica's diagnostics.
     pub fn name(self) -> &'static str {
@@ -49,6 +52,7 @@ impl Venue {
             Venue::Bitstamp => "bitstamp",
             Venue::Gemini => "gemini",
             Venue::Cryptocom => "cryptocom",
+            Venue::Lmax => "lmax",
             Venue::Bullish => "bullish",
         }
     }
@@ -86,9 +90,11 @@ impl VenueBook {
         self.seq = None;
     }
 
-    /// Apply one tape record (`raw`, `tw`, `meta`). A control record resets the book.
+    /// Apply one tape record (`raw`, `tw`, `meta`). A control record resets the book, and so does
+    /// a REST response whose `meta.status` is not 200.
     pub fn apply_record(&mut self, raw: &str, tw_ns: i64, meta: Option<&Value>) -> Result<(), Integrity> {
-        if meta.and_then(|m| m.get("ctl")).is_some() {
+        let failed_poll = self.venue == Venue::Lmax && meta.and_then(|m| m.get("status")).is_some_and(|s| s.as_u64() != Some(200));
+        if meta.and_then(|m| m.get("ctl")).is_some() || failed_poll {
             self.reset();
             return Ok(());
         }
@@ -96,9 +102,16 @@ impl VenueBook {
     }
 
     /// Apply one raw frame received at `tw_ns`. Frames that are not JSON or not book data are
-    /// ignored; an integrity failure resets the book and is returned.
+    /// ignored; an integrity failure resets the book and is returned. LMAX is a REST snapshot
+    /// venue: a body that is not a whole book resets it (PERELMAN `rest_poll`), so a failed poll
+    /// never leaves an old book looking fresh.
     pub fn apply(&mut self, raw: &str, tw_ns: i64) -> Result<(), Integrity> {
-        let Ok(m) = serde_json::from_str::<Value>(raw) else { return Ok(()) };
+        let Ok(m) = serde_json::from_str::<Value>(raw) else {
+            if self.venue == Venue::Lmax {
+                self.reset();
+            }
+            return Ok(());
+        };
         let r = match self.venue {
             Venue::Coinbase => self.coinbase(&m),
             Venue::Kraken => self.kraken(&m),
@@ -108,6 +121,10 @@ impl VenueBook {
             }
             Venue::Gemini => self.gemini(&m),
             Venue::Cryptocom => self.cryptocom(&m),
+            Venue::Lmax => {
+                lmax(&mut self.book, &m);
+                Ok(())
+            }
             Venue::Bullish => {
                 bullish(&mut self.book, &m);
                 Ok(())
@@ -299,6 +316,21 @@ fn bitstamp(b: &mut L2Book, m: &Value) {
     b.replace(&lv("bids"), &lv("asks"));
     if let Some(us) = num(d.get("microtimestamp")) {
         b.venue_ts_ns = us as i64 * 1000;
+    }
+}
+
+/// LMAX Digital REST `v1/orderbook/btc-usd`: a whole book, `{price, quantity}` strings. Anything
+/// PERELMAN's parser would raise on (missing side, unparsable level) resets the book.
+fn lmax(b: &mut L2Book, m: &Value) {
+    let side = |k: &str| -> Option<Vec<Level>> {
+        m.get(k)?.as_array()?.iter().map(|l| Some((num(l.get("price"))?, num(l.get("quantity"))?))).collect()
+    };
+    match (side("bids"), side("asks")) {
+        (Some(bids), Some(asks)) => b.replace(&bids, &asks),
+        _ => return b.reset(),
+    }
+    if let Some(ns) = m.get("timestamp").and_then(Value::as_str).and_then(iso_ns) {
+        b.venue_ts_ns = ns;
     }
 }
 
@@ -625,6 +657,34 @@ mod tests {
             json!({"id": "0", "jsonrpc": "2.0", "result": {"responseCodeName": "OK", "responseCode": "200", "message": "Keep alive pong"}});
         v.apply(&pong.to_string(), 4).unwrap();
         assert_eq!(v.snapshot().unwrap().retrieved_ns, 4);
+    }
+
+    #[test]
+    fn lmax_rest_books_and_failed_polls() {
+        // the real body shape (2026-11-26), cut to two levels a side
+        let body = r#"{"instrument_id":"btc-usd","timestamp":"2026-11-26T15:28:49.000Z","status":"OPEN","bids":[{"price":"60208.200000","quantity":"1.0000"},{"price":"60203.306000","quantity":"0.3300"}],"asks":[{"price":"60216.000000","quantity":"0.0800"},{"price":"60222.390000","quantity":"0.0400"}]}"#;
+        let ok = json!({"status": 200, "sent_tw": 1, "sent_tm": 1});
+        let mut v = VenueBook::new(Venue::Lmax);
+        v.apply_record(body, 10, Some(&ok)).unwrap();
+        let s = v.snapshot().unwrap();
+        assert_eq!(s.bids, vec![(60208.2, 1.0), (60203.306, 0.33)]);
+        assert_eq!(s.asks, vec![(60216.0, 0.08), (60222.39, 0.04)]);
+        assert_eq!((s.retrieved_ns, v.book.venue_ts_ns), (10, iso_ns("2026-11-26T15:28:49Z").unwrap()));
+        // a 429, an HTML error page with status 200, and a body missing a side all reset
+        let fail: [(&str, Value); 3] = [
+            (r#"{"error":"too many requests"}"#, json!({"status": 429, "sent_tw": 2, "sent_tm": 2})),
+            ("<html><body>502 Bad Gateway</body></html>", ok.clone()),
+            (r#"{"bids":[{"price":"1","quantity":"1"}]}"#, ok.clone()),
+        ];
+        for (raw, meta) in fail {
+            v.apply_record(body, 20, Some(&ok)).unwrap();
+            assert!(v.snapshot().is_some());
+            v.apply_record(raw, 21, Some(&meta)).unwrap();
+            assert!(v.snapshot().is_none(), "{raw}");
+        }
+        // an unparsable level is what PERELMAN's float() raises on
+        v.apply_record(&body.replace("0.3300", "x"), 22, Some(&ok)).unwrap();
+        assert!(v.snapshot().is_none());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Fast fair: `crates/doppel-fair` (W6 / C2)
 
-Two engines in Rust. Both are pure and deterministic, with no I/O and no clock, and neither is wired into a recorder or a service.
+Two engines in Rust. Both are pure and deterministic, with no I/O and no clock. Neither is wired into a recorder or a service; `doppel-replica-replay` (below) runs the replica offline over the recorded books.
 
 | Module | Port of | What it does |
 |---|---|---|
@@ -155,15 +155,20 @@ What remains is work the methodology does once per update, whatever is cached:
 ## Not done here
 
 - **No p99 ≤ 1 ms for `apply` at full depth** on this Mac (see Bench).
-- **No validation against published BRTI.** W6's acceptance is $0.01 p99.
+- **No validation against published BRTI.** W6's acceptance is $0.01 p99; how to run it on Apex is under Replay below.
 - **AMBIGUITY points unresolved.** The points `brti.py` marks as AMBIGUITY (the KDE grid, which book the spacing is taken from) are not settled.
-- **No wiring.** The decoders exist (below) but nothing runs the replica over the tape yet.
+- **No live wiring.** `doppel-replica-replay` runs the replica over the tape offline; no service runs it live.
 
 ## Constituent books: `spot_l2_<venue>` streams and `venue` decoders
 
-`doppel-taped` records BTC-USD L2 for six of the seven constituents as raw frames, using the channels from PERELMAN `recorder.py`: `coinbase` (Advanced Trade `level2` + `heartbeats`), `kraken` (v2 `book`, depth 1000), `bitstamp` (`order_book_btcusd`, a full top-100 book per change), `gemini` (v1 market data), `cryptocom` (`book.BTC_USD.150`, a full 150-level book about 2.3 times a second; its delta mode exists only at depth 50 and rejects 150), `bullish` (`l2Orderbook`, full snapshots). LMAX Digital has no public WebSocket, so it is not recorded; PERELMAN polls its REST book.
+`doppel-taped` records BTC-USD L2 for all seven constituents in PERELMAN `recorder.py` FEEDS, as raw frames, with PERELMAN's channels and requests: `coinbase` (Advanced Trade `level2` + `heartbeats`), `kraken` (v2 `book`, depth 1000), `bitstamp` (`order_book_btcusd`, a full top-100 book per change), `gemini` (v1 market data), `cryptocom` (`book.BTC_USD.150`, a full 150-level book about 2.3 times a second; its delta mode exists only at depth 50 and rejects 150), `bullish` (`l2Orderbook`, full snapshots), and `lmax`.
 
-These streams are opt-in: `--only spot_l2` starts all six, `spot_l2_<venue>` starts one, and `all` (the default) starts none. No systemd unit runs them.
+LMAX Digital has no public WebSocket. `spot_l2_lmax` polls `https://public-data-api.london-digital.lmax.com/v1/orderbook/btc-usd` once a second, as PERELMAN `rest_poll` does: 3 s timeout, and after any failure (transport error, non-200, a body without `bids` and `asks`) a back-off of 5 s doubling to 300 s. Every response body is recorded raw with `meta {status, sent_tw, sent_tm}`; transport errors are `ctl: poll_error`, back-offs `ctl: backoff`. The decoder resets the book on any non-200 or any body that is not a whole book, so a failed poll never leaves an old book looking fresh. About 48 levels a side; its `timestamp` has whole-second resolution.
+
+- **Rate limit.** PERELMAN's `alt_recorder.py` notes that LMAX's public REST limit is shared per client: polling three more LMAX books got the BTC feed blocked (HTTP 429) on 2026-11-24. Running `spot_l2_lmax` on the same host as PERELMAN's recorder doubles the load on that limit. Check for `http_429` in `status.json` before leaving both on.
+- **Gemini source differs from PERELMAN.** PERELMAN's replica reads Gemini over REST (`REST_FEEDS["gemini"]`, 500 levels a side, 1 Hz), because its WebSocket lagged about 5 s on 2026-11-24. We record the WebSocket. The replay's stderr summary gives each venue's `tw − venue timestamp` lag, so this is measurable; it is the first suspect if Gemini disagrees.
+
+These streams are opt-in: `--only spot_l2` starts all seven, `spot_l2_<venue>` starts one, and `all` (the default) starts none. No systemd unit runs them.
 
 Continuity:
 
@@ -173,3 +178,53 @@ Continuity:
 - **No data.** Recorded heartbeats keep the stall watchdog quiet, so a subscription the venue rejected could otherwise look healthy forever (seen live with Crypto.com delta mode at depth 150). Each venue must deliver a book frame at least every 30 s, or the recorder writes `ctl: no_data` and reconnects.
 
 `venue::VenueBook::apply_record(raw, tw, meta)` replays a stream. Any control record (connect, disconnect, seq_gap, backpressure_drop, ...) resets the book, and so does an integrity failure. Either way the book stays invalid until the next snapshot. `retrieved_ns` is the record's receive time `tw`, never a venue timestamp. Gemini's WebSocket lagged about 5 s on 2026-11-24, which is why PERELMAN switched to its REST book; check `tw` against `venue_ts_ns` before trusting it.
+
+## Replay: `doppel-replica-replay`
+
+```
+cargo run --release -p doppel-tape --bin doppel-replica-replay -- \
+  --data TAPE_ROOT --from 2026-11-26T13:00:00Z --to 2026-11-26T14:00:00Z --out replica.jsonl [--start TS]
+```
+
+`TS` is unix seconds or RFC 3339 UTC, whole seconds. The code is `crates/doppel-tape/src/replay.rs`; the binary lives in `doppel-tape`, which now depends on `doppel-fair` (`doppel-fair` depends on no tape code).
+
+- **Reading.** Every `spot_l2_<venue>` stream under `TAPE_ROOT` is streamed record by record (`segment::segment_records`, the same reader and CRC check as `read_segment`), hour segments in order, through one hour past `--to`.
+- **Merge.** Streams are merged on each one's next record's `tw`, ties broken by venue order (`Venue::ALL`, PERELMAN's FEEDS order). A stream's own order is never changed, so a `ctl` record (which resets that venue's book) stays where the recorder wrote it.
+- **Warm-up.** From `--start` (default: the start of `--from`'s UTC hour) to `--from`, records are only decoded. Coinbase, Kraken and Gemini send a snapshot only at connect, so `--start` must reach back to their last connect; otherwise that venue stays `no_book`. The stderr summary gives each venue's `first_valid_ns`.
+- **Seed.** At the first record at or after `--from`, the replica is seeded with every venue's current book in venue order, which pins the consolidation order. The hysteresis set starts empty.
+- **Updates.** From then on, every record goes to `Replica::apply(venue, book, calc_ns = tw)`. A venue whose decoded book is invalid (before its snapshot, after a reset or a failed LMAX poll) is applied as an empty book, so it leaves the index at once.
+- **Rows.** One JSON line per whole second `s` in `[from, to)`: `{"t", "value", "known_ns", "reason", "used", "venues"}`. `value` is the replica output of the first record with `tw ≥ s`, and `known_ns` is that record's `tw`: nothing received after `known_ns` went into it, so a strategy may use it from `known_ns` on. `value` is null with `reason` = the replica's failure message, or `"no_data"` when the tape ends before `s`. `venues` maps each venue to `used`, `reinstated`, `delayed`, `no_book`, `empty_side`, `crossed`, `outlier` or `held_out`. There is no minimum venue count (the methodology port has none); filter on `used` downstream.
+- **Stderr.** One JSON summary: records, updates, `apply` time p50/p99/max (µs), full-book fallbacks, null rows, and per venue: records, integrity failures, `first_valid_ns`, and the p50/p99 of `tw − venue timestamp` (ms) over the frames that carried a new venue timestamp (not heartbeats or acks). LMAX timestamps have whole-second resolution, so its lag reads high by up to 1 s. The lags include any offset between our clock and the venue's. On the fixture: p50 6 ms (Kraken) to 155 ms (Coinbase), Gemini WebSocket 78 ms.
+
+Rows depend only on the tape, so two runs give byte-identical output; timings are on stderr only.
+
+**Hysteresis cadence.** The 5.3 hysteresis set moves on every `apply`, that is on every record, while CF (and PERELMAN) calculate once per second (PERELMAN also at 200 ms). A venue that crosses 5 % between seconds is excluded here and would not be there. This only matters during an outlier episode.
+
+**Cost.** The 15 s smoke tape of 2026-11-26 had about 460 records a second across the seven venues (Kraken about 330 of them): 6,660 updates, `apply` p50 1.19 ms, p99 2.72 ms, 0 fallbacks (release, this Mac, load ≈ 20). At that rate an hour of tape takes roughly 30 to 35 minutes.
+
+**Check** (`crates/doppel-tape/tests/replay.rs`). The fixture `crates/doppel-tape/tests/fixtures_replay/` (368 KB) is the first 4.3 s of a real `--only spot_l2` recording of all seven venues (2026-11-26 15:47:35Z), lines byte-identical, recompressed at zstd level 19. The test runs the replay twice and requires byte-identical rows. It then rebuilds the books independently (its own `VenueBook`s, the same merge, the same seeding) and calls the full `brti::calculate` on every record with the evolving hysteresis set. Each row must equal that oracle in value bits, `known_ns` and every venue status. In the last second all seven venues are in the index. `doppel-fair` is built at `opt-level = 3` in the dev profile so this runs in about 15 s.
+
+### Against published BRTI (to run on Apex)
+
+Not done here: published BRTI is only on Apex. There, raw 1 Hz BRTI (CF Benchmarks via Kalshi's passthrough) is PERELMAN's ref feed: `kind: "brti"` records with `new: [[time_ms, value], ...]` in `/var/lib/private/perelman/stream/*.jsonl[.gz]`, imported into the DOPPEL tape as `ref_brti_raw` by `doppel.lab.brti_import`. DOPPEL's own poller records the same values in `ref_brti_live` (`meta.new`). `doppel.lab.brti_import.load_raw(root)` merges both by second.
+
+1. Record `--only spot_l2` on Apex for the comparison window, and start it at least a few minutes before, so every delta venue has connected.
+2. Run the replay over the window, with `--start` at or before the recorder's start.
+3. Compare per second:
+
+```python
+import json
+from pathlib import Path
+import numpy as np
+from doppel.lab.brti_import import load_raw
+
+root = Path("TAPE_ROOT")
+pub = load_raw(root)                        # {second: published BRTI}
+rows = [json.loads(l) for l in open("replica.jsonl")]
+both = [(r["value"], pub[r["t"]]) for r in rows if r["value"] is not None and r["t"] in pub]
+d = np.abs(np.array([a - b for a, b in both]))
+print(len(rows), "seconds;", len(both), "paired;", sum(r["value"] is None for r in rows), "null")
+print("abs diff USD p50 %.4f p99 %.4f; share within $0.01: %.4f" % (np.median(d), np.percentile(d, 99), (d <= 0.01).mean()))
+```
+
+The metric is the per-second absolute difference in USD between the replay row for second `t` and published BRTI for `t` (`time_ms // 1000`): its p50 and p99, and the share of seconds within $0.01 (W6 acceptance: $0.01 at p99). Report the paired and null counts with it, and break the difference down by `used` set: a venue missing from `used` (`no_book`, `delayed`) is the first explanation for a large difference. Expect a gap from the Gemini source (WebSocket here, REST in PERELMAN), from the per-record hysteresis cadence, and from the AMBIGUITY points in `brti.py`.
