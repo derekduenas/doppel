@@ -118,7 +118,25 @@ fn brti_replica_matches_perelman() {
                 })
                 .collect();
             let want = &st["expect"];
-            match rep.calculate(&books, int(&st["calc_ns"])) {
+            // The incremental path on the same step: load the venues, then restore the hysteresis
+            // state from before this step for the final apply. It must equal the exact path.
+            let before = rep.excluded.clone();
+            let mut inc = Replica::default();
+            let mut banded = None;
+            for (i, (venue, b)) in books.iter().enumerate() {
+                if i + 1 == books.len() {
+                    inc.excluded = before.clone();
+                }
+                banded = Some(inc.apply(venue, b, int(&st["calc_ns"])));
+            }
+            let exact = rep.calculate(&books, int(&st["calc_ns"]));
+            assert_eq!(banded.as_ref(), Some(&exact), "{tag}: apply vs calculate");
+            assert_eq!(
+                banded.and_then(|r| r.ok()).map(|o| o.value.to_bits()),
+                exact.as_ref().ok().map(|o| o.value.to_bits()),
+                "{tag}: bits"
+            );
+            match exact {
                 Ok(out) => {
                     assert!(want.get("error").is_none(), "{tag}: rust ok, python {want}");
                     check_index(&tag, out.value, &out.index, want, &mut stats);
