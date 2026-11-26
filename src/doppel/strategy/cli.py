@@ -5,9 +5,12 @@
                            [--start ISO --end ISO]   (default: each genome's evidence.eval_window)
     doppel-genome result   --id GENOME_ID --p 0.012 [--verdict '{"net_c_per_window": 0.8}']
     doppel-genome ledger   --family F [--alpha 0.05] [--json]
+    doppel-genome monitor  --genome ID|PREFIX|G.json --results TWIN_OUT.json [--alpha 0.05] [--record] [--json]
     doppel-genome verify
 
-``register``/``result``/``ledger``/``verify`` use ``<root>/registry/genomes.jsonl`` (``--root``,
+``monitor`` prints anytime-valid e-values and the early KILL/PASS decision (``sequential.py``,
+docs/sequential.md); ``--record`` appends it as an ``interim``/``early_*`` event.
+``register``/``result``/``ledger``/``monitor``/``verify`` use ``<root>/registry/genomes.jsonl`` (``--root``,
 default the current directory).
 """
 
@@ -102,6 +105,60 @@ def cmd_ledger(a: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_genome(reg: Registry, ref: str) -> str:
+    """A genome JSON path, a full id, or a unique id prefix of a registered genome -> id."""
+    p = Path(ref)
+    if p.is_file():
+        return from_dict(orjson.loads(p.read_bytes())).id
+    ids = [r["genome_id"] for r in reg.records() if r["kind"] == "register" and r["genome_id"].startswith(ref)]
+    if len(ids) != 1:
+        raise RegistryError(f"{ref!r} matches {len(ids)} registered genomes")
+    return ids[0]
+
+
+def _fmt_e(d: dict) -> str:
+    return (f"E={d['e']:.4g} max={d['e_max']:.4g} (1/alpha {d['threshold']:g}) p_anytime={d['p_anytime']:.4g}"
+            f"{' CROSSED at block ' + str(d['first_cross_block']) if d['rejects'] else ''}"
+            f" | clipped {d['clipped_conservative']} (conservative side), bound violations {d['bound_violations']}")
+
+
+def cmd_monitor(a: argparse.Namespace) -> int:
+    import hashlib
+    reg = Registry(a.root)
+    raw = a.results.read_bytes()
+    doc = orjson.loads(raw)
+    src = {"results_path": str(a.results), "results_sha256": hashlib.sha256(raw).hexdigest()}
+    try:
+        gid = _resolve_genome(reg, a.genome)
+        if a.record:
+            m = reg.record_monitor(gid, doc, a.alpha, src)
+        else:
+            m = reg.monitor(gid, doc, a.alpha, src)
+    except RegistryError as e:
+        print(f"REFUSED {e}", file=sys.stderr)
+        return 2
+    if a.json:
+        print(orjson.dumps(m, option=orjson.OPT_INDENT_2).decode())
+        return 0
+    s, prm, fh = m["stats"], m["params"], m["family_holm"]
+    print(f"{m['genome_id'][:12]} family={m['family']} eval {m['eval_window'][0]}..{m['eval_window'][1]} "
+          f"as_of {m['as_of']}{' (window closed)' if m.get('window_closed') else ''}")
+    print(f"windows used={s['windows_used']} (seen {s['windows_seen']}, traded {s['windows_traded']}) "
+          f"blocks={s['n_blocks']}x{prm['block']} mean net/window={s['mean_c']}c bound=+/-{prm['bound_c']:g}c "
+          f"[{prm['method']}]")
+    print(f"PASS e-process (H0: mean net/window <= 0): {_fmt_e(s['pass'])}")
+    print(f"KILL e-process (H0: mean net/window >= 0): {_fmt_e(s['kill'])}")
+    print(f"family e-Holm: m={fh['m']} p_anytime={fh['p_anytime']:.4g} p_holm={fh['p_holm']:.4g} "
+          f"(alpha {fh['alpha']:g})")
+    print(f"decision: {m['decision']}: {m['reason']}")
+    if a.record:
+        print(f"recorded {m['kind']} seq={m['seq']} binding={m['binding']} head {reg.head()[:16]}")
+    else:
+        print("not recorded (pass --record to append)")
+    print("statistical only: the commercial hurdle (A6) and owner authorization are separate")
+    return 0
+
+
 def cmd_verify(a: argparse.Namespace) -> int:
     reg = Registry(a.root)
     errs = reg.verify()
@@ -140,6 +197,14 @@ def main(argv: list[str] | None = None) -> int:
     lg.add_argument("--json", action="store_true")
     lg.add_argument("--root", type=Path, default=Path("."))
     lg.set_defaults(fn=cmd_ledger)
+    mo = sub.add_parser("monitor", help="anytime-valid e-values + early KILL/PASS (no write without --record)")
+    mo.add_argument("--genome", required=True, help="genome JSON path, id, or unique id prefix")
+    mo.add_argument("--results", type=Path, required=True, help="doppel-twin --out JSON")
+    mo.add_argument("--alpha", type=float, default=0.05)
+    mo.add_argument("--record", action="store_true", help="append the interim/early event to the registry")
+    mo.add_argument("--json", action="store_true")
+    mo.add_argument("--root", type=Path, default=Path("."))
+    mo.set_defaults(fn=cmd_monitor)
     v = sub.add_parser("verify", help="re-check the hash chain")
     v.add_argument("--root", type=Path, default=Path("."))
     v.set_defaults(fn=cmd_verify)
