@@ -320,6 +320,11 @@ class Registry:
                                     "evaluation window yet")
             mine = [r for r in recs if r["kind"] in SEQ_KINDS and r["genome_id"] == genome_id]
             fam = [r for r in recs if r["kind"] in SEQ_KINDS and r["family"] == m["family"]]
+            registration = next(r for r in recs if r["kind"] == "register" and r["genome_id"] == genome_id)
+            policy = registration.get("evaluation_protocol") or {}
+            fixed_alpha = policy.get("sequential_alpha", fam[0]["params"]["alpha"] if fam else seq.ALPHA)
+            if alpha != fixed_alpha:
+                raise RegistryError(f"recorded sequential alpha is frozen at {fixed_alpha}")
             if mine and mine[0]["params"] != m["params"]:
                 raise RegistryError(f"monitoring parameters {m['params']} differ from this genome's first "
                                     f"event {mine[0]['params']}: parameters are frozen")

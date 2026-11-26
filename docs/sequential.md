@@ -9,6 +9,8 @@ To append a monitoring event, use `doppel-genome monitor --genome ID --data SEAL
 and supply `--lab FROZEN_LAB` for genomes that use intl flow. This replays from the registered
 start through the last closed UTC hour or the evaluation end, whichever comes first. The record
 includes the input digest, evaluation bounds and evaluator version.
+New registrations pin the monitoring source and alpha. An unpinned family with no prior
+monitoring record uses the default alpha of 0.05. Inspection accepts other alpha values.
 
 ## Why
 

@@ -9,6 +9,8 @@ from pathlib import Path
 import orjson
 
 from ..strategy.genome import from_dict
+from ..strategy import sequential
+from ..tape.segment import read_segment
 from .cli import code_sha256, run_twin
 from .engine import SimConfig
 from .flowfeat import uses_intl
@@ -57,6 +59,10 @@ def fingerprint(data: Path, paths: dict[str, Path]) -> tuple[str, dict[str, tupl
                                      for row in map(orjson.loads, manifest.read_bytes().splitlines())}
             if manifests[stream].get(rel) != (marks[2], sha):
                 raise ValueError(f"tape segment is unsealed or differs from its manifest: {name}")
+            # Older receipts tolerated a damaged final frame. Hash agreement alone only
+            # establishes that the snapshot still contains those same bytes.
+            for _ in read_segment(path, strict=True):
+                pass
         entries[name] = [marks[2], sha]
         stamps[name] = marks
     return hashlib.sha256(orjson.dumps(entries)).hexdigest(), stamps
@@ -66,7 +72,7 @@ def protocol() -> dict:
     config = asdict(SimConfig())
     config["markouts_s"] = list(config["markouts_s"])
     return {"code_sha256": code_sha256(), "simulation": config, "verdict_options": VERDICT_OPTIONS,
-            "flow_delay_s": 0}
+            "flow_delay_s": 0, "sequential_alpha": sequential.ALPHA}
 
 
 def verify_hours(data: Path, horizons, start: int, end: int, paths: dict[str, Path]) -> None:

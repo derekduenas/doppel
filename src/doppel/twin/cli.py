@@ -32,7 +32,9 @@ SRC = Path(__file__).resolve().parent
 def code_sha256() -> str:
     """sha256 over the twin package, the genome contract and fair-v1 sources."""
     lab, tape = SRC.parent / "lab", SRC.parent / "tape"
-    files = sorted(SRC.glob("*.py")) + [SRC.parent / "strategy" / "genome.py", lab / "fair.py",
+    strategy = SRC.parent / "strategy"
+    files = sorted(SRC.glob("*.py")) + [strategy / "genome.py", strategy / "registry.py",
+                                        strategy / "sequential.py", lab / "fair.py",
                                         lab / "flow.py", lab / "ledger.py", lab / "brti_import.py",
                                         lab / "dossier.py", lab / "census.py", lab / "scan.py",
                                         lab / "refprice.py", tape / "segment.py", tape / "universe.py"]

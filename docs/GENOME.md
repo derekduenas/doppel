@@ -29,7 +29,8 @@ about one thing only: **the genotype fully determines the behaviour, and that ma
 After the preregistered window closes, use `doppel-genome result --id ID --data SEALED_TAPE`.
 For intl-flow genomes, also supply `--lab FROZEN_LAB` with the frozen token map. The command
 replays the registered genome with the canonical settings and checks each segment against its
-manifest. Every evaluation hour needs a closed receipt covering the genome's market horizons.
+manifest and reads through the compressed frames with CRC verification. Every evaluation hour
+needs a closed receipt covering the genome's market horizons.
 The evaluator checks the receipt's recorded input streams against the snapshot. The registry
 records the evaluator source hash, settings and a digest of its inputs.
 New CLI registrations pin the evaluator before the window opens. Earlier registrations lack this

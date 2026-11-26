@@ -112,6 +112,11 @@ def test_record_guards(tmp_path):
     with pytest.raises(RegistryError, match="no complete block"):
         reg.record_monitor(ids[2], _results(ids[2], 0.0))
     clock.t = START + 86400
+    # The first recorded result cannot pick its threshold after inspecting the data.
+    before = reg.path.read_bytes()
+    with pytest.raises(RegistryError, match="alpha is frozen"):
+        reg.record_monitor(ids[2], _results(ids[2], 0.0), alpha=0.9)
+    assert reg.path.read_bytes() == before
     with pytest.raises(RegistryError, match="DIAGNOSTIC"):
         reg.record_monitor(ids[2], _results(ids[2], 0.0, diagnostic=True))
     reg.record_monitor(ids[2], _results(ids[2], 0.0))

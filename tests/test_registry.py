@@ -308,3 +308,20 @@ def test_canonical_replay_refuses_missing_evaluation_hour(tmp_path):
         verify_hours(tmp_path, ["5m", "15m"], 0, 3600, paths)
     with pytest.raises(ValueError, match="differs"):
         verify_hours(tmp_path, ["5m"], 0, 3600, {})
+
+
+def test_canonical_fingerprint_rejects_a_self_hashed_broken_tail(tmp_path):
+    import hashlib
+    from doppel.tape.segment import SegmentWriter
+    from doppel.twin.evaluate import evaluation_inputs, fingerprint
+    w = SegmentWriter(tmp_path, "pmus_ws_5m")
+    w.append("{}", tw=1)
+    w.close()
+    path = next(tmp_path.glob("*/*/*.dtape.zst"))
+    path.write_bytes(path.read_bytes()[:-1])
+    man = path.parent.parent / "manifest.jsonl"
+    row = orjson.loads(man.read_bytes())
+    row.update(bytes=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+    man.write_bytes(orjson.dumps(row) + b"\n")
+    with pytest.raises(ValueError, match="truncated zstd"):
+        fingerprint(tmp_path, evaluation_inputs(tmp_path, None))
