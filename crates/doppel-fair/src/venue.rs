@@ -90,11 +90,14 @@ impl VenueBook {
         self.seq = None;
     }
 
-    /// Apply one tape record (`raw`, `tw`, `meta`). A control record resets the book, and so does
+    /// Apply one tape record (`raw`, `tw`, `meta`). A control record other than `subscribe` resets the book, and so does
     /// a REST response whose `meta.status` is not 200.
     pub fn apply_record(&mut self, raw: &str, tw_ns: i64, meta: Option<&Value>) -> Result<(), Integrity> {
         let failed_poll = self.venue == Venue::Lmax && meta.and_then(|m| m.get("status")).is_some_and(|s| s.as_u64() != Some(200));
-        if meta.and_then(|m| m.get("ctl")).is_some() || failed_poll {
+        // `subscribe` only logs what was sent on an open connection. Gemini's initial book can land
+        // before that record is written, and resetting on it would drop Gemini for the whole connection.
+        let ctl = meta.and_then(|m| m.get("ctl")).and_then(Value::as_str);
+        if ctl.is_some_and(|c| c != "subscribe") || failed_poll {
             self.reset();
             return Ok(());
         }
