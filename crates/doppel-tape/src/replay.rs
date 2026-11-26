@@ -259,12 +259,14 @@ pub fn replay(sources: Vec<(Venue, Records)>, from_s: i64, to_s: i64, emit: &mut
         }
         let s = &mut srcs[i];
         s.records += 1;
+        let venue_ts = s.book.book.venue_ts_ns;
         if s.book.apply_record(&r.raw, r.tw, r.meta.as_ref()).is_err() {
             bad[i] += 1;
         }
         if s.book.book.valid {
             s.first_valid.get_or_insert(r.tw);
-            if r.meta.as_ref().is_none_or(|m| m.get("ctl").is_none()) && s.book.book.venue_ts_ns > 0 {
+            // only frames that carried a venue timestamp (not heartbeats or acks)
+            if s.book.book.venue_ts_ns != venue_ts {
                 s.lags.push(r.tw - s.book.book.venue_ts_ns);
             }
         }

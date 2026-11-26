@@ -1,6 +1,7 @@
 //! `doppel-replica-replay` on a real tape: `tests/fixtures_replay/` is the first 4.3 s of a
 //! `doppel-taped run --only spot_l2` recording (2026-11-26 15:47:35Z, all seven venues incl. the
-//! LMAX REST poll), lines byte-identical, recompressed at zstd level 19.
+//! LMAX REST poll), lines byte-identical, recompressed at zstd level 19 by `fixtures_replay/slice.py`
+//! (cutoff 1795708060000000000; the source tape is not kept).
 //!
 //! Checks: the rows are deterministic (byte-identical across runs), and every row equals an
 //! independent oracle: its own `VenueBook`s fed in the same merged order, and the exact full
@@ -103,4 +104,32 @@ fn replay_is_deterministic_and_equals_calculate() {
 
 fn all(books: &[VenueBook], snap: &dyn Fn(&VenueBook, i64) -> BookSnapshot, tw: i64) -> Vec<(String, BookSnapshot)> {
     books.iter().map(|b| (b.venue.name().to_string(), snap(b, tw))).collect()
+}
+
+#[test]
+fn streams_chain_hour_and_day_files_and_cut_at_start() {
+    let d = tempfile::tempdir().unwrap();
+    let midnight = 1_795_737_600 * NS; // 2026-11-27 00:00:00Z
+    let frame = |bid: u32| format!(r#"{{"event":"data","data":{{"bids":[["{bid}","1"]],"asks":[["200","1"]],"microtimestamp":"1"}}}}"#);
+    let tws = [midnight - 2 * NS, midnight - NS, midnight + NS / 2, midnight + NS];
+    let mut w = doppel_tape::segment::SegmentWriter::new(d.path(), "spot_l2_bitstamp", 3).unwrap();
+    for (i, &tw) in tws.iter().enumerate() {
+        w.append(&frame(100 + i as u32), tw, tw, None).unwrap();
+    }
+    w.close().unwrap();
+    for f in ["20261126/23.dtape.zst", "20261127/00.dtape.zst"] {
+        assert!(d.path().join("spot_l2_bitstamp").join(f).exists(), "{f}");
+    }
+    let start = midnight - 3 * NS / 2;
+    let got: Vec<i64> = stream_records(d.path(), "spot_l2_bitstamp", start, midnight + NS).map(|r| r.unwrap().tw).collect();
+    assert_eq!(got, tws[1..]);
+    // the replay reads across the boundary: 23:59:59 from the 23h file, 00:00:00 from the next day's
+    let (from, to) = (midnight / NS - 1, midnight / NS + 1);
+    let mut rows = Vec::new();
+    replay(tape_sources(d.path(), start, to), from, to, &mut |r| {
+        rows.push((r.t, r.known_ns, r.value));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(rows, [(from, Some(midnight - NS), Some(150.5)), (from + 1, Some(midnight + NS / 2), Some(151.0))]);
 }
