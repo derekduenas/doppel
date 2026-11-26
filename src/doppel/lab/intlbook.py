@@ -76,6 +76,14 @@ class Reset:
     why: str
 
 
+@dataclass(frozen=True, slots=True)
+class BookObservation:
+    """A venue-stamped book message that produced no level change on this asset."""
+    venue_ms: int
+    tw_ns: int
+    asset: str
+
+
 Item = LevelEvent | Print | Reset
 
 
@@ -157,26 +165,29 @@ class IntlBook:
                              str(m.get("transaction_hash") or ""), mk))
         return out
 
-    def feed(self, rec: dict) -> list[Item]:
-        """One tape record (data frame or ctl). Returns what it produced, in order."""
+    def feed_messages(self, rec: dict) -> Iterator[tuple[dict, list[Item]]]:
+        """Apply one embedded message at a time, exposing its own book state before the next."""
         ctl = (rec.get("meta") or {}).get("ctl")
         if ctl is not None:
             if ctl in NO_RESET_CTL:
-                return []
+                return
             self.reset()
-            return [Reset(int(rec["tw"]), str(ctl))]
+            yield {}, [Reset(int(rec["tw"]), str(ctl))]
+            return
         raw = rec.get("raw") or ""
         if not raw or raw[0] not in "[{":
-            return []  # PONG
+            return  # PONG
         try:
             obj = orjson.loads(raw)
         except orjson.JSONDecodeError:
-            return []
-        out: list[Item] = []
+            return
         for m in obj if isinstance(obj, list) else [obj]:
             if isinstance(m, dict):
-                out += self.apply(m, int(rec["tw"]))
-        return out
+                yield m, self.apply(m, int(rec["tw"]))
+
+    def feed(self, rec: dict) -> list[Item]:
+        """One tape record (data frame or ctl). Returns what it produced, in order."""
+        return [item for _, items in self.feed_messages(rec) for item in items]
 
     def mates(self) -> dict[str, str]:
         """asset -> the other asset of its market (binary markets seen with both assets)."""
@@ -187,17 +198,40 @@ class IntlBook:
         return {a: b for pair in by.values() if len(pair) == 2 for a, b in (pair, pair[::-1])}
 
 
-def replay(root: Path, stream: str, t_from: int, t_to: int, book: IntlBook) -> Iterator[list[Item]]:
-    """Feed ``book`` the stream's records with ``t_from <= tw < t_to`` (unix s) in tape order and
-    yield the items of each record that produced any. A missing hour segment resets the book."""
+def _records(root: Path, stream: str, t_from: int, t_to: int) -> Iterator[dict]:
     for hour in range(t_from - t_from % 3600, t_to, 3600):
         path = segment_path(Path(root), stream, hour * NS)
         if not path.exists():
-            book.reset()
-            yield [Reset(max(hour, t_from) * NS, "missing_segment")]
+            yield {"tw": max(hour, t_from) * NS, "meta": {"ctl": "missing_segment"}}
             continue
         for rec in read_segment(path, verify=True):
             if t_from * NS <= rec["tw"] < t_to * NS:
-                items = book.feed(rec)
-                if items:
-                    yield items
+                yield rec
+
+
+def replay(root: Path, stream: str, t_from: int, t_to: int, book: IntlBook) -> Iterator[list[Item]]:
+    """Yield events grouped by captured record in [t_from, t_to). Missing segments reset the book."""
+    for rec in _records(root, stream, t_from, t_to):
+        items = book.feed(rec)
+        if items:
+            yield items
+
+
+def replay_messages(root: Path, stream: str, t_from: int, t_to: int,
+                    book: IntlBook) -> Iterator[tuple[int, list[Item | BookObservation]]]:
+    """Yield each message with the ordinal of its parent record, preserving intermediate book states."""
+    for record_no, rec in enumerate(_records(root, stream, t_from, t_to)):
+        tw = int(rec["tw"])
+        for msg, items in book.feed_messages(rec):
+            events: list[Item | BookObservation] = list(items)
+            kind = msg.get("event_type")
+            if kind in ("book", "price_change"):
+                touched = ({msg["asset_id"]} if kind == "book" else
+                           {c["asset_id"] for c in msg.get("price_changes") or [] if c.get("asset_id")})
+                changed = {e.asset for e in items if isinstance(e, LevelEvent)}
+                for asset in sorted(touched - changed):
+                    ts = msg.get("timestamp")
+                    ms = int(ts) if ts not in (None, "") else tw // 1_000_000
+                    events.append(BookObservation(ms, tw, asset))
+            if events:
+                yield record_no, events

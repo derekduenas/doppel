@@ -20,11 +20,11 @@ decisions, features, latency and the post-only check are not used: the real orde
 and latency is not what is tested.
 
 ADAPTER (intl tape -> twin events, per asset of a live quote)
-- Clock: venue ms of the frame, in ns, forced strictly increasing in tape order (one tick per
-  tape record), so tape order is kept inside one millisecond. Same clock as ordermatch's times.
-- ``Book``: one full-depth snapshot (bids = BUY levels, asks = SELL levels) after each record
+- Clocks: records arrive in capture order. Venue milliseconds decide whether a public print
+  executed within the inferred lifetime. Receipt nanoseconds bound delayed print reconciliation.
+- ``Book``: one full-depth snapshot (bids = BUY levels, asks = SELL levels) after each message
   that changed the asset, only while a quote is live on it.
-- ``Trade``: one per print, receive time = execution time = the record's tick, aggressor = the
+- ``Trade``: one per print, with separate receipt and venue times. The aggressor is the
   print's taker ``side``. A print on the MATE asset is mirrored into the quote's asset (price
   1 - p, aggressor flipped): the book is mirrored, a bid on A is hit by buyers of B. If the same
   execution is printed on both assets (same tx, mirrored price, same size, mirrored side) the
@@ -46,10 +46,11 @@ REPLAY RULES
   record cannot fill it (the engine's rule for a print at the landing instant).
 - Queue ahead, ``pessimistic`` (the twin's convention): the level's size just before the
   placement increase. ``optimistic`` bound: 0. Cancels ahead never advance the queue (engine).
-- End: outcome ``filled`` / ``cancelled`` -> the quote is cancelled at the first record after
-  ordermatch's ``end_ms`` (the last fill / the exact decrease). ``unknown`` -> kept to ``end_ms``
-  when there is one (the first moment it was certainly gone: an upper bound on its life), else to
-  the next book reset or the end of the tape.
+- End: the first relevant event stamped after ordermatch's inclusive ``end_ms`` freezes the
+  quote's book state. For the next DYING_GRACE_NS of receipt time the adapter can deliver
+  executions stamped inside the original lifetime. Only eligible trades advance the frozen queue.
+  Reset and tape end discard pending reconciliation. A filled order's inferred end can come
+  from its own last fill. This replay is conditional on that observed boundary.
 
 DEFINITIONS (per order and queue mode; shares)
 - real = chain-filled shares; twin = shares the twin filled; error = twin - real.
@@ -67,8 +68,8 @@ DEFINITIONS (per order and queue mode; shares)
   pessimistic <= real <= optimistic. A pessimistic
   over-fill or an optimistic under-fill (``bracket_violations``) is therefore a data, adapter or
   match problem, not model bias. ``adapter_gate.delivered_share`` says how many of the real fills'
-  own prints reached the quote while it was live (a quote is cancelled at the first record
-  stamped after ``end_ms``, so a late-ordered last print can miss it).
+  own prints reached the quote within its venue lifetime. The report separates deliveries
+  received during the grace period from those made before expiry was observed.
   The report retains every violation and gives its placement candidate count.
 - ratio = sum(twin) / sum(real); CI = bootstrap over markets (the market of the placement event
   = one window), ratio of sums.
@@ -100,10 +101,10 @@ from typing import Any
 import numpy as np
 import orjson
 
-from ..twin.engine import MIN_QTY, Quote, WindowSim, _Stats
+from ..twin.engine import DYING_GRACE_NS, MIN_QTY, Quote, WindowSim, _Stats
 from ..twin.tape import Book, Trade
 from .flow import _ts
-from .intlbook import IntlBook, LevelEvent, Print, Reset, px, replay
+from .intlbook import BookObservation, IntlBook, LevelEvent, Print, Reset, px, replay_messages
 from .ordermatch import _q, _r
 from .tradeallocation import Allocation, load_allocations
 
@@ -120,6 +121,16 @@ LIMIT = ("conditional on a real fill: every replayed order filled at least once,
          "fill model's bias given a fill, not a fill probability")
 
 
+class IntlTrade(Trade):
+    """Archived intl execution and receipt clocks can have different offsets."""
+
+    __slots__ = ()
+
+    @property
+    def t_venue(self) -> int:
+        return self.t_exch if self.t_exch is not None else self.tw
+
+
 class QuoteSim(WindowSim):
     """One externally specified resting quote on the engine's maker fill logic."""
 
@@ -134,7 +145,8 @@ class QuoteSim(WindowSim):
         self.pending = {}
         self.dying = []
         self.st = _Stats()
-        self.got: list[tuple[int, float, str]] = []  # (clock ns, shares, via)
+        self.got: list[tuple[int, float, str]] = []  # (venue ns, shares, via)
+        self.trade_venue_ns = 0
         self.quote = Quote(side=side, price=price, size=size, decided_ns=live_ns, ref_c=0.0,
                            inv_at=0.0, remaining=size, live_ns=live_ns, queue=queue)
         self.live[side] = self.quote
@@ -143,7 +155,11 @@ class QuoteSim(WindowSim):
         return math.inf
 
     def _fill(self, t: int, role: str, side: str, px: float, qty: float, via: str, ref_qty: float) -> None:
-        self.got.append((t, qty, via))
+        self.got.append((t if via == "book_cross" else self.trade_venue_ns, qty, via))
+
+    def _on_trade(self, t: int, tr: Trade) -> None:
+        self.trade_venue_ns = tr.t_venue
+        super()._on_trade(t, tr)
 
     def cancel(self, t: int) -> None:
         side = self.quote.side
@@ -177,6 +193,10 @@ class Spec:
     unresolved_live: int = 0
     wallet: str | None = None  # fingerprint candidates: whose list it is on
     placement_candidates: int | None = None
+    placed_record: int = -1
+    expiry_tw_ns: int | None = None
+    late_same_side_prints: int = 0
+    late_deliveries: dict[str, tuple[int, int]] = field(default_factory=dict)  # tx -> venue ms, receipt ns
 
     @property
     def key(self) -> tuple:
@@ -237,7 +257,7 @@ def replay_stream(root: Path, stream: str, t_from: int, t_to: int, pending: dict
     A fingerprint candidate becomes a Spec at its placement event and is handed to ``done`` when
     its replay is over (cancelled at its end, cut by a reset, or the stream ended)."""
     book = IntlBook()
-    clock = 0
+    receipt_high_water = 0
     active: dict[str, list[Spec]] = defaultdict(list)  # quote's own token -> live specs
     mates: dict[str, str] = {}
     n_mk = 0
@@ -245,42 +265,53 @@ def replay_stream(root: Path, stream: str, t_from: int, t_to: int, pending: dict
 
     allocated: set[str] = set()  # a complete decoded match is charged exactly once on this stream
 
-    def live_on(asset: str, ms: int) -> list[Spec]:
-        """Specs still live on ``asset`` at venue ``ms``; the ones past their end are cancelled."""
+    def eligible(asset: str, ms: int, tw: int, *, trade: bool = False) -> list[Spec]:
+        """Apply expiry in receipt order. Only prints may advance a queue after its book freezes."""
         specs = active.get(asset)
         if not specs:
             return []
-        keep = []
+        keep, ready = [], []
         for s in specs:
-            if s.end_ms is not None and ms > s.end_ms:
+            past_end = s.end_ms is not None and ms > s.end_ms
+            if past_end and s.expiry_tw_ns is None:
+                s.expiry_tw_ns = tw
+            if s.expiry_tw_ns is not None and receipt_high_water - s.expiry_tw_ns > DYING_GRACE_NS:
                 for sim in s.sims.values():
-                    sim.cancel(clock)
+                    sim.cancel(tw)
                 if s.kind == "quote":
                     done(s)
-            else:
-                keep.append(s)
+                continue
+            keep.append(s)
+            if past_end or ms < s.placed_ms or s.placed_record == record_no:
+                continue
+            if s.expiry_tw_ns is None or (trade and tw >= s.expiry_tw_ns):
+                ready.append(s)
         if keep:
             active[asset] = keep
         else:
             del active[asset]
-        return keep
+        return ready
 
-    for items in replay(root, stream, t_from, t_to, book):
+    for record_no, items in replay_messages(root, stream, t_from, t_to, book):
+        receipt_high_water = max(receipt_high_water, items[0].tw_ns)
         evs = [it for it in items if not isinstance(it, Reset)]
         if len(evs) < len(items):  # book state lost: nothing more is known about live quotes
             for specs in active.values():
                 for s in specs:
-                    s.cut = "reset"
+                    if s.expiry_tw_ns is None:
+                        s.cut = "reset"
                     if s.kind == "quote":
                         done(s)
             active.clear()
         if not evs:
             continue
-        clock = max(clock + 1, evs[0].venue_ms * MS_NS)
         if len(book.market_of) != n_mk:
             mates, n_mk = book.mates(), len(book.market_of)
         changed: dict[str, int] = {}
         for e in evs:
+            if isinstance(e, BookObservation):
+                eligible(e.asset, e.venue_ms, e.tw_ns)
+                continue
             if not isinstance(e, LevelEvent):
                 continue
             changed[e.asset] = max(changed.get(e.asset, 0), e.venue_ms)
@@ -299,13 +330,16 @@ def replay_stream(root: Path, stream: str, t_from: int, t_to: int, pending: dict
                          size, e.venue_ms, e.tw_ns, end, "cancelled:exact_decrease", 0.0, wallet=wallet)
             if s is not None:
                 s.market, s.queue0 = e.market or e.asset, e.old_size
-                s.sims = {m: QuoteSim(SIDE[s.side], s.price, s.size, clock, q)
+                s.placed_record = record_no
+                s.sims = {m: QuoteSim(SIDE[s.side], s.price, s.size, e.venue_ms * MS_NS, q)
                           for m, q in zip(MODES, (e.old_size, 0.0))}
                 active[s.token].append(s)
         for a, ms in changed.items():
-            specs = live_on(a, ms)
+            specs = eligible(a, ms, evs[0].tw_ns)
             if specs:
-                b = to_book(book.levels.get(a, {}), clock)
+                # The extra nanosecond admits subsequent records in the landing millisecond.
+                # The placement record itself was excluded above. Same-ms crosses and trades tie.
+                b = to_book(book.levels.get(a, {}), ms * MS_NS + 1)
                 for s in specs:
                     for sim in s.sims.values():
                         sim._on_book(b)
@@ -320,7 +354,7 @@ def replay_stream(root: Path, stream: str, t_from: int, t_to: int, pending: dict
                     unknown_view = token != e.asset and m is None
                     if (unknown_view or aggr is None) and (
                             token in (e.asset, m) or active[token][0].market == e.market):
-                        for s in live_on(token, e.venue_ms):
+                        for s in eligible(token, e.venue_ms, e.tw_ns, trade=True):
                             s.unresolved_live += 1
             if aggr is None:
                 stats["prints_bad_side"] += 1
@@ -328,13 +362,15 @@ def replay_stream(root: Path, stream: str, t_from: int, t_to: int, pending: dict
             views = [(e.asset, e.price, aggr)]
             if m:
                 views.append((m, px(1 - e.price), FLIP[aggr]))
-                if e.tx:
-                    first = e.asset < m
-                    c = dup.setdefault((e.tx, e.size) + (views[0] if first else views[1]), [0, 0])
-                    c[not first] += 1
-                    if c[not first] <= c[first]:  # the other asset already printed this execution
-                        stats["mirror_dup_prints"] += 1
-                        continue
+            # Even a duplicate can be the first observation beyond a quote's venue end.
+            eligible_views = {a: eligible(a, e.venue_ms, e.tw_ns, trade=True) for a, _, _ in views}
+            if m and e.tx:
+                first = e.asset < m
+                c = dup.setdefault((e.tx, e.size) + (views[0] if first else views[1]), [0, 0])
+                c[not first] += 1
+                if c[not first] <= c[first]:  # the other asset already printed this execution
+                    stats["mirror_dup_prints"] += 1
+                    continue
             split = allocations.get(e.tx) if allocations is not None else None
             if e.tx in allocated:
                 stats["repeat_allocated_prints"] += 1
@@ -351,9 +387,12 @@ def replay_stream(root: Path, stream: str, t_from: int, t_to: int, pending: dict
                     s.tx_seen.add(e.tx)
                     if price == s.price and ag == HIT_BY[SIDE[s.side]]:
                         s.raw_routed.add(e.tx)
-                specs = live_on(asset, e.venue_ms)
+                specs = eligible_views[asset]
                 if not (specs or watches):
                     continue
+                for s in specs:
+                    if s.expiry_tw_ns is not None and ag == HIT_BY[SIDE[s.side]]:
+                        s.late_same_side_prints += 1
                 if resolved and isinstance(split, Allocation):
                     levels = (split.levels if asset == split.token else
                               tuple((px(1 - p), q) for p, q in split.levels))
@@ -372,15 +411,17 @@ def replay_stream(root: Path, stream: str, t_from: int, t_to: int, pending: dict
                             s.tx_routed.add(e.tx)
                             if resolved:
                                 s.allocated_routed.add(e.tx)
-                    tr = Trade(clock, clock, level, qty, ag, e.tx or None)
+                    tr = IntlTrade(e.tw_ns, e.venue_ms * MS_NS + 1, level, qty, ag, e.tx or None)
                     for s in specs:
                         if level == s.price:
                             hit = ag == HIT_BY[SIDE[s.side]]
                             stats["prints_at_quote_price:" + ("hit_side" if hit else "other_side")] += 1
                             if hit and e.tx in s.tx_routed:
+                                if s.expiry_tw_ns is not None and e.tx not in s.tx_delivered:
+                                    s.late_deliveries[e.tx] = (e.venue_ms, e.tw_ns)
                                 s.tx_delivered.add(e.tx)
                         for sim in s.sims.values():
-                            sim._on_trade(clock, tr)
+                            sim._on_trade(e.tw_ns, tr)
     for specs in active.values():
         for s in specs:
             if s.end_ms is None or s.end_ms >= t_to * 1000:  # end not observed inside this replay
@@ -403,7 +444,10 @@ def result(s: Spec) -> dict:
                  "fills_seen": len(s.tx_seen), "fills_routed": len(s.tx_routed),
                  "fills_delivered": len(s.tx_delivered), "fills_raw_routed": len(s.raw_routed),
                  "fills_allocated_routed": len(s.allocated_routed),
-                 "unresolved_same_side_prints_while_live": s.unresolved_live}
+                 "unresolved_same_side_prints_while_live": s.unresolved_live,
+                 "expiry_observed_tw_ns": s.expiry_tw_ns, "late_same_side_prints": s.late_same_side_prints,
+                 "fills_delivered_during_grace": len(s.late_deliveries),
+                 "late_deliveries": {tx: {"venue_ms": ms, "tw_ns": tw} for tx, (ms, tw) in s.late_deliveries.items()}}
     for m, sim in s.sims.items():
         tw = sum(q for _, q, _ in sim.got)
         src: dict[str, float] = defaultdict(float)
@@ -411,7 +455,7 @@ def result(s: Spec) -> dict:
             src[via] += q
         ex = tw - s.real
         row[m] = {"filled": round(tw, 6), "error": round(ex, 6),
-                  "first_fill_ms": sim.got[0][0] // MS_NS if sim.got else None,
+                  "first_fill_ms": min(t for t, _, _ in sim.got) // MS_NS if sim.got else None,
                   "by_source": {k: round(v, 6) for k, v in sorted(src.items())},
                   "missed": s.real > TOL and tw < MIN_QTY,
                   "phantom_shares": round(ex, 6) if ex > TOL else 0.0,
@@ -484,6 +528,7 @@ def summarize(rows: list[dict], stats: Counter) -> dict:
     seen = sum(r["fills_seen"] for r in orders)
     routed = sum(r["fills_routed"] for r in orders)
     deliv = sum(r["fills_delivered"] for r in orders)
+    late = sum(r.get("fills_delivered_during_grace", 0) for r in orders)
     cond = {m: agg(head, m, ci=True) | {
         "first_fill_twin_minus_real_ms": _q([r[m]["first_fill_ms"] - r["real_first_fill_ms"] for r in head
                                              if r[m]["first_fill_ms"] is not None
@@ -511,6 +556,8 @@ def summarize(rows: list[dict], stats: Counter) -> dict:
                          "allocated_price_and_side": sum(r.get("fills_allocated_routed", 0) for r in orders),
                          "routed_share": _r(routed / seen, 4) if seen else None,
                          "delivered_to_live_quote": deliv,
+                         "delivered_before_expiry_observed": deliv - late,
+                         "delivered_during_receipt_grace": late,
                          "delivered_share": _r(deliv / routed, 4) if routed else None,
                          "note": "low routed_share = the print side/mirror mapping is wrong; low "
                                  "delivered_share = the quote was not live when its own fill's print "
@@ -602,6 +649,7 @@ def run(root: Path, match_dir: Path, t_from: int, t_to: int, streams: list[str] 
     stats["placement_not_found"] = sum(not s.sims for s in specs) + sum(len(v) for v in quotes.values())
     rows = [result(s) for s in specs if s.sims] + [result(s) for s in kept]
     doc = {"params": {"from": t_from, "to": t_to, "streams": streams, "tol_shares": TOL,
+                      "expiry_receipt_grace_ns": DYING_GRACE_NS,
                       "n_boot": N_BOOT, "decoded_orders": str(orders) if orders is not None else None}} | summarize(rows, stats)
     if reduce_quotes:
         total = tally.pop("*", {})
