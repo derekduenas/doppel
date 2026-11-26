@@ -31,6 +31,11 @@ had 38 GiB free. The owner selected Apex-only retention for this pass.
 - The canonical final evaluator hashed files present in a snapshot. There was no check that
   a receipt and the required market stream existed for each evaluation hour. The monitoring CLI
   could append an early binding result directly from an imported JSON file.
+- Review of the repaired recording path found that the first monitoring event in a family could
+  still select alpha after inspecting outcomes. New registrations now pin the sequential code and
+  alpha. An unpinned family defaults to 0.05 unless an existing record already froze a value.
+  The canonical evaluator also reads every selected compressed segment with strict frame and CRC
+  checks, including segments sealed under the older receipt format.
 
 ## Validation design
 
@@ -46,6 +51,13 @@ on Apex. Both copies share a host. The latest archived chain comparison has no G
 for the sampled hour. The Rust shadow still relies on Python for hourly receipts. Project
 milestones for full-chain coverage, queue calibration, shadow performance, and live execution
 have separate acceptance criteria. The research runs here do not alter the installed services.
+
+The archive re-read checked all 586 manifested segments across 22 primary and three shadow
+stream directories, totalling 20,294,458,157 bytes. Every stored size and SHA-256 matched.
+An independent `zstd -t` pass decompressed every archived segment successfully.
+The live desk also built from the installed bundle and current lab data, with both recorders,
+19 displayed streams, 21 genomes across four families, 30 twin files and zero input problems.
+The rendered desk is in `/var/tmp/doppel-audit-desk.lSkUnm` on Apex.
 
 ## Repairs and measured replay results
 
@@ -77,7 +89,9 @@ has SHA-256 `c657ad3fc43d03cc000f20e20aff7bd3b483485c19c1a067c34850b0617f043d`.
 
 The [frozen sample definition](../evidence/2026-11-26-orderreplay/fresh-sample.json) has SHA-256
 `15d7c2810cc9493245dbd371ed04a4d1961606ef285af87414d66b8b0d31cbc7`. The interval
-was `[1795630500,1795630620)`. The known local fill store reconciled 34/34 on block time.
+was `[1795630500,1795630620)`, immediately after the earlier 13-minute range and within a
+wallet-hour studied previously. Its order-level replay results were unseen when selected.
+The known local fill store reconciled 34/34 on block time.
 Two of 14 known-end orders had full price allocation. Both bracket violations occurred among
 the other twelve. Neither the original nor the follow-up sample has an order-ID-bearing placement
 acknowledgement. A single anonymous candidate remains an inference.
@@ -93,3 +107,43 @@ Before the next calibration trial, specify how out-of-order venue timestamps int
 quote lifetime, keep the receive clock for all as-of decisions, and freeze another untouched
 interval. Scoring against an order's own fill as proof that its simulated quote remained live
 would be circular. Preserve the observed 30/32 delivery result as the outcome of this trial.
+
+The repeat of the frozen trial used `audit-validation.4OcRq1/final/fresh`. Its per-order JSONL
+matched the preceding run byte-for-byte, SHA-256
+`b037cfa40ddd29c9503f87a6b11d5d826c4bd494457aa21b721e96b06a95ac04`.
+Matching took 65.18 seconds and replay took 64.14 seconds on the shared host.
+
+## Build and reproduction
+
+The reconstruction source is commit `2ec08ab` on `review/system-audit-20261126`. Registry-only
+hardening followed in `5d93138`. The final source
+distribution and wheel built offline. All 64 source modules in the wheel matched the checkout
+byte-for-byte, and all 30 declared command entry points imported. The wheel SHA-256 in this run
+was `f350873974e48fa513b11a084f0840bc24423da493f38c33982ae680c4840fce`. The dependency lock
+validated offline. Registry verification found 21 valid records with head `7e4843a45ad1dc25`,
+and the expression check passed at semantics `49083cf45e14`, probe v3.
+The final integration suite passed all 446 Python tests in 256.05 seconds. Pyright reported
+zero errors and warnings. An earlier suite ran while checkpoint signatures were being edited and
+failed a cache-reuse assertion. Both the isolated reconstruction suite and the final full run
+passed against stable source.
+
+Use a unique temporary pytest directory when several workers share this Mac. Python tests
+include loopback mock servers. The Mac initially exhausted free space during concurrent Python
+and Rust checks. Cleaning the two crates' regenerable debug products reclaimed 1.2 GiB.
+The unchanged Rust workspace and its committed parity fixtures were then tested in isolation on
+Apex under `/var/tmp/doppel-rust-audit.EJDQb2`, offline, with one low-priority build job.
+Rust formatting and Clippy with warnings denied passed, as did all 72 Rust tests.
+After verification, `cargo clean` removed the 614.8 MiB disposable target there. The logs,
+source and fixtures remain available.
+
+```sh
+uv lock --check --offline
+uv build --offline --out-dir "$(mktemp -d)"
+PYTHONPATH=src /Users/derekduenas/doppel/.venv/bin/python -m pytest -q --basetemp="$(mktemp -d)"
+/Users/derekduenas/doppel/.venv/bin/pyright --pythonpath /Users/derekduenas/doppel/.venv/bin/python src
+PYTHONPATH=src /Users/derekduenas/doppel/.venv/bin/doppel-genome verify
+PYTHONPATH=src /Users/derekduenas/doppel/.venv/bin/doppel-genome dna
+cargo fmt --check
+cargo test --locked --offline -j1
+cargo clippy --locked --offline --all-targets -j1 -- -D warnings
+```
