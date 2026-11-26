@@ -1,0 +1,20 @@
+{
+  "host": "Apex",
+  "started_utc": "2026-11-26T23:02:34.781372Z",
+  "runtime": "Linux 6.8.0-149-generic x86_64, glibc 2.39, Python 3.12.3, pytest 9.2.0",
+  "scratch": "/tmp/doppel-release-audit.3s7AhEvN",
+  "scope": "Disposable release tree and archive; simulated package installation, git mirror and system service. Directory exchange used the host libc and filesystem.",
+  "installer_sha256": "828578d099124675f04fcd3c65658904b3f5b99ba1d7df7f25074f6c0b2b5ba8",
+  "test_sha256": "991af8b4f99ef92d2592d75067829be824b10e1c538c85f831c2d06c6128d4df",
+  "junit_xml_sha256": "2674aa995bb2cfbe969daae81b9e874a4bc2348015cbfa14cb9d8a9d66520e26",
+  "passed": 5,
+  "failed": 0,
+  "skipped": 0,
+  "cases": [
+    "Successful install, old release retained, no restart requested",
+    "Candidate installation failure leaves original release in place",
+    "Post-swap launcher failure restores original release",
+    "Mirror main moves before publication, original release remains in place",
+    "Service restart failure restores original release and restarts its mock service"
+  ]
+}
