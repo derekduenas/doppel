@@ -30,6 +30,8 @@ def evaluation_inputs(data: Path, tokens: Path | None) -> dict[str, Path]:
              for stream in streams for p in (data / stream).glob("*/*.dtape.zst")}
     if not any(p.split("/", 1)[0] in WS_STREAMS for p in paths):
         raise ValueError("no Polymarket US websocket tape in the snapshot")
+    for stream in {name.split("/", 1)[0] for name in paths}:
+        paths[f"{stream}/manifest.jsonl"] = data / stream / "manifest.jsonl"
     paths.update({str(p.relative_to(data)): p for p in (data / "receipts").glob("*/*.json")})
     if tokens is not None:
         paths["lab/tokens.jsonl"] = tokens
@@ -41,11 +43,26 @@ def stamp(path: Path) -> tuple[int, int, int, int, int]:
     return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
 
 
-def fingerprint(data: Path, paths: dict[str, Path]) -> tuple[str, dict[str, tuple]]:
-    manifests = {}
+def fingerprint(data: Path, paths: dict[str, Path], *, require_binding: bool = False,
+                file_digests: dict[str, str] | None = None) -> tuple[str, dict[str, tuple]]:
+    """Check sealed bytes and include their manifest provenance in the snapshot identity."""
+    manifests: dict[str, dict[str, dict]] = {}
     entries = {}
     stamps = {}
+    for stream in {key.split("/", 1)[0] for key in paths if key.endswith(".dtape.zst")}:
+        name = f"{stream}/manifest.jsonl"
+        path = data / name
+        marks = stamp(path)
+        raw = path.read_bytes()
+        if stamp(path) != marks:
+            raise ValueError(f"manifest changed while reading: {name}")
+        rows = map(orjson.loads, raw.splitlines())
+        manifests[stream] = {r["file"]: r for r in rows}
+        entries[name] = [len(raw), hashlib.sha256(raw).hexdigest()]
+        stamps[name] = marks
     for name, path in paths.items():
+        if name in stamps:
+            continue
         marks = stamp(path)
         with path.open("rb") as f:
             sha = hashlib.file_digest(f, "sha256").hexdigest()
@@ -53,19 +70,20 @@ def fingerprint(data: Path, paths: dict[str, Path]) -> tuple[str, dict[str, tupl
             raise ValueError(f"evaluation input changed while hashing: {name}")
         if name.endswith(".dtape.zst"):
             stream, rel = name.split("/", 1)
-            if stream not in manifests:
-                manifest = data / stream / "manifest.jsonl"
-                manifests[stream] = {row["file"]: (row["bytes"], row["sha256"])
-                                     for row in map(orjson.loads, manifest.read_bytes().splitlines())}
-            if manifests[stream].get(rel) != (marks[2], sha):
+            seal = manifests.get(stream, {}).get(rel)
+            if seal is None or (seal.get("bytes"), seal.get("sha256")) != (marks[2], sha):
                 raise ValueError(f"tape segment is unsealed or differs from its manifest: {name}")
+            if require_binding and seal.get("evidence_use") == "diagnostic_only":
+                raise ValueError(f"diagnostic_only tape revision cannot enter a canonical replay: {name}")
             # Older receipts tolerated a damaged final frame. Hash agreement alone only
             # establishes that the snapshot still contains those same bytes.
             for _ in read_segment(path, strict=True):
                 pass
         entries[name] = [marks[2], sha]
         stamps[name] = marks
-    return hashlib.sha256(orjson.dumps(entries)).hexdigest(), stamps
+    if file_digests is not None:
+        file_digests.update({name: row[1] for name, row in entries.items()})
+    return hashlib.sha256(orjson.dumps(entries, option=orjson.OPT_SORT_KEYS)).hexdigest(), stamps
 
 
 def protocol() -> dict:
@@ -75,10 +93,12 @@ def protocol() -> dict:
             "flow_delay_s": 0, "sequential_alpha": sequential.ALPHA}
 
 
-def verify_hours(data: Path, horizons, start: int, end: int, paths: dict[str, Path]) -> None:
+def verify_hours(data: Path, horizons, start: int, end: int, paths: dict[str, Path],
+                 *, segment_digests: dict[str, str] | None = None) -> None:
     """Reject an omitted evaluation hour or a snapshot missing input attested in its receipt."""
     streams = {key.split("/", 1)[0] for key in paths} | set(WS_STREAMS) | set(REFERENCE_STREAMS)
-    if "lab/tokens.jsonl" in paths:
+    flow = "lab/tokens.jsonl" in paths
+    if flow:
         streams.update(("rtds_a", "rtds_b"))
     for hour in range(start // 3600 * 3600, end, 3600):
         segment = hour_path(data, "pmus_ws", hour).relative_to(data / "pmus_ws")
@@ -86,11 +106,24 @@ def verify_hours(data: Path, horizons, start: int, end: int, paths: dict[str, Pa
         doc = orjson.loads(receipt.read_bytes())
         if doc.get("day") != segment.parent.name or doc.get("hour") != int(segment.name[:2]):
             raise ValueError(f"wrong hour in receipt {receipt}")
+        version = doc.get("schema_version", 1)
+        if type(version) is not int or version not in (1, 2):
+            raise ValueError(f"unsupported hourly receipt version in {receipt}")
+        if version == 2 and doc.get("missing_expected_streams"):
+            raise ValueError(f"hourly receipt reports missing expected streams in {receipt}: "
+                             f"{doc['missing_expected_streams']}")
         present = doc["streams"]
         for horizon in horizons:
             if not any(present.get(s, {}).get("data_records", 0) > 0
                        for s in ("pmus_ws", f"pmus_ws_{horizon}")):
                 raise ValueError(f"no recorded PM US {horizon} data in {receipt}")
+        if flow and not any(present.get(s, {}).get("data_records", 0) > 0 for s in ("rtds_a", "rtds_b")):
+            raise ValueError(f"no recorded RTDS data for flow evaluation in {receipt}")
+        if version == 2:
+            for stream in streams - present.keys():
+                key = f"{stream}/{segment.as_posix()}"
+                if key in paths:
+                    raise ValueError(f"evaluation segment is not in hourly receipt: {key}")
         for stream, row in present.items():
             if stream not in streams and not ("lab/tokens.jsonl" in paths and stream.startswith("clob_")):
                 continue
@@ -98,6 +131,14 @@ def verify_hours(data: Path, horizons, start: int, end: int, paths: dict[str, Pa
             if (row.get("crc_ok") is not True or key not in paths
                     or paths[key].stat().st_size != row.get("bytes")):
                 raise ValueError(f"snapshot differs from hourly receipt: {key}")
+            if version == 2 or "sha256" in row:
+                if segment_digests is None:
+                    with paths[key].open("rb") as f:
+                        actual = hashlib.file_digest(f, "sha256").hexdigest()
+                else:
+                    actual = segment_digests[key]
+                if row.get("sha256") != actual:
+                    raise ValueError(f"hourly receipt digest differs from snapshot: {key}")
 
 
 def replay_snapshot(data: Path, lab: Path | None, registration: dict, *, through: int | None = None) -> tuple[list[dict], dict]:
@@ -120,14 +161,16 @@ def replay_snapshot(data: Path, lab: Path | None, registration: dict, *, through
     if registered_policy is not None and registered_policy != policy:
         raise ValueError("installed evaluator differs from the preregistered protocol")
     paths = evaluation_inputs(data, tokens)
-    input_sha, stamps = fingerprint(data, paths)
-    verify_hours(data, g.universe.horizons, int(start), int(end), paths)
+    digests: dict[str, str] = {}
+    input_sha, stamps = fingerprint(data, paths, require_binding=True, file_digests=digests)
+    verify_hours(data, g.universe.horizons, int(start), int(end), paths, segment_digests=digests)
     cfg = SimConfig()
     windows = run_twin(data, g, int(start), int(end), cfg, lab=lab)
     if (evaluation_inputs(data, tokens) != paths or any(stamp(p) != stamps[k] for k, p in paths.items())
             or code_sha256() != policy["code_sha256"]):
         raise ValueError("evaluation input or source changed during replay")
     return windows, {**policy, "input_sha256": input_sha, "files": len(paths),
+                     **({"tokens_sha256": digests["lab/tokens.jsonl"]} if need_tokens else {}),
                      "range": [int(start), int(end)], "protocol_preregistered": registered_policy is not None}
 
 

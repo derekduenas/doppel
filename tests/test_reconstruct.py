@@ -916,3 +916,13 @@ def test_s7_the_timer_queue_retries_a_range_before_new_ones(tmp_path):
         reconstruct.run_pending(state, (24, 30), go(lambda a: False), 100)
     st = orjson.loads(state.read_bytes())
     assert st["pending"] == [] and [p["from"] for p in st["gave_up"]] == [24]
+
+
+def test_wallet_gates_use_exact_counts_at_thresholds():
+    rp = {"counts": {"orders": 100001, "headline_orders": 100001, "placement_not_found": 1001},
+          "adapter_gate": {"print_seen_in_replay": 100001, "routed_to_order_price_and_side": 95000,
+                           "delivered_to_live_quote": 90249, "routed_share": 0.95, "delivered_share": 0.95},
+          "bracket_violations": {"pessimistic_overfilled": 5001, "optimistic_underfilled": 0}}
+    g = reconstruct.wallet_gates(GATES, None, None, rp)
+    for k in ("bracket_violation_share", "placement_not_found_share", "routed_share", "delivered_share"):
+        assert g[f"orderreplay.{k}"]["status"] == "fail", k

@@ -950,21 +950,24 @@ def wallet_gates(table: dict[str, dict], vs: dict | None, om: dict | None, rp: d
     bv = rp.get("bracket_violations", {})
     to_replay = cnt.get("orders", 0) - cnt.get("orders_wrong_match_skipped", 0)
     head = cnt.get("headline_orders", 0)
+
+    def fraction(num: int | None, den: int | None) -> tuple[float | None, int | None]:
+        return (num / den if num is not None and den else None, den)
+
     vals = {
-        "ordertape.verified_share": (vs.get("share"), vs.get("fills_expected")),
+        "ordertape.verified_share": fraction(vs.get("fills_matched"), vs.get("fills_expected")),
         # An integer comparison avoids rounding a very small coverage gap up to 100%.
         "ordertape.full_store_coverage": (int(vs.get("fills_in_range") == vs.get("fills_expected")),
                                            vs.get("fills_in_range")),
-        "ordermatch.match_rate": (om.get("match_rate"), om.get("observable")),
-        "ordermatch.placebo_rate": (om.get("placebo_rate"), om.get("observable")),
-        "orderreplay.routed_share": (ag.get("routed_share"), ag.get("print_seen_in_replay")),
-        "orderreplay.delivered_share": (ag.get("delivered_share"), ag.get("routed_to_order_price_and_side")),
-        "orderreplay.placement_not_found_share": (
-            round(cnt["placement_not_found"] / to_replay, 4) if to_replay else None, to_replay),
+        "ordermatch.match_rate": fraction(om.get("matched"), om.get("observable")),
+        "ordermatch.placebo_rate": fraction(om.get("placebo_matched"), om.get("observable")),
+        "orderreplay.routed_share": fraction(ag.get("routed_to_order_price_and_side"), ag.get("print_seen_in_replay")),
+        "orderreplay.delivered_share": fraction(ag.get("delivered_to_live_quote"), ag.get("routed_to_order_price_and_side")),
+        "orderreplay.placement_not_found_share": fraction(cnt.get("placement_not_found"), to_replay),
         "orderreplay.fully_allocated_share": (
             bv.get("by_price_evidence", {}).get("fully_allocated", {}).get("orders", 0) / head if head else None, head),
         "orderreplay.bracket_violation_share": (
-            round((bv["pessimistic_overfilled"] + bv["optimistic_underfilled"]) / head, 4) if head else None, head),
+            (bv["pessimistic_overfilled"] + bv["optimistic_underfilled"]) / head if head else None, head),
     }
     return {k: gate(table, k, *v) for k, v in vals.items()}
 

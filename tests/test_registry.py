@@ -325,3 +325,72 @@ def test_canonical_fingerprint_rejects_a_self_hashed_broken_tail(tmp_path):
     man.write_bytes(orjson.dumps(row) + b"\n")
     with pytest.raises(ValueError, match="truncated zstd"):
         fingerprint(tmp_path, evaluation_inputs(tmp_path, None))
+
+
+def test_receipt_digest_membership_and_flow_coverage(tmp_path):
+    from doppel.tape.receipts import build_receipt
+    from doppel.tape.segment import SegmentWriter
+    from doppel.twin.evaluate import evaluation_inputs, verify_hours
+
+    for stream in ("pmus_ws_5m", "ref_brti_raw", "rtds_a"):
+        w = SegmentWriter(tmp_path, stream)
+        w.append("{}", tw=1)
+        w.close()
+    (tmp_path / "ref_brti_raw/import-watermark.json").write_bytes(orjson.dumps({"max_t_ms": 3600000}))
+    receipt = tmp_path / "receipts/19700101/00.json"
+    doc = build_receipt(tmp_path, "19700101", 0)
+    doc["schema_version"] = 2
+    paths = evaluation_inputs(tmp_path, tmp_path / "tokens.jsonl")
+    for stream, row in doc["streams"].items():
+        row["sha256"] = hashlib.sha256(paths[f"{stream}/19700101/00.dtape.zst"].read_bytes()).hexdigest()
+    receipt.write_bytes(orjson.dumps(doc))
+    verify_hours(tmp_path, ["5m"], 0, 3600, paths)
+
+    doc["missing_expected_streams"] = ["ref_brti_raw"]
+    receipt.write_bytes(orjson.dumps(doc))
+    with pytest.raises(ValueError, match="missing expected streams"):
+        verify_hours(tmp_path, ["5m"], 0, 3600, paths)
+    doc["missing_expected_streams"] = []
+    row = doc["streams"]["ref_brti_raw"]
+    digest = row.pop("sha256")
+    for bad in (None, "0" * 64):
+        if bad is not None:
+            row["sha256"] = bad
+        receipt.write_bytes(orjson.dumps(doc))
+        with pytest.raises(ValueError, match="digest"):
+            verify_hours(tmp_path, ["5m"], 0, 3600, paths)
+    row["sha256"] = digest
+    del doc["streams"]["ref_brti_raw"]
+    receipt.write_bytes(orjson.dumps(doc))
+    with pytest.raises(ValueError, match="not in hourly receipt"):
+        verify_hours(tmp_path, ["5m"], 0, 3600, paths)
+
+    doc["streams"]["ref_brti_raw"] = row
+    doc["streams"]["rtds_a"]["data_records"] = 0
+    receipt.write_bytes(orjson.dumps(doc))
+    with pytest.raises(ValueError, match="RTDS"):
+        verify_hours(tmp_path, ["5m"], 0, 3600, paths)
+    # A non-flow strategy does not consume RTDS.
+    verify_hours(tmp_path, ["5m"], 0, 3600, evaluation_inputs(tmp_path, None))
+
+
+def test_binding_replay_refuses_diagnostic_only_reconstruction(tmp_path, monkeypatch):
+    from doppel.tape.receipts import build_receipt
+    from doppel.tape.segment import SegmentWriter
+    from doppel.twin import evaluate
+
+    w = SegmentWriter(tmp_path, "pmus_ws_5m")
+    w.append("{}", tw=1)
+    w.close()
+    build_receipt(tmp_path, "19700101", 0)
+    manifest = tmp_path / "pmus_ws_5m/manifest.jsonl"
+    row = orjson.loads(manifest.read_bytes())
+    row.update(evidence_use="diagnostic_only", provenance="receipt_prefix_upstream_reconstructed")
+    manifest.write_bytes(orjson.dumps(row) + b"\n")
+    paths = evaluate.evaluation_inputs(tmp_path, None)
+    evaluate.fingerprint(tmp_path, paths)
+    evaluate.verify_hours(tmp_path, ["5m"], 0, 3600, paths)
+    monkeypatch.setattr(evaluate, "run_twin", lambda *a, **k: pytest.fail("opened strategy outcomes"))
+    with pytest.raises(ValueError, match="diagnostic_only"):
+        evaluate.replay_snapshot(tmp_path, None, {"genome": to_dict(_g()), "eval_window": {
+            "start_s": 0, "end_s": 3600}})

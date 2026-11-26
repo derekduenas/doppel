@@ -31,8 +31,13 @@ For intl-flow genomes, also supply `--lab FROZEN_LAB` with the frozen token map.
 replays the registered genome with the canonical settings and checks each segment against its
 manifest and reads through the compressed frames with CRC verification. Every evaluation hour
 needs a closed receipt covering the genome's market horizons.
-The evaluator checks the receipt's recorded input streams against the snapshot. The registry
-records the evaluator source hash, settings and a digest of its inputs.
+The evaluator compares each attested stream with its segment. Version 2 receipts also pin the
+compressed SHA-256 of each segment, reject unattested inputs for the hour and flag missing
+required streams. Flow evaluations need recorded RTDS data on at least one socket each hour.
+Legacy receipts keep their original byte-count and CRC checks. The registry records the evaluator
+source hash, settings and a digest that includes the input files and their manifests. Flow replay
+also records `tokens_sha256` to compare with the frozen token map. A manifest
+revision marked `diagnostic_only` is available for integrity checks and blocks a binding replay.
 New CLI registrations pin the evaluator before the window opens. Earlier registrations lack this
 pin and report that fact in their result metadata. Imported JSON and manual p-values are nonbinding.
 

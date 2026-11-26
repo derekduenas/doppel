@@ -212,3 +212,21 @@ def test_cli_monitor(tmp_path, capsys, monkeypatch):
     assert reg.records()[-1]["source"]["evaluation"]["input_sha256"] == "cd"*32
     assert cli(["monitor", "--root", str(root), "--genome", "zz", "--results", str(res)]) == 2
     assert cli(["verify", "--root", str(root)]) == 0
+
+
+def test_record_monitor_pins_the_already_scored_window_prefix(tmp_path):
+    reg, clock, ids = _setup(tmp_path, k=1)
+    gid = ids[0]
+    doc = _results(gid, 0.0)
+    clock.t = START + 86400
+    initial = reg.record_monitor(gid, doc)
+    assert initial["kind"] == "interim"
+    before = reg.path.read_bytes()
+    clock.t += 86400
+    # Replace one already used value, without changing the window count or the observation cutoff.
+    doc["windows"][10]["net_c"] += 1.0
+    with pytest.raises(RegistryError, match="previously recorded window"):
+        reg.record_monitor(gid, doc)
+    assert reg.path.read_bytes() == before
+    extending = reg.record_monitor(gid, _results(gid, 0.0))
+    assert extending["stats"]["windows_used"] > initial["stats"]["windows_used"]

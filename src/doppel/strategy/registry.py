@@ -312,13 +312,13 @@ class Registry:
         ``as_of`` moves backwards."""
         def build(recs: list[dict]) -> dict:
             now = self._now()
-            m = self._monitor(recs, genome_id, results, alpha, now, source)
+            mine = [r for r in recs if r["kind"] in SEQ_KINDS and r["genome_id"] == genome_id]
+            m = self._monitor(recs, genome_id, results, alpha, now, source, previous=mine[-1] if mine else None)
             if (results.get("twin") or {}).get("diagnostic"):
                 raise RegistryError("twin run is DIAGNOSTIC (relaxed data gates): not evidence, not recorded")
             if m["stats"]["n_blocks"] < 1:
                 raise RegistryError(f"no complete block of {m['params']['block']} windows inside the "
                                     "evaluation window yet")
-            mine = [r for r in recs if r["kind"] in SEQ_KINDS and r["genome_id"] == genome_id]
             fam = [r for r in recs if r["kind"] in SEQ_KINDS and r["family"] == m["family"]]
             registration = next(r for r in recs if r["kind"] == "register" and r["genome_id"] == genome_id)
             policy = registration.get("evaluation_protocol") or {}
@@ -332,8 +332,6 @@ class Registry:
             if fam and any(fam[0]["params"][k] != m["params"][k] for k in frozen):
                 first = {k: fam[0]["params"][k] for k in frozen}
                 raise RegistryError(f"family {m['family']} is monitored with {first}: parameters are frozen")
-            if mine and m["as_of_s"] < mine[-1]["as_of_s"]:
-                raise RegistryError(f"as_of {m['as_of']} is before the last recorded {mine[-1]['as_of']}")
             kind = {"EARLY_PASS": "early_pass", "EARLY_KILL": "early_kill"}.get(m["decision"], "interim")
             prior_early = any(r["kind"] != "interim" for r in mine)
             return {"kind": kind, "tw": int(now * 1e9), "genome_id": genome_id, "family": m["family"],
@@ -344,7 +342,7 @@ class Registry:
         return self._append(build)
 
     def _monitor(self, recs: list[dict], genome_id: str, results: dict, alpha: float, now: float,
-                 source: dict | None) -> dict:
+                 source: dict | None, *, previous: dict | None = None) -> dict:
         if not 0.0 < alpha < 1.0:
             raise RegistryError("alpha must be in (0, 1)")
         reg = next((r for r in recs if r["kind"] == "register" and r["genome_id"] == genome_id), None)
@@ -360,10 +358,23 @@ class Registry:
         prm = seq.params(g, alpha)
         rows = seq.eval_windows(results.get("windows") or [], w["start_s"], w["end_s"], now)
         used = rows[: len(rows) // prm["block"] * prm["block"]]
+        as_of_s = float(used[-1]["end"]) if used else float(w["start_s"])
+        # A sequential test can extend its observed prefix. A feed revision that changes a
+        # completed block (including moving a previously excluded window into it) is a new sample.
+        observations = [(r["start"], r["end"], r.get("slug"), r["net_c"], r.get("contracts") or 0)
+                        for r in used]
+        if previous is not None:
+            if as_of_s < previous["as_of_s"]:
+                raise RegistryError(f"as_of {iso(as_of_s)} is before the last recorded {previous['as_of']}")
+            prior = previous["stats"]
+            if "observations_sha256" in prior:
+                prefix = observations[:prior["windows_used"]]
+                if _sha(orjson.dumps(prefix)) != prior["observations_sha256"]:
+                    raise RegistryError("previously recorded window observations changed")
         stats = seq.e_processes([float(r["net_c"]) for r in used], prm["bound_c"], prm["block"], alpha)
         n_traded = sum(1 for r in used if (r.get("contracts") or 0) > 0)
-        stats.update({"windows_seen": len(rows), "windows_traded": n_traded})
-        as_of_s = float(used[-1]["end"]) if used else float(w["start_s"])
+        stats.update({"windows_seen": len(rows), "windows_traded": n_traded,
+                      "observations_sha256": _sha(orjson.dumps(observations))})
         fam = self._family_e(recs, reg["family"], {genome_id: stats["pass"]["e_max"]})
         p_holm = seq.e_holm([x["e_max"] for x in fam])
         me = [x["genome_id"] for x in fam].index(genome_id)

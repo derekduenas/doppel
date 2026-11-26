@@ -8,7 +8,9 @@ To inspect an existing twin JSON, use `doppel-genome monitor --genome ID --resul
 To append a monitoring event, use `doppel-genome monitor --genome ID --data SEALED_TAPE --record`
 and supply `--lab FROZEN_LAB` for genomes that use intl flow. This replays from the registered
 start through the last closed UTC hour or the evaluation end, whichever comes first. The record
-includes the input digest, evaluation bounds and evaluator version.
+includes the input digest, evaluation bounds and evaluator version. New monitoring records also
+pin the ordered window observations through the last complete block. A later record can extend
+that prefix only when the earlier windows reproduce. Records predating this check lack a prefix digest.
 New registrations pin the monitoring source and alpha. An unpinned family with no prior
 monitoring record uses the default alpha of 0.05. Inspection accepts other alpha values.
 
