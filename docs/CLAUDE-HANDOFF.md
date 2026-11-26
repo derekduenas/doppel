@@ -7,15 +7,22 @@ Open `/Users/derekduenas/doppel-integration`. The integration worktree now uses 
 new files in the review. The original checkout is `/Users/derekduenas/doppel`; its working
 tree and the three published pods are separate from this integration.
 
-The [system audit and replay validation](SYSTEM-AUDIT-20261126.md) records the follow-up to this investigation.
-Start there for current results. Allocation at maker prices fixed the 97¢ routing miss. The
-fresh trial still missed two deliveries because a later venue timestamp arrived before the
-corresponding fill. The next calibration trial needs a prespecified lifetime rule for this
-clock inversion and another untouched interval. The cold 13-minute run completed in
-16m 22.90s with 1,054.8 MiB peak memory and zero RPC requests. Four of 65 headline orders
-overfilled the pessimistic bound. The reconstruction timer remains gated. See the
-[run receipt](../evidence/2026-11-26-orderreplay/validation-results.json) for commands and
-for the cold and resumed outputs. The sections below preserve the earlier investigation.
+Start with the [paired quote-expiry trial](../evidence/2026-11-26-quote-expiry/RESULTS.md).
+The protocol was frozen at `b787e7a` and candidate `2688f00` recovered both fills lost to
+inverted timestamps. Delivery on the original 16 orders rose from 30/32 to 32/32. The
+two-minute holdout contained six screened wallet orders and zero eligible BTC 5m orders.
+Only 3/14 known-end discovery orders had complete price allocation. The trial is closed and
+the reconstruction timer stays off. The next calibration step requires independently identifiable
+placements and ends, such as an existing order-owner acknowledgement export. Register the next
+collection and sample requirement before viewing outcomes. The public archive alone does not
+provide those order IDs. The [paired receipt](../evidence/2026-11-26-quote-expiry/paired-results.json)
+contains all four run results and the retained Apex paths.
+
+The [system audit](SYSTEM-AUDIT-20261126.md) records the earlier fixes. Allocation at maker
+prices resolved the 97¢ routing miss. The cold 13-minute run took 16m 22.90s, used 1,054.8 MiB
+peak memory and made zero RPC requests. Four of 65 known-end orders overfilled the pessimistic
+bound. The [full run receipt](../evidence/2026-11-26-orderreplay/validation-results.json)
+preserves the cold and resumed outputs. The sections below preserve the earlier investigation.
 
 The integration combines Claude's receive-time patch, the canonical final-verdict evaluator,
 and the Reconstruct, Rulefit, and Fidelity fixes. The combined suite passed 423 tests on the

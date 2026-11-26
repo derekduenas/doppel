@@ -206,8 +206,9 @@ pipeline does about each:
   goes up). Above the budget the run stops: finished units stay, nothing else runs, the report
   says RUN STOPPED. Run again with a shorter chunk or a smaller batch.
 
-No real-tape memory figure exists for the chunked pipeline yet; the first Apex run should record
-`peak_rss_mb` per unit in a FINDINGS row.
+The audited 13-minute replay of one wallet on Apex peaked at 1,054.8 MiB and took
+16m 22.90s from empty pipeline checkpoints with the decoded orders already available.
+The [system audit](SYSTEM-AUDIT-20261126.md) records the interval, stream count and resume results.
 
 **Resume.** Each unit of work (the order tape call, each chunk x wallet batch of book match and
 twin replay, each merge, the ledgers) stores a key: a sha256 over its code files (the pipeline's
@@ -298,6 +299,15 @@ or `NO GATE`.
    obligations; each UNKNOWN row says what data would resolve it.
 7. **clusters.** Wallets sharing a software or operator key. Evidence of shared software, never
    proof; a cluster on a stock client's salt pattern carries little information.
+
+For delivery timing, read `orderreplay/orderreplay.json` alongside the per-order rows.
+`delivered_before_expiry_observed` counts routed prints received before any relevant message
+showed the quote's inferred end had passed. `delivered_during_receipt_grace` counts routed
+prints received within one second of that observation whose venue timestamps still fall within
+the original quote lifetime. Each late delivery records both clocks. The quote's last eligible
+book stays frozen during that second. A reset or the end of the input ends reconciliation.
+A fully filled order can take its end time from its own last fill, so delivery alone cannot
+establish the order's queue position or independently verify its lifetime.
 
 ## Rulefit and Fidelity handoff
 

@@ -7,6 +7,10 @@ at `3cff434`, fidelity at `304f01d`, reconstruct at `7f05f38`, and rulefit at `b
 The installed Apex release marker was `44aa7e2`. The historical investigations and original
 pilot paths are in [Claude's handoff](CLAUDE-HANDOFF.md).
 
+The subsequent [quote-expiry trial](../evidence/2026-11-26-quote-expiry/RESULTS.md) reproduced
+the 30/32 historical result, recovered the two missed deliveries on those rows and found zero
+eligible BTC 5m orders in its prespecified holdout.
+
 At 21:33 UTC both recorders were active. The 20:00 UTC receipt listed 20 streams with data.
 Every stream reported CRC success. RTDS A captured 53,317 of the 53,740 distinct transactions
 seen by either socket and B captured 53,047. These are socket agreement measures. The receipt

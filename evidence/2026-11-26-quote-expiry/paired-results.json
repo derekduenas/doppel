@@ -1,0 +1,672 @@
+{
+  "apex_root": "/var/backups/doppel-sealed-20261126/research/ordertape-pilot.TUedd4/expiry-trial.g88jw6",
+  "candidate_commit": "2688f00a6ff79dec880300d46d804af678f275a5",
+  "control_commit": "45ccb9244af2afe51407092df977a248fcdbc628",
+  "discovery": {
+    "candidate": {
+      "adapter_gate": {
+        "allocated_price_and_side": 32,
+        "delivered_before_expiry_observed": 30,
+        "delivered_during_receipt_grace": 2,
+        "delivered_share": 1.0,
+        "delivered_to_live_quote": 32,
+        "fills": 32,
+        "located_by_print": 32,
+        "note": "low routed_share = the print side/mirror mapping is wrong; low delivered_share = the quote was not live when its own fill's print came (lifetime / tape order). Either way the bias numbers then measure the adapter, not the fill model",
+        "print_seen_in_replay": 32,
+        "raw_print_price_and_side": 29,
+        "routed_share": 1.0,
+        "routed_to_order_price_and_side": 32
+      },
+      "bracket_violations": {
+        "by_placement_evidence": {
+          "multiple_candidates": {
+            "optimistic_underfilled": 0,
+            "orders": 3,
+            "pessimistic_overfilled": 0
+          },
+          "one_candidate": {
+            "optimistic_underfilled": 0,
+            "orders": 11,
+            "pessimistic_overfilled": 0
+          }
+        },
+        "by_price_evidence": {
+          "fully_allocated": {
+            "optimistic_underfilled": 0,
+            "orders": 3,
+            "pessimistic_overfilled": 0
+          },
+          "unresolved": {
+            "optimistic_underfilled": 0,
+            "orders": 11,
+            "pessimistic_overfilled": 0
+          }
+        },
+        "note": "the bracket assumes a correctly attributed placement, FIFO and price-level print sizes. A single candidate can still belong to another order.",
+        "optimistic_underfilled": 0,
+        "pessimistic_overfilled": 0
+      },
+      "by_outcome": {
+        "cancelled:exact_decrease": {
+          "cut": 0,
+          "delivered": 9,
+          "fills": 9,
+          "known_end": 8,
+          "orders": 8,
+          "receipt_grace_deliveries": 0
+        },
+        "filled:chain": {
+          "cut": 0,
+          "delivered": 20,
+          "fills": 20,
+          "known_end": 6,
+          "orders": 6,
+          "receipt_grace_deliveries": 2
+        },
+        "unknown:level_below": {
+          "cut": 0,
+          "delivered": 3,
+          "fills": 3,
+          "known_end": 0,
+          "orders": 2,
+          "receipt_grace_deliveries": 0
+        }
+      },
+      "clock_evidence": {},
+      "counts": {
+        "candidate_book_cross_fills": 0,
+        "cut_short": {},
+        "headline_orders": 14,
+        "known_end_cut_by_reset": 0,
+        "orders": 16,
+        "orders_replayed": 16,
+        "placement_not_found": 0,
+        "prints_at_quote_price:hit_side": 51,
+        "public_prints:allocated": 551,
+        "public_prints:no_decoded_call": 1465,
+        "twin_book_cross_fills": 1
+      },
+      "folder": "old-candidate",
+      "matched_rows_sha256": "875b62353694c0fc8c09537649ed9176bf6dd0480257042e676a5f4c6f5dc630",
+      "params": {
+        "decoded_orders": "/var/backups/doppel-sealed-20261126/research/ordertape-pilot.TUedd4/expiry-trial.g88jw6/old-candidate/orders",
+        "expiry_receipt_grace_ns": 1000000000,
+        "from": 1795630380,
+        "n_boot": 2000,
+        "streams": [
+          "clob_btc_5m"
+        ],
+        "to": 1795630620,
+        "tol_shares": 0.02
+      },
+      "process": {
+        "exit": 0,
+        "peak_rss_kib": 145488,
+        "wall": "0:39.40"
+      },
+      "rows_sha256": "0ff3dde054d37a654900e96803b40d0aa3a436a2d5ca3d006b4f817cf8d06caa",
+      "summary_sha256": "6c2e0b7bec3e350d029ae1edb95ad1a9702f9c8cdbd1c822c2f586ec82971f7e"
+    },
+    "candidate_only_orders": [],
+    "changed_shared_fields": {
+      "12ae04d6cb9426de55ccc72d449861a933e8a1de06a8535c059e4e3ed1b90ec1": {
+        "optimistic": {
+          "candidate": {
+            "by_source": {
+              "trade": 99.0
+            },
+            "error": 56.67,
+            "filled": 99.0,
+            "fills": [
+              [
+                1795630532783,
+                99.0,
+                "trade"
+              ]
+            ],
+            "first_fill_ms": 1795630532783,
+            "missed": false,
+            "phantom_shares": 56.67
+          },
+          "control": {
+            "by_source": {
+              "trade": 99.0
+            },
+            "error": 56.67,
+            "filled": 99.0,
+            "fills": [
+              [
+                1795630532785,
+                99.0,
+                "trade"
+              ]
+            ],
+            "first_fill_ms": 1795630532785,
+            "missed": false,
+            "phantom_shares": 56.67
+          }
+        }
+      },
+      "df7fe3700e3e226c804686bae513a0241cb85afd3f88ea90bb5ed7a8295d3b80": {
+        "fills_delivered": {
+          "candidate": 1,
+          "control": 0
+        },
+        "optimistic": {
+          "candidate": {
+            "by_source": {
+              "trade": 97.0
+            },
+            "error": 0.0,
+            "filled": 97.0,
+            "fills": [
+              [
+                1795630539988,
+                97.0,
+                "trade"
+              ]
+            ],
+            "first_fill_ms": 1795630539988,
+            "missed": false,
+            "phantom_shares": 0.0
+          },
+          "control": {
+            "by_source": {},
+            "error": -97.0,
+            "filled": 0,
+            "fills": [],
+            "first_fill_ms": null,
+            "missed": true,
+            "phantom_shares": 0.0
+          }
+        },
+        "pessimistic": {
+          "candidate": {
+            "by_source": {
+              "trade": 97.0
+            },
+            "error": 0.0,
+            "filled": 97.0,
+            "fills": [
+              [
+                1795630539988,
+                97.0,
+                "trade"
+              ]
+            ],
+            "first_fill_ms": 1795630539988,
+            "missed": false,
+            "phantom_shares": 0.0
+          },
+          "control": {
+            "by_source": {},
+            "error": -97.0,
+            "filled": 0,
+            "fills": [],
+            "first_fill_ms": null,
+            "missed": true,
+            "phantom_shares": 0.0
+          }
+        }
+      },
+      "f6f81419dfdfb24c0031be2346c93863bdec6abe471b80bbf5c36a785968520e": {
+        "fills_delivered": {
+          "candidate": 1,
+          "control": 0
+        },
+        "optimistic": {
+          "candidate": {
+            "by_source": {
+              "trade": 98.0
+            },
+            "error": 0.0,
+            "filled": 98.0,
+            "fills": [
+              [
+                1795630532783,
+                98.0,
+                "trade"
+              ]
+            ],
+            "first_fill_ms": 1795630532783,
+            "missed": false,
+            "phantom_shares": 0.0
+          },
+          "control": {
+            "by_source": {},
+            "error": -98.0,
+            "filled": 0,
+            "fills": [],
+            "first_fill_ms": null,
+            "missed": true,
+            "phantom_shares": 0.0
+          }
+        },
+        "pessimistic": {
+          "candidate": {
+            "by_source": {
+              "trade": 98.0
+            },
+            "error": 0.0,
+            "filled": 98.0,
+            "fills": [
+              [
+                1795630532783,
+                98.0,
+                "trade"
+              ]
+            ],
+            "first_fill_ms": 1795630532783,
+            "missed": false,
+            "phantom_shares": 0.0
+          },
+          "control": {
+            "by_source": {},
+            "error": -98.0,
+            "filled": 0,
+            "fills": [],
+            "first_fill_ms": null,
+            "missed": true,
+            "phantom_shares": 0.0
+          }
+        }
+      }
+    },
+    "control": {
+      "adapter_gate": {
+        "allocated_price_and_side": 32,
+        "delivered_share": 0.9375,
+        "delivered_to_live_quote": 30,
+        "fills": 32,
+        "located_by_print": 32,
+        "note": "low routed_share = the print side/mirror mapping is wrong; low delivered_share = the quote was not live when its own fill's print came (lifetime / tape order). Either way the bias numbers then measure the adapter, not the fill model",
+        "print_seen_in_replay": 32,
+        "raw_print_price_and_side": 29,
+        "routed_share": 1.0,
+        "routed_to_order_price_and_side": 32
+      },
+      "bracket_violations": {
+        "by_placement_evidence": {
+          "multiple_candidates": {
+            "optimistic_underfilled": 0,
+            "orders": 3,
+            "pessimistic_overfilled": 0
+          },
+          "one_candidate": {
+            "optimistic_underfilled": 2,
+            "orders": 11,
+            "pessimistic_overfilled": 0
+          }
+        },
+        "by_price_evidence": {
+          "fully_allocated": {
+            "optimistic_underfilled": 0,
+            "orders": 2,
+            "pessimistic_overfilled": 0
+          },
+          "unresolved": {
+            "optimistic_underfilled": 2,
+            "orders": 12,
+            "pessimistic_overfilled": 0
+          }
+        },
+        "note": "the bracket assumes a correctly attributed placement, FIFO and price-level print sizes. A single candidate can still belong to another order.",
+        "optimistic_underfilled": 2,
+        "pessimistic_overfilled": 0
+      },
+      "by_outcome": {
+        "cancelled:exact_decrease": {
+          "cut": 0,
+          "delivered": 9,
+          "fills": 9,
+          "known_end": 8,
+          "orders": 8,
+          "receipt_grace_deliveries": 0
+        },
+        "filled:chain": {
+          "cut": 0,
+          "delivered": 18,
+          "fills": 20,
+          "known_end": 6,
+          "orders": 6,
+          "receipt_grace_deliveries": 0
+        },
+        "unknown:level_below": {
+          "cut": 0,
+          "delivered": 3,
+          "fills": 3,
+          "known_end": 0,
+          "orders": 2,
+          "receipt_grace_deliveries": 0
+        }
+      },
+      "clock_evidence": {},
+      "counts": {
+        "candidate_book_cross_fills": 0,
+        "cut_short": {},
+        "headline_orders": 14,
+        "known_end_cut_by_reset": 0,
+        "orders": 16,
+        "orders_replayed": 16,
+        "placement_not_found": 0,
+        "prints_at_quote_price:hit_side": 49,
+        "public_prints:allocated": 551,
+        "public_prints:no_decoded_call": 1465,
+        "twin_book_cross_fills": 1
+      },
+      "folder": "old-control",
+      "matched_rows_sha256": "875b62353694c0fc8c09537649ed9176bf6dd0480257042e676a5f4c6f5dc630",
+      "params": {
+        "decoded_orders": "/var/backups/doppel-sealed-20261126/research/ordertape-pilot.TUedd4/expiry-trial.g88jw6/old-control/orders",
+        "from": 1795630380,
+        "n_boot": 2000,
+        "streams": [
+          "clob_btc_5m"
+        ],
+        "to": 1795630620,
+        "tol_shares": 0.02
+      },
+      "process": {
+        "exit": 0,
+        "peak_rss_kib": 144216,
+        "wall": "0:30.01"
+      },
+      "rows_sha256": "b037cfa40ddd29c9503f87a6b11d5d826c4bd494457aa21b721e96b06a95ac04",
+      "summary_sha256": "80502463a094f1a87c4dbaa2ff21c25819300da3b3c77690dad9a184c1c80943"
+    },
+    "control_only_orders": [],
+    "new_candidate_evidence": {
+      "03d81f1e27f377a262c59c672077d8892cba7973ae5d096bb46f6aaeeaa90bed": {
+        "expiry_observed_tw_ns": 1795630561691486675,
+        "fills_delivered_during_grace": 0,
+        "late_deliveries": {},
+        "late_same_side_prints": 0
+      },
+      "0882f4c205e9fe32e401b39ca1822c75782bd20826ffef2ccde8055bed16f9b8": {
+        "expiry_observed_tw_ns": 1795630505271508227,
+        "fills_delivered_during_grace": 0,
+        "late_deliveries": {},
+        "late_same_side_prints": 0
+      },
+      "112a1fabd665c1e5a86da8f7334aa76ddb5a0f0f345aa006b328b26ff65aefc4": {
+        "expiry_observed_tw_ns": 1795630506294285330,
+        "fills_delivered_during_grace": 0,
+        "late_deliveries": {},
+        "late_same_side_prints": 0
+      },
+      "12ae04d6cb9426de55ccc72d449861a933e8a1de06a8535c059e4e3ed1b90ec1": {
+        "expiry_observed_tw_ns": 1795630536971331700,
+        "fills_delivered_during_grace": 0,
+        "late_deliveries": {},
+        "late_same_side_prints": 0
+      },
+      "27348d477c2b03b5cdc4879827ced8dfa0e7fb811fa88a803d6c4157b8f72c16": {
+        "expiry_observed_tw_ns": 1795630530261507908,
+        "fills_delivered_during_grace": 0,
+        "late_deliveries": {},
+        "late_same_side_prints": 0
+      },
+      "31c87ba85ebefcf4569564e086437868a9de242c4b4ff2b52cdde8f578d42cfb": {
+        "expiry_observed_tw_ns": 1795630515103457341,
+        "fills_delivered_during_grace": 0,
+        "late_deliveries": {},
+        "late_same_side_prints": 0
+      },
+      "50629af3b15bb8dfc500322fcc049460b0ff28773fa74c53e69600207e694942": {
+        "expiry_observed_tw_ns": 1795630598592988872,
+        "fills_delivered_during_grace": 0,
+        "late_deliveries": {},
+        "late_same_side_prints": 0
+      },
+      "63ef6080140022eccf782bbe2b93da1fcb86782dad73bbfe06c487afca3fb80b": {
+        "expiry_observed_tw_ns": 1795630562046230045,
+        "fills_delivered_during_grace": 0,
+        "late_deliveries": {},
+        "late_same_side_prints": 0
+      },
+      "957a265d3f479de4ed76f772070809c312c875f2c50043d030b75f4c5026b35b": {
+        "expiry_observed_tw_ns": 1795630567383614299,
+        "fills_delivered_during_grace": 0,
+        "late_deliveries": {},
+        "late_same_side_prints": 0
+      },
+      "a1c4b1f7d5f1a4a1c46ef6a2c4c33034f804d10fee76f1c3eeab4d99bb0f2541": {
+        "expiry_observed_tw_ns": 1795630511317193575,
+        "fills_delivered_during_grace": 0,
+        "late_deliveries": {},
+        "late_same_side_prints": 0
+      },
+      "ae74d72dd4dae30d93bce0b2c7f16baac0c0e40e7a74104fbdd25ac4cd69081a": {
+        "expiry_observed_tw_ns": 1795630504872962332,
+        "fills_delivered_during_grace": 0,
+        "late_deliveries": {},
+        "late_same_side_prints": 0
+      },
+      "bdbabdfd2030c9ebc667cb379162be3b342543f209004f8cee696f986ccb1f21": {
+        "expiry_observed_tw_ns": 1795630569413457266,
+        "fills_delivered_during_grace": 0,
+        "late_deliveries": {},
+        "late_same_side_prints": 0
+      },
+      "d2a334954d04c2dd34330361d8f44d4b7bfcfd649a5ff62a0b7d3dc6cfcce5c4": {
+        "expiry_observed_tw_ns": 1795630534190593543,
+        "fills_delivered_during_grace": 0,
+        "late_deliveries": {},
+        "late_same_side_prints": 0
+      },
+      "d57449b4839c6f9bf2aeed28b3ec5346fcf7d385ae974eff2b24072aaa8eb5ab": {
+        "expiry_observed_tw_ns": 1795630511653657653,
+        "fills_delivered_during_grace": 0,
+        "late_deliveries": {},
+        "late_same_side_prints": 0
+      },
+      "df7fe3700e3e226c804686bae513a0241cb85afd3f88ea90bb5ed7a8295d3b80": {
+        "expiry_observed_tw_ns": 1795630541723719327,
+        "fills_delivered_during_grace": 1,
+        "late_deliveries": {
+          "0xf64524346e698120859b54f168a99e5ba130e72df7252e6e28d276ee1411e4da": {
+            "tw_ns": 1795630541723925257,
+            "venue_ms": 1795630539988
+          }
+        },
+        "late_same_side_prints": 1
+      },
+      "f6f81419dfdfb24c0031be2346c93863bdec6abe471b80bbf5c36a785968520e": {
+        "expiry_observed_tw_ns": 1795630533140262148,
+        "fills_delivered_during_grace": 1,
+        "late_deliveries": {
+          "0x6c9fe5b4880606767f672d3d75d7e3ce7070b1b2a6003adbfd627dfd407e8382": {
+            "tw_ns": 1795630533140366261,
+            "venue_ms": 1795630532783
+          }
+        },
+        "late_same_side_prints": 1
+      }
+    }
+  },
+  "holdout": {
+    "candidate": {
+      "adapter_gate": {
+        "allocated_price_and_side": 0,
+        "delivered_before_expiry_observed": 0,
+        "delivered_during_receipt_grace": 0,
+        "delivered_share": null,
+        "delivered_to_live_quote": 0,
+        "fills": 0,
+        "located_by_print": 0,
+        "note": "low routed_share = the print side/mirror mapping is wrong; low delivered_share = the quote was not live when its own fill's print came (lifetime / tape order). Either way the bias numbers then measure the adapter, not the fill model",
+        "print_seen_in_replay": 0,
+        "raw_print_price_and_side": 0,
+        "routed_share": null,
+        "routed_to_order_price_and_side": 0
+      },
+      "bracket_violations": {
+        "by_placement_evidence": {},
+        "by_price_evidence": {},
+        "note": "the bracket assumes a correctly attributed placement, FIFO and price-level print sizes. A single candidate can still belong to another order.",
+        "optimistic_underfilled": 0,
+        "pessimistic_overfilled": 0
+      },
+      "by_outcome": {},
+      "clock_evidence": {},
+      "counts": {
+        "candidate_book_cross_fills": 0,
+        "cut_short": {},
+        "headline_orders": 0,
+        "known_end_cut_by_reset": 0,
+        "orders_replayed": 0,
+        "placement_not_found": 0,
+        "public_prints:allocated": 275,
+        "public_prints:no_decoded_call": 679,
+        "twin_book_cross_fills": 0
+      },
+      "folder": "new-candidate",
+      "matched_rows_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "params": {
+        "decoded_orders": "/var/backups/doppel-sealed-20261126/research/ordertape-pilot.TUedd4/expiry-trial.g88jw6/new-candidate/orders",
+        "expiry_receipt_grace_ns": 1000000000,
+        "from": 1795630500,
+        "n_boot": 2000,
+        "streams": [
+          "clob_btc_5m"
+        ],
+        "to": 1795630740,
+        "tol_shares": 0.02
+      },
+      "process": {
+        "exit": 0,
+        "peak_rss_kib": 174168,
+        "wall": "0:28.70"
+      },
+      "rows_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "summary_sha256": "8db5f3c6d81fff9a736cec537a59795e7dadb06c2454b2a57ba516f801fffc7b"
+    },
+    "candidate_only_orders": [],
+    "changed_shared_fields": {},
+    "control": {
+      "adapter_gate": {
+        "allocated_price_and_side": 0,
+        "delivered_share": null,
+        "delivered_to_live_quote": 0,
+        "fills": 0,
+        "located_by_print": 0,
+        "note": "low routed_share = the print side/mirror mapping is wrong; low delivered_share = the quote was not live when its own fill's print came (lifetime / tape order). Either way the bias numbers then measure the adapter, not the fill model",
+        "print_seen_in_replay": 0,
+        "raw_print_price_and_side": 0,
+        "routed_share": null,
+        "routed_to_order_price_and_side": 0
+      },
+      "bracket_violations": {
+        "by_placement_evidence": {},
+        "by_price_evidence": {},
+        "note": "the bracket assumes a correctly attributed placement, FIFO and price-level print sizes. A single candidate can still belong to another order.",
+        "optimistic_underfilled": 0,
+        "pessimistic_overfilled": 0
+      },
+      "by_outcome": {},
+      "clock_evidence": {},
+      "counts": {
+        "candidate_book_cross_fills": 0,
+        "cut_short": {},
+        "headline_orders": 0,
+        "known_end_cut_by_reset": 0,
+        "orders_replayed": 0,
+        "placement_not_found": 0,
+        "public_prints:allocated": 275,
+        "public_prints:no_decoded_call": 679,
+        "twin_book_cross_fills": 0
+      },
+      "folder": "new-control",
+      "matched_rows_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "params": {
+        "decoded_orders": "/var/backups/doppel-sealed-20261126/research/ordertape-pilot.TUedd4/expiry-trial.g88jw6/new-control/orders",
+        "from": 1795630500,
+        "n_boot": 2000,
+        "streams": [
+          "clob_btc_5m"
+        ],
+        "to": 1795630740,
+        "tol_shares": 0.02
+      },
+      "process": {
+        "exit": 0,
+        "peak_rss_kib": 163392,
+        "wall": "0:27.04"
+      },
+      "rows_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "summary_sha256": "fe94d539e0d9d41e2c2812fed49e025dcb3422bf6ef2b7b4e4c8123a7684d4ac"
+    },
+    "control_only_orders": [],
+    "new_candidate_evidence": {}
+  },
+  "identification": {
+    "independent_chain_completeness": null,
+    "independently_verified_placement_and_expiry": 0
+  },
+  "match_process": {
+    "exit": 0,
+    "peak_rss_kib": 309828,
+    "wall": "0:29.59"
+  },
+  "orders": {
+    "parts": 15,
+    "path": "/var/backups/doppel-sealed-20261126/research/ordertape-pilot.TUedd4/expiry-trial.g88jw6/new-control/orders",
+    "rows": 26208,
+    "sha256": "24b564670b35097af5458f2cff3462b254e4f523f68c3f3bad1e3c4b2d6493fa"
+  },
+  "protocol_commit": "b787e7af02a28c7493a3d7dcd6061b18631d26d0",
+  "replay_source_sha256": {
+    "baseline": "1e6bcb1ad915cb4fcbd16c65b86d575799565a39002db3b9e01c2561a9ffedc2",
+    "candidate": "aa937fe6864195d722e52fa9539070e3aedb6c65a2466c42faa0342dd6b1296f"
+  },
+  "reproduction": [
+    "Extract the recorded source commits to baseline/ and candidate/. Export PYTHONPATH as the relevant src/.",
+    "For old-control and old-candidate link fresh/ordermatch to the prior audit-validation.4OcRq1/final/fresh/ordermatch; link orders/ in every arm to the prior final/orders.",
+    "For holdout selection copy baseline/evidence/2026-11-26-orderreplay/fresh_probe.py into new-spec/ alongside the frozen protocol as fresh-sample.json.",
+    "Run /opt/doppel/.venv/bin/python new-spec/fresh_probe.py match ARCHIVE ROOT/new-control once on baseline source. Link new-candidate/fresh/ordermatch to the resulting new-control/fresh/ordermatch.",
+    "Run the original fresh_probe.py for each discovery arm and new-spec/fresh_probe.py for each holdout arm, with arguments replay ARCHIVE ROOT/ARM. Runs used nice -n 15 ionice -c 3 timeout 300 with per-process /usr/bin/time -v -o ROOT/ARM.time."
+  ],
+  "runner_sha256": "3d54370dcf986a7c5ef7820ae041146422af65eb8b233826c30eb99eca513ca6",
+  "selection": {
+    "independently_identified_placements": 0,
+    "matched": 0,
+    "outcomes": {},
+    "screened_wallet_orders_all_markets": 6,
+    "selected_wallet_btc5m_orders": 0,
+    "spec_sha256": "31fde2df19e6c2256913a526a2a3aafd4fd51d97f7d57e93daf2c8a1cf69d397",
+    "unmatched_ids": [],
+    "wallet_orders_without_token_slug": []
+  },
+  "selection_helper_sha256": "4d1cebec620adae21095fa958f58b03d3fb6007cbda19104fa32c5567481972b",
+  "selection_parameters": {
+    "baseline_commit": "45ccb9244af2afe51407092df977a248fcdbc628",
+    "clock_rule": [
+      "Read archived records in capture order. Keep the observed placement, the existing inferred venue end and the original reset and sample boundaries.",
+      "At the first relevant event with venue milliseconds strictly beyond the inferred end, freeze that quote's queue and book state. Admit no further book updates to it.",
+      "For up to one second of receipt time inclusive after that crossing, process public prints whose venue milliseconds are within the original placement-to-end interval inclusive. Use the existing twin DYING_GRACE_NS duration. Reject a receipt-clock reversal across the crossing. A reset or the end of the sample ends reconciliation.",
+      "Use the same eligibility rule for target and unrelated transactions, allocated and public-only quantities, both token views, and fingerprint candidates. Preserve deduplication. A stale pre-placement print or a print in the placement record cannot fill a quote.",
+      "Use venue execution time for trade-versus-book queue comparisons. At equal milliseconds, a print after the placement record can trade. A same-millisecond book cross retains the conservative pre-cross queue rule. Keep receipt and venue time available for delayed delivery evidence.",
+      "Carry receipt-grace deliveries separately from deliveries before expiry was observed. A lifetime inferred from the target's last fill is conditional evidence. Independent placement and expiry require separate acknowledgements."
+    ],
+    "comparison": "Reproduce the prior two-minute failure on its archived rows as a development check. Replay both implementations on identical new rows and archive. Publish counts for seen, routed, delivered, receipt-grace deliveries, known and unknown ends, both bracket violations, price allocation and placement ambiguity. A holdout with zero clock inversions has no power to validate the timing change.",
+    "existing_thresholds": {
+      "bracket_violation_share_max": 0.05,
+      "delivered_share_min": 0.95,
+      "headline_orders_fully_allocated_share_min": 1.0
+    },
+    "operations": "Archived data on Apex, zero RPC requests and isolated low-priority scratch processes. Keep the prior trial outcomes and timer decision. No choice of cutoff or additional sample after inspecting holdout results.",
+    "sample_from": 1795630620,
+    "sample_to": 1795630740,
+    "selection": "The next consecutive two minutes after the prior 16-order trial. Include all screened BTC 5m maker orders signed in this interval. Use the frozen match inputs for both arms, including unknown ends, and report every missing placement. This wallet-hour has historical aggregate studies.",
+    "size_tol_rel": 0.02,
+    "stream": "clob_btc_5m",
+    "wallet": "0x0cb038487586d1119b165466072e9baf666f3a90",
+    "warmup_from": 1795630500
+  },
+  "tape": {
+    "clob_btc_5m/20261125/18.dtape.zst": "9691cd2cc196e6d9e5a36dedf10eba79a9d4cfbacb3146aa6bcda53dc83de883"
+  },
+  "tokens_sha256": "72f6055444f589d317fb24716b0dc9bb222a6d63b00fbc540ec82534abac0875",
+  "trial_spec_sha256": "31fde2df19e6c2256913a526a2a3aafd4fd51d97f7d57e93daf2c8a1cf69d397"
+}
