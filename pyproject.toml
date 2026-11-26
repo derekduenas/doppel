@@ -34,6 +34,7 @@ doppel-genome = "doppel.strategy.cli:main"
 doppel-twin = "doppel.twin.cli:main"
 doppel-flow = "doppel.lab.flow:main"
 doppel-adverse = "doppel.lab.adverse:main"
+doppel-clock0 = "doppel.lab.clock0:main"
 doppel-structural = "doppel.lab.structural:main"
 
 [dependency-groups]
