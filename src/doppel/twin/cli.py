@@ -50,7 +50,7 @@ def parse_ts(s: str) -> int:
 
 
 def run_twin(root: Path, g: Genome, t_from: int, t_to: int, cfg: SimConfig = SimConfig(),
-             allow_stale_rest: bool = False, lab: Path | None = None) -> list[dict]:
+             allow_stale_rest: bool = False, lab: Path | None = None, flow_delay_s: int = 0) -> list[dict]:
     if g.universe.venue != "pmus":
         raise ValueError(f"the twin replays PM US only (genome venue {g.universe.venue})")
     store = RefStore(root)
@@ -67,7 +67,7 @@ def run_twin(root: Path, g: Genome, t_from: int, t_to: int, cfg: SimConfig = Sim
         cache = ScoreCache(root, lab)
 
         def make(gg, ref, c, cache=cache):
-            return FlowFeatures(gg, ref, c.feature_config(), root, cache)
+            return FlowFeatures(gg, ref, c.feature_config(), root, cache, flow_delay_s)
         factory = make
     return run_windows(g, items, cfg, features_factory=factory)
 
@@ -88,6 +88,8 @@ def main(argv=None) -> int:
     ap.add_argument("--allow-stale-rest", action="store_true",
                     help="diagnostics: also simulate REST-only windows (CDN-stale books); never in the verdict")
     ap.add_argument("--lab", type=Path, help="lab dir (token map); required for intl_* features")
+    ap.add_argument("--flow-delay-s", type=int, default=0, help="delay sweep: intl flow seen this many seconds late")
+    ap.add_argument("--op-cost-usd-month", type=float, default=60.0)
     ap.add_argument("--min-trade-coverage", type=float, default=0.9,
                     help="maker windows need this print coverage; < 0.9 marks the run DIAGNOSTIC")
     ap.add_argument("--out", type=Path, required=True)
@@ -111,13 +113,13 @@ def main(argv=None) -> int:
             return 2
     cfg = SimConfig(latency_ms=a.latency_ms, brti_delay_s=a.brti_delay_s, fair_lag_s=a.fair_lag_s,
                     depth_levels=a.depth_levels, min_trade_coverage=a.min_trade_coverage)
-    results = run_twin(a.data, g, t_from, t_to, cfg, a.allow_stale_rest, a.lab)
-    v = verdict(g, results, a.block, a.boot, a.seed)
+    results = run_twin(a.data, g, t_from, t_to, cfg, a.allow_stale_rest, a.lab, a.flow_delay_s)
+    v = verdict(g, results, a.block, a.boot, a.seed, a.op_cost_usd_month)
     diagnostic = a.allow_stale_rest or a.min_trade_coverage < 0.9
     if diagnostic:
         v["decision"] = "DIAGNOSTIC"
         v["reason"] = "relaxed data-quality gates: not evidence for or against the genome"
-    doc = {"twin": {"code_sha256": code_sha256(), "config": asdict(cfg), "allow_stale_rest": a.allow_stale_rest,
+    doc = {"twin": {"code_sha256": code_sha256(), "config": asdict(cfg), "allow_stale_rest": a.allow_stale_rest, "flow_delay_s": a.flow_delay_s,
                     "diagnostic": diagnostic},
            "genome": {"id": g.id, "name": g.name, "status": g.status, "describe": describe(g)},
            "range": [t_from, t_to], "verdict": v, "windows": results}

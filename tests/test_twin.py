@@ -542,3 +542,12 @@ def test_uses_intl_detects_flow_features():
     assert not uses_intl(Genome(**base, maker=MakerRule()))
     g = Genome(**base, maker=MakerRule(pause_when=(Condition("intl_informed_flow_30s", ">", 50.0),)))
     assert uses_intl(g)
+
+
+def test_placebo_u_is_uniform_and_deterministic():
+    from doppel.twin.features import placebo_u
+    xs = [placebo_u(1795622400, d) for d in range(1795622400, 1795622400 + 20000)]
+    assert xs[:5] == [placebo_u(1795622400, d) for d in range(1795622400, 1795622405)]
+    assert all(0 <= x < 1 for x in xs)
+    rate = sum(x < 0.1742 for x in xs) / len(xs)
+    assert abs(rate - 0.1742) < 0.01

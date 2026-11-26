@@ -148,6 +148,15 @@ def projected_settlement(raw: np.ndarray, t0: int, d: int, end: int, lag: int = 
     return float((sum(known) + m * raw[i_d]) / 60.0)
 
 
+def placebo_u(start: int, d: int) -> float:
+    """Deterministic, market-independent U[0,1) for placebo arms (splitmix64 of window start, second)."""
+    z = (start * 0x9E3779B97F4A7C15 + d * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
+    z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
+    z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
+    z ^= z >> 31
+    return (z >> 11) / float(1 << 53)
+
+
 @dataclass(frozen=True)
 class FeatureConfig:
     brti_delay_s: int = 1
@@ -185,6 +194,7 @@ class Features:
         x["tau_s"] = float(d - r.start)
         x["tte_s"] = float(r.end - d)
         x["inventory_up"] = float(inventory_up)
+        x["placebo_u"] = placebo_u(r.start, d)
         fair = self.fair(d)
         x["fair_up"] = fair
         de = d - self.cfg.brti_delay_s

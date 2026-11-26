@@ -44,6 +44,7 @@ FEATURES = {
     "brti_move_30s": "raw BRTI change over last 30 s, USD",
     "dist_to_open_usd": "current settlement-average projection minus priceToBeat, USD",
     "inventory_up": "own net Up contracts in this window (Down counts negative)",
+    "placebo_u": "deterministic pseudo-random U[0,1) per (window start, second); market-independent, for placebo arms",
     # Intl informed-flow guard (lab/flow.py). Rows: Polymarket intl RTDS TAKER fills (fee > 0) in the
     # same asset/horizon/start window, counted by OUR receive time tw in (t - N, t], never by trade
     # timestamp. USD = price*size, signed + for Up exposure (BUY Up / SELL Down). Wallet weight =

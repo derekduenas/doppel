@@ -24,6 +24,7 @@ def uses_intl(g: Genome) -> bool:
     return any(n.startswith("intl_") for n in names)
 
 
+
 class ScoreCache:
     def __init__(self, root: Path, lab: Path):
         from ..lab import flow
@@ -39,15 +40,17 @@ class ScoreCache:
 
 
 class FlowFeatures(Features):
-    def __init__(self, genome: Genome, ref: WindowRef, cfg: FeatureConfig, root: Path, cache: ScoreCache):
+    def __init__(self, genome: Genome, ref: WindowRef, cfg: FeatureConfig, root: Path, cache: ScoreCache,
+                 delay_s: int = 0):
         super().__init__(genome, ref, cfg)
+        self.delay_s = delay_s  # delay sweep: the guard sees intl flow ``delay_s`` seconds late
         from ..lab.flow import window_flow_features
         hz = f"{(ref.end - ref.start) // 60}m"
         self._flow = window_flow_features(root, ref.asset, hz, ref.start, cache.scores(ref.start))
 
     def at(self, d, book, inventory_up):
         x = super().at(d, book, inventory_up)
-        for k, v in (self._flow.get(d) or {}).items():
+        for k, v in (self._flow.get(d - self.delay_s) or {}).items():
             if k in x and v is not None:
                 x[k] = float(v)
         return x
