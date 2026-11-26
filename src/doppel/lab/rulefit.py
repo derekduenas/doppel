@@ -76,7 +76,7 @@ from typing import Any
 import numpy as np
 import orjson
 
-from ..strategy.genome import Condition, Genome, MakerRule, Source, Universe, to_dict, validate
+from ..strategy.genome import Condition, Genome, MakerRule, Risk, Source, Universe, to_dict, validate
 from ..tape.segment import read_segment, segment_path
 from ..twin.features import Features, RefStore
 from .census import LEN, window_of
@@ -94,6 +94,7 @@ GRID_S = 10
 MOVE_C = 1.0
 REPLACE_MS = 1000
 TOL = 0.02  # shares
+TOL_REL = 0.02  # the widest relative size tolerance ordermatch is run with (E39)
 REFS = ("touch", "mid", "fair")
 CAVEAT = ("rule conditional on fill: only orders that filled at least once are visible on chain; "
           "E39 estimates fills at ~0.3% of this kind of maker's quotes, so offsets, sizes, gaps and "
@@ -218,7 +219,7 @@ def scan(root: Path, stream: str, t_from: int, t_to: int, queries: list[tuple],
     ``queries`` (tw_ns, token, key) sorted by tw: each is answered with the token's top of book
     BEFORE the first record with ``tw >= tw_ns`` is applied, i.e. from records received strictly
     earlier. ``cancels``: (token, price, side, venue_ms) -> [(key, remainder)]: the top just before
-    the matching decrease. ``txs``: earliest receive ns of a print per tx. Grid: the Up token's top
+    the closest decrease there (within max(TOL, TOL_REL * remainder)); matched entries are removed. ``txs``: earliest receive ns of a print per tx. Grid: the Up token's top
     at every GRID_S boundary inside its window."""
     book = IntlBook()
     state: dict = {}
@@ -261,7 +262,10 @@ def scan(root: Path, stream: str, t_from: int, t_to: int, queries: list[tuple],
                         fill_tw[it.tx] = tw
                 elif isinstance(it, LevelEvent) and it.delta < 0:
                     want = cancels.get((it.asset, it.price, it.side, it.venue_ms))
-                    hit = next((c for c in want or () if abs(-it.delta - c[1]) <= TOL), None)
+                    dec = -it.delta
+                    hit = min(want or (), key=lambda c: abs(dec - c[1]), default=None)
+                    if hit is not None and abs(dec - hit[1]) > max(TOL, TOL_REL * hit[1]):
+                        hit = None
                     if hit is not None and want is not None:
                         want.remove(hit)
                         lv = dict(book.levels.get(it.asset) or {})
@@ -446,6 +450,8 @@ def decision_table(root: Path, om_dir: Path, orders_path: Path, wallet: str, t_f
             if info["idx"] == 0 and _stream(info) == s and (info["asset"], info["hz"]) in pairs:
                 up_by_start[info["start"]].append((t, info["slug"]))
         got = scan(root, s, t_from, t_to, qs, cancels, txs, up_by_start, LEN.get(hz, 300))
+        stats["cancels_asked"] += sum(len(v) for v in cancels.values()) + len(got["at_cancel"])
+        stats["cancels_state_found"] += len(got["at_cancel"])
         for k in ("state", "at_cancel", "grid", "mates"):
             res[k].update({a: b for a, b in got[k].items() if k != "state" or b is not None or a not in res[k]})
         for tx, t in got["fill_tw"].items():
@@ -564,7 +570,11 @@ def fit_price_side(D: dict, force: str | None = None) -> dict:
                                      {"mae_c_const": by[best]["oos_mae_const_c"],
                                       "mae_c_with_skew": by[best]["oos_mae_skew_c"], "n_test": int(len(te))})
     out["intercept_c_with_skew"] = _r(wls(X, d, w)[0])
-    res = d - (X @ wls(X, d, w) if by[best]["model"] == "skew" else off)
+    skewed = by[best]["model"] == "skew"
+    res = d - (X @ wls(X, d, w) if skewed else off)
+    # the rule as scored: limit = ref + offset_c - skew_c_per_contract * inv
+    out["rule"] = {"ref": best, "offset_c": out["intercept_c_with_skew"] if skewed else _r(off),
+                   "skew_c_per_contract": out["skew_c_per_contract"]["value"] if skewed else 0.0}
     out["residual_iqr_c"] = _r(np.percentile(res, 75) - np.percentile(res, 25))  # spread the rule leaves
     out["inventory_range"] = [_r(inv.min()), _r(inv.max())]
     # dependence on time-to-close and spread, next to inventory
@@ -614,21 +624,28 @@ def fit_expressible(rows: list[dict], price: dict) -> dict:
         use = ci is not None and (ci[0] > 0 or ci[1] < 0)
 
         def offsets(i, kk: float) -> tuple[float, float]:
-            """(half-spread, centre shift) at zero inventory: per-side medians of d + kk * inv."""
+            """(half-spread, centre shift) at zero inventory: per-side medians of d + kk * inv.
+            The half-spread is NOT clamped here (negative = the quotes sit inside the reference)."""
             z = dm[i] + kk * im[i]
             lo, hi = (wmedian(z[sm[i] == s], wm[i][sm[i] == s]) if (sm[i] == s).any() else None
                       for s in (-1.0, 1.0))
             if lo is not None and hi is not None:
-                return max((hi - lo) / 2, 0.0), (hi + lo) / 2
-            return abs(hi if hi is not None else lo or 0.0), 0.0
+                return (hi - lo) / 2, (hi + lo) / 2
+            return (hi if hi is not None else -(lo or 0.0)), 0.0
 
         use_k = k if use else 0.0
-        h, c = offsets(np.arange(len(dm)), use_k)
+        h_raw, c = offsets(np.arange(len(dm)), use_k)
+        h = max(h_raw, 0.0)
+        hc_ci = boot_ci(lambda i: offsets(i, use_k), cm)
         kt = slope(tr) if use and len(tr) > 3 else 0.0
-        ht, _ = offsets(tr, kt)
+        ht = max(offsets(tr, kt)[0], 0.0)
         mae = wmean(np.abs(dm[te] - sm[te] * ht + kt * im[te]), wm[te]) if len(te) else math.nan
+        o = {"mae_c": _r(mae), "n_test": int(len(te)), "train_half_spread_c": _r(ht)}
         cand = {"quote_ref": ref, "half_spread_c": _r(h, 2), "centre_shift_c": _r(c, 2),
-                "skew_c_per_contract": _r(use_k, 4), "skew_fit": est(k, len(dm), cm, ci),
+                "skew_c_per_contract": _r(use_k, 4), "skew_fit": est(k, len(dm), cm, ci, o),
+                "half_spread_fit": est(h_raw, len(dm), cm, hc_ci[0] if hc_ci else None, o) | {
+                    "clamped_to_zero": h_raw < 0},
+                "centre_shift_fit": est(c, len(dm), cm, hc_ci[1] if hc_ci else None, o),
                 "n": int(len(dm)), "oos_mae_c": _r(mae), "n_test": int(len(te)),
                 "sides_seen": sorted({"bid" if s < 0 else "ask" for s in sm})}
         if best is None or (cand["oos_mae_c"] or 1e9) < (best["oos_mae_c"] or 1e9):
@@ -729,6 +746,7 @@ def fit_timing(T: dict) -> dict:
         ck = np.array(known, dtype=str)
         out["cancel"] = {
             "life_ms": describe(life, cc) | {"quantiles": _quant(life)},
+            "life_ms_p90": describe(life, cc, lambda v: np.percentile(v, 90)),
             "ms_from_last_fill": _quant(np.array(after_fill, dtype=float)),
             "replaced_within_1s": _share(replaced, cc),
             "opposite_best_moved_1c": _share(opp, ck) if opp else None,
@@ -742,7 +760,7 @@ def fit_timing(T: dict) -> dict:
 
 # ---------------------------------------------------------------- 2d participation
 def fit_participation(T: dict) -> dict:
-    xs = [x for x in T["specs"] if x["kind"] == "order"]
+    xs = sorted((x for x in T["specs"] if x["kind"] == "order"), key=lambda x: x["cutoff"])
     cells: dict[tuple[str, int], set[str]] = defaultdict(set)
     for x in xs:
         o = x["om"]
@@ -763,9 +781,12 @@ def fit_participation(T: dict) -> dict:
     tau = np.array([x["row"]["tau_s"] for x in xs])
     tte = np.array([x["row"]["tte_s"] for x in xs])
     inwin = (tau >= 0) & (tte > 0)
+    ocl = np.array([x["row"]["window"] for x in xs], dtype=object).astype(str)
+    p10 = lambda v: np.percentile(v, 10)  # noqa: E731
     out: dict = {"cells": len(recs), "cell_s": GRID_S, "orders": len(xs),
                  "pre_open_order_share": _r(np.mean(tau < 0)) if len(xs) else None,
                  "tte_s_in_window": _quant(tte[inwin]), "tau_s_in_window": _quant(tau[inwin]),
+                 "tte_s_p10": describe(tte[inwin], ocl[inwin], p10), "tau_s_p10": describe(tau[inwin], ocl[inwin], p10),
                  "note": "present = a FILLED order was resting in the cell; unfilled quotes are invisible"}
     if not recs:
         return out | {"reason": "no grid cell with a known Up book"}
@@ -854,8 +875,8 @@ def selection_check(rows: list[dict], price: dict, precision: float | None) -> d
 
 
 # ---------------------------------------------------------------- genome + fit report
-def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict, dict]:
-    """(draft genome dict, fit report)."""
+def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | None, dict]:
+    """(draft genome dict, or None when no expressible price rule could be fitted; fit report)."""
     rows = T["rows"]
     ver = [r for r in rows if r["kind"] == "order"]
     price = fit_price(ver)
@@ -868,36 +889,51 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict, d
     # ---- genome fields, each with where it came from
     prov: dict = {}
     hz_len = {r["hz"]: LEN[r["hz"]] for r in ver}
-    tte_q, tau_q = part.get("tte_s_in_window"), part.get("tau_s_in_window")
+    tte_q, tau_q = part["tte_s_p10"]["value"], part["tau_s_p10"]["value"]
     L = min(hz_len.values()) if hz_len else 300
-    tte_min = int(min(max(math.floor(tte_q["p10"]), 0), L - 1)) if tte_q else 0
-    tau_min = int(min(max(math.floor(tau_q["p10"]), 0), L - 1)) if tau_q else 0
-    prov["universe.tte_min_s"] = "floor(p10 of time-to-close of in-window filled orders)" if tte_q else "default"
-    prov["universe.tau_min_s"] = "floor(p10 of seconds since start of in-window filled orders)" if tau_q else "default"
+    tte_min = int(min(max(math.floor(tte_q), 0), L - 1)) if tte_q is not None else 0
+    tau_min = int(min(max(math.floor(tau_q), 0), L - 1)) if tau_q is not None else 0
+    prov["universe.tte_min_s"] = ("floor(participation_rule.tte_s_p10)" if tte_q is not None else "default")
+    prov["universe.tau_min_s"] = ("floor(participation_rule.tau_s_p10)" if tau_q is not None else "default")
     med = size.get("median_size", {}).get("value") if size.get("n") else None
     life = (timing.get("cancel") or {}).get("life_ms", {}).get("quantiles")
-    age = max(1, math.ceil(life["p90"] / 1000)) if life else 30
-    prov["maker.max_quote_age_s"] = "ceil(p90 life of cancelled remainders), floor 1 s" if life else "default"
+    p90 = ((timing.get("cancel") or {}).get("life_ms_p90") or {}).get("value")
+    age = max(1, math.ceil(p90 / 1000)) if p90 is not None else 30
+    prov["maker.max_quote_age_s"] = ("ceil(timing_rule.cancel.life_ms_p90 / 1000), floor 1 s" if p90 is not None
+                                     else "default 30: no cancelled order with a known life")
     lo, hi = _dead_bands(part.get("by_mid_c") or [], (part.get("presence_rate") or {}).get("value"))
     pause = tuple(c for c in (Condition("mid_up_c", "<", lo) if lo else None,
                               Condition("mid_up_c", ">", hi) if hi else None) if c is not None)
     prov["maker.pause_when"] = ("mid bands with >= 20 cells and presence under a tenth of the overall rate"
                                 if pause else "none found")
-    edge = None
-    df = np.array([(-1 if r["up_side"] == "bid" else 1) * r["d_fair_c"] for r in ver if r["d_fair_c"] is not None])
-    if len(df) >= MIN_N:
-        edge = max(0.0, round(float(np.percentile(df, 5)), 2))
-        prov["maker.min_edge_vs_fair_c"] = f"max(0, p5 of the quote's distance outside fair), n={len(df)}"
+    edge = edge_fit = None
+    fr = sorted((r for r in ver if r["d_fair_c"] is not None), key=lambda r: r["cutoff_tw_ns"])
+    if len(fr) >= MIN_N:
+        df = np.array([(-1 if r["up_side"] == "bid" else 1) * r["d_fair_c"] for r in fr])
+        edge_fit = describe(df, np.array([r["window"] for r in fr], dtype=str), lambda v: np.percentile(v, 5))
+        edge = max(0.0, round(edge_fit["value"], 2))
+        prov["maker.min_edge_vs_fair_c"] = "max(0, edge_outside_fair_c_p5): p5 of the quote's distance outside fair"
     else:
         prov["maker.min_edge_vs_fair_c"] = "default 0: fair not supplied or known for < 20 orders"
     seen = set(expr.get("sides_seen") or [])
     sides = "both" if seen == {"bid", "ask"} or not seen else ("bid_only" if seen == {"bid"} else "ask_only")
     prov["maker.quote_ref/half_spread_c/skew_c_per_contract"] = (
-        "fit_expressible: one inventory slope with side intercepts (least squares), kept only when its "
-        "bootstrap CI excludes 0; half-spread = half the gap between the per-side median offsets at zero inventory" if expr.get("quote_ref") else "defaults: " + str(expr.get("reason")))
+        "expressible_price_rule: one inventory slope with side intercepts (least squares), kept only when its "
+        "bootstrap CI excludes 0; half-spread = half the gap between the per-side median offsets at zero "
+        "inventory (half_spread_fit, clamped at 0)" if expr.get("quote_ref") else "defaults: " + str(expr.get("reason")))
     prov["maker.requote_threshold_c"] = "default 1.0 (the trigger threshold used to classify book moves)"
-    prov["maker.size"] = "median size of verified orders" if med else "default"
-    prov["risk/costs/kill/exit"] = "schema defaults, not fitted"
+    prov["maker.size"] = "size_rule.median_size" if med else "default"
+    prov["risk/costs/kill/exit"] = "schema defaults, not fitted (fit_report.not_fitted)"
+    ai = np.abs(np.array([r["inv"] for r in ver if r["inv"] is not None], dtype=float))
+    not_fitted = {
+        "risk": {"default_max_inventory": Risk().max_inventory, "fitted_size": med,
+                 "abs_inventory_at_placement": ({f"p{q}": _r(np.percentile(ai, q)) for q in (50, 90, 99, 100)}
+                                                if len(ai) else None),
+                 "note": "Risk is left at the schema default. maker_quotes stops quoting a side once |inventory| "
+                         "reaches max_inventory, so a default below the fitted size silences a side after one fill: "
+                         "set the risk envelope before any twin run"},
+        "costs": "schema default (PM US taker coefficient); intl fees are not fitted",
+        "kill_exit": "schema defaults", "requote_threshold_c": "default 1.0, the threshold used to classify book moves"}
     maker = MakerRule(quote_ref=expr.get("quote_ref") or "mid",
                       half_spread_c=float(expr["half_spread_c"]) if expr.get("quote_ref") else 2.0,
                       size=float(med) if med else 10.0, sides=sides,  # type: ignore[arg-type]
@@ -912,9 +948,8 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict, d
                maker=maker, created_tw=0,
                evidence={"extractor": "doppel.lab.rulefit v1", "wallet": wallet, "label": "rule conditional on fill",
                          "n_orders": len(ver), "fields": prov,
-                         "price_rule": {s: {k: price[s].get(k) for k in ("chosen", "model", "tie_with", "n")}
-                                        | {"offset_c": (price[s].get("offset_c") or {}).get("value"),
-                                           "oos_mae_c": ((price[s].get("offset_c") or {}).get("oos") or {}).get("mae_c")}
+                         "price_rule": {s: {k: price[s].get(k) for k in ("chosen", "model", "tie_with", "n", "rule")}
+                                        | {"oos_mae_c": ((price[s].get("offset_c") or {}).get("oos") or {}).get("mae_c")}
                                         for s in ("bid", "ask")},
                          "expressible": {k: expr.get(k) for k in ("quote_ref", "oos_mae_c", "per_side_fit_oos_mae_c",
                                                                   "oos_cost_of_schema_c", "centre_shift_c")}})
@@ -951,6 +986,9 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict, d
                 _excludes_zero(kb) and (kb["ci95"][1] < ka["ci95"][0] or ka["ci95"][1] < kb["ci95"][0])):
             cannot("inventory skew differs by side", {"bid": kb, "ask": ka}, "one skew_c_per_contract for both quotes")
     if expr.get("quote_ref"):
+        if expr["half_spread_fit"]["clamped_to_zero"]:
+            cannot("quotes inside the reference (negative half-spread)", expr["half_spread_fit"],
+                   "half_spread_c >= 0 is required; emitted as 0")
         if abs(expr.get("centre_shift_c") or 0) >= 0.5:
             cannot("asymmetric offsets around the reference", {"centre_shift_c": expr["centre_shift_c"]},
                    "bid/ask = ref -/+ one half_spread_c")
@@ -995,9 +1033,13 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict, d
               "inputs": T["inputs"] | {"counts": dict(T["stats"]), "rows_orders": len(ver),
                                        "rows_candidates": len(rows) - len(ver), "pairs": T["pairs"]},
               "price_rule": price, "expressible_price_rule": expr, "size_rule": size, "timing_rule": timing,
-              "participation_rule": part, "selection_check": sel,
+              "participation_rule": part, "selection_check": sel, "edge_outside_fair_c_p5": edge_fit,
               "genome": {"id": g.id, "status": "draft", "registered": False, "validate": errs, "fields": prov},
-              "cannot_express": cx}
+              "not_fitted": not_fitted, "cannot_express": cx}
+    if not expr.get("quote_ref") or errs:  # no price rule: schema defaults must not pass for this wallet's rule
+        report["genome"] = {"id": None, "status": "not_emitted", "registered": False, "validate": errs,
+                            "reason": expr.get("reason") or "validate() failed", "fields": prov}
+        return None, report
     return gd, report
 
 
@@ -1010,11 +1052,14 @@ def card(rep: dict) -> str:
         if not v.get("chosen"):
             L.append(f"- {s}: no rule ({v.get('reason')}; rows {v['n_rows']})")
             continue
-        o, k = v["offset_c"], v["skew_c_per_contract"]
-        L.append(f"- {s} = {v['chosen']} {o['value']:+g} c (IQR {o['p25']:+g}..{o['p75']:+g}, CI {o['ci95']}), "
-                 f"skew {k['value']:g} c/contract (CI {k['ci95']}); n={v['n']}, test MAE {o['oos']['mae_c']} c, "
-                 f"within 1 c {o['oos']['within_1c']}; model {v['model']}"
+        o, k, u = v["offset_c"], v["skew_c_per_contract"], v["rule"]
+        L.append(f"- {s} = {u['ref']} {u['offset_c']:+g} c"
+                 + (f" - {u['skew_c_per_contract']:g} c x inventory (CI {k['ci95']})" if v["model"] == "skew"
+                    else f" (inventory skew not kept: {k['value']:g}, CI {k['ci95']})")
+                 + f"; n={v['n']}, test MAE {o['oos']['mae_c']} c, within 1 c {o['oos']['within_1c']}"
                  + (f"; TIE with {v['tie_with']}" if v["tie_with"] else ""))
+        L.append(f"  offset from {u['ref']}: median {o['value']:+g} c (CI {o['ci95']}), IQR {o['p25']:+g}..{o['p75']:+g}, "
+                 f"residual IQR {v['residual_iqr_c']} c, {o['clusters']} windows")
     e = rep["expressible_price_rule"]
     L.append(f"- schema v1 can hold: ref {e.get('quote_ref')} +/- {e.get('half_spread_c')} c, skew "
              f"{e.get('skew_c_per_contract')}; test MAE {e.get('oos_mae_c')} c vs per-side {e.get('per_side_fit_oos_mae_c')} c")
@@ -1039,8 +1084,10 @@ def card(rep: dict) -> str:
                      + (f"offset {m['offset_c']['verified']} -> {m['offset_c']['pooled']} c (move {m['offset_c']['move']}), "
                         f"skew move {m['skew_c_per_contract']['move']}; " if m else "no refit; ")
                      + f"ref {v['verified_ref']} -> {v['pooled_ref']}")
-    L += ["", f"## genome {rep['genome']['id'][:12]} (draft, not registered; validate: {rep['genome']['validate'] or 'ok'})",
-          "", "## the v1 schema cannot express"]
+    gn = rep["genome"]
+    L += ["", f"## genome {gn['id'][:12]} (draft, not registered)" if gn["id"] else
+          f"## NO GENOME EMITTED: {gn['reason']}",
+          f"- risk not fitted: {rep['not_fitted']['risk']}", "", "## the v1 schema cannot express"]
     L += [f"- {c['item']}: {c['why']}" for c in rep["cannot_express"]]
     return "\n".join(L) + "\n"
 
@@ -1061,17 +1108,25 @@ def _clean(x) -> Any:
 
 def run(root: Path, om_dir: Path, orders_path: Path, wallet: str, t_from: int, t_to: int, out: Path | None = None,
         token_files: list[Path] | None = None, brti_root: Path | None = None, asof: str = "placement",
-        precision: float | None = None) -> tuple[dict, dict, list[dict]]:
-    """(draft genome dict, fit report, decision-table rows); written to ``out`` when given."""
+        precision: float | None = None) -> tuple[dict | None, dict, list[dict]]:
+    """(draft genome dict or None, fit report, decision-table rows); written to ``out`` when given.
+    No genome (and no ``genome.json``) when no expressible price rule could be fitted."""
     wallet = wallet.lower()
     T = decision_table(root, om_dir, orders_path, wallet, t_from, t_to, token_files or [], brti_root, asof)
+    if not any(r["kind"] == "order" for r in T["rows"]):
+        raise SystemExit(f"doppel-rulefit: no order of {wallet} could be put in a window ({dict(T['stats'])}). "
+                         "Token -> window needs rtds_* rows on --data or a tokens.jsonl (--tokens, or "
+                         "<--brti-lab>/tokens.jsonl); also check --wallet and --from/--to.")
     if precision is None:
         precision = ((T["om_doc"].get("fingerprint") or {}).get("total") or {}).get("identity_precision_upper")
     genome, report = build(T, wallet, precision)
     genome, report = _clean(genome), _clean(report)
     if out is not None:
         out.mkdir(parents=True, exist_ok=True)
-        (out / "genome.json").write_bytes(orjson.dumps(genome, option=orjson.OPT_INDENT_2))
+        if genome is not None:
+            (out / "genome.json").write_bytes(orjson.dumps(genome, option=orjson.OPT_INDENT_2))
+        else:
+            (out / "genome.json").unlink(missing_ok=True)  # never leave an older run's genome next to this report
         (out / "fit_report.json").write_bytes(orjson.dumps(report, option=orjson.OPT_INDENT_2))
         (out / "rule.md").write_text(card(report))
         with open(out / "decision_table.jsonl", "wb") as f:
@@ -1104,10 +1159,10 @@ def main(argv=None) -> int:
         if (a.brti_lab / "tokens.jsonl").exists():
             toks.append(a.brti_lab / "tokens.jsonl")
         brti = a.brti_lab if (a.brti_lab / "ref_brti_raw").exists() else a.data
-    _, report, _ = run(a.data, a.ordermatch_dir, a.orders, a.wallet, a.t_from, a.t_to, a.out, toks, brti,
-                       a.asof, a.identity_precision)
+    genome, report, _ = run(a.data, a.ordermatch_dir, a.orders, a.wallet, a.t_from, a.t_to, a.out, toks, brti,
+                            a.asof, a.identity_precision)
     print(card(report))
-    return 0
+    return 0 if genome is not None else 1
 
 
 if __name__ == "__main__":

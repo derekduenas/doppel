@@ -166,6 +166,24 @@ def test_genome_is_a_valid_unregistered_draft_and_lists_what_the_schema_drops(fi
     m = g.maker
     assert m is not None and m.quote_ref == "mid" and m.sides == "both" and 97 <= m.size <= 100
     assert 1.5 < m.half_spread_c < 2.5 and 0.015 < m.skew_c_per_contract < 0.035 and m.max_quote_age_s == 2
+    # every number that reaches the genome carries n, a window-clustered CI and a holdout score
+    e = rep["expressible_price_rule"]
+    fitted_numbers = [e["half_spread_fit"], e["centre_shift_fit"], e["skew_fit"], rep["size_rule"]["median_size"],
+                      rep["timing_rule"]["cancel"]["life_ms_p90"], rep["participation_rule"]["tte_s_p10"],
+                      rep["participation_rule"]["tau_s_p10"]]
+    assert all(x["n"] > 100 and x["clusters"] == 6 and len(x["ci95"]) == 2 and x["oos"] for x in fitted_numbers)
+    assert e["half_spread_fit"]["ci95"][0] <= m.half_spread_c <= e["half_spread_fit"]["ci95"][1]
+    assert g.universe.tte_min_s == int(rep["participation_rule"]["tte_s_p10"]["value"])
+    # the printed rule is the scored one: intercept at zero inventory with the skew, not the raw median
+    assert g.evidence["price_rule"]["ask"]["rule"] == rep["price_rule"]["ask"]["rule"]
+    u = rep["price_rule"]["ask"]["rule"]
+    assert u["ref"] == "mid" and abs(u["offset_c"] - 2) < 0.1 and abs(u["skew_c_per_contract"] - 0.05) < 0.002
+    assert rep["price_rule"]["bid"]["rule"] == {"ref": "touch", "offset_c": 0, "skew_c_per_contract": 0}
+    card = (tmp / "out" / "rule.md").read_text()
+    assert f"ask = mid {u['offset_c']:+g} c - {u['skew_c_per_contract']:g} c x inventory" in card
+    risk = rep["not_fitted"]["risk"]
+    assert risk["default_max_inventory"] == 50 and risk["fitted_size"] == m.size
+    assert risk["abs_inventory_at_placement"]["p100"] > 50
     items = {c["item"]: c for c in rep["cannot_express"]}
     assert "bid: quote pegged to the same-side best" in items and "a different reference per side" in items
     assert "size drawn from a set / randomised" in items and "status draft" in items
@@ -360,7 +378,17 @@ def test_triggers_and_the_state_just_before_a_cancel(tmp_path):
                                 [tmp_path / "tokens.jsonl"])
     assert [r["id"] for r in T2["rows"]] == ["c"] and T2["stats"]["orders_not_verified_dropped"] == 3
     (tmp_path / "ordertape.jsonl").write_bytes(orjson.dumps(tape[0]) + b"\n")
-    # too few orders for a rule: says so, still emits a valid draft from schema defaults
-    genome, rep, _ = fit(tmp_path)
+    assert (T["stats"]["cancels_asked"], T["stats"]["cancels_state_found"]) == (1, 1)
+    # too few orders for a rule: says so and emits NO genome (schema defaults are not this wallet's rule)
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "genome.json").write_text("{}")  # an older run's file must not survive
+    genome, rep, _ = fit(tmp_path, tmp_path / "out")
     assert rep["price_rule"]["bid"]["chosen"] is None and "reason" in rep["price_rule"]["bid"]
-    assert genome["status"] == "draft" and validate(from_dict(genome)) == []
+    assert genome is None and rep["genome"]["status"] == "not_emitted" and rep["genome"]["id"] is None
+    assert not (tmp_path / "out" / "genome.json").exists()
+    assert "NO GENOME EMITTED" in (tmp_path / "out" / "rule.md").read_text()
+    args = ["--data", str(tmp_path / "tape"), "--ordermatch-dir", str(tmp_path / "om"), "--orders",
+            str(tmp_path / "ordertape.jsonl"), "--from", str(T0), "--to", str(T0 + 3600), "--out", str(tmp_path / "out")]
+    assert main(args + ["--wallet", W, "--tokens", str(tmp_path / "tokens.jsonl")]) == 1
+    with pytest.raises(SystemExit, match="no order of .* could be put in a window"):
+        main(args + ["--wallet", W])  # no token map at all
