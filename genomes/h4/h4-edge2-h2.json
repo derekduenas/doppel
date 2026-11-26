@@ -1,0 +1,105 @@
+{
+  "name": "h4-edge2-h2",
+  "universe": {
+    "venue": "pmus",
+    "family": "updown",
+    "assets": [
+      "btc"
+    ],
+    "horizons": [
+      "5m"
+    ],
+    "tau_min_s": 5,
+    "tte_min_s": 20
+  },
+  "mode": "maker",
+  "source": {
+    "kind": "manual",
+    "wallets": [],
+    "cohort_sha256": null,
+    "dossier_sha256": [],
+    "mechanism": "COMPLETE_SET_MAKER"
+  },
+  "fair": {
+    "name": "fair-v1",
+    "vol_window_s": 300,
+    "note": "raw BRTI accrued-average model; settlement = A(E-1) vs A(S-1)"
+  },
+  "taker": [],
+  "maker": {
+    "quote_ref": "fair",
+    "half_spread_c": 2.0,
+    "size": 10,
+    "sides": "both",
+    "skew_c_per_contract": 0.05,
+    "requote_threshold_c": 1.0,
+    "max_quote_age_s": 20,
+    "pause_when": [
+      {
+        "feature": "brti_move_5s",
+        "op": ">",
+        "value": 30.0,
+        "value_hi": null
+      },
+      {
+        "feature": "brti_move_5s",
+        "op": "<",
+        "value": -30.0,
+        "value_hi": null
+      },
+      {
+        "feature": "intl_informed_flow_30s",
+        "op": ">",
+        "value": 100.0,
+        "value_hi": null
+      },
+      {
+        "feature": "intl_informed_flow_30s",
+        "op": "<",
+        "value": -100.0,
+        "value_hi": null
+      }
+    ],
+    "min_edge_vs_fair_c": 2.0
+  },
+  "exit": {
+    "hold_to_settlement": true,
+    "flatten_tte_s": null
+  },
+  "risk": {
+    "max_inventory": 40,
+    "max_notional_per_window": 40,
+    "max_loss_per_day": 25,
+    "max_open_windows": 1
+  },
+  "costs": {
+    "taker_fee_coef": 0.095,
+    "maker_fee_coef": 0.0,
+    "fee_rounding": "pmus_cent_half_even"
+  },
+  "kill": {
+    "min_windows": 300,
+    "metric": "net_c_per_window",
+    "pass_ci_low_gt": 0.0,
+    "kill_ci_high_lt": 0.0,
+    "max_drawdown_usd": 25.0
+  },
+  "gates": [
+    "G2",
+    "G3",
+    "G4",
+    "G5"
+  ],
+  "evidence": {
+    "family": "h4-edge-selective-v1",
+    "basis": "E24 fill-conditional edge (pre-window prints)",
+    "eval_window": [
+      "2026-11-28T00:00:00Z",
+      "2026-12-01T00:00:00Z"
+    ]
+  },
+  "schema_version": 1,
+  "status": "candidate",
+  "created_tw": 1795654261233066000,
+  "notes": ""
+}
