@@ -25,8 +25,9 @@ backed off with jitter after an error and benched after repeated errors. Output 
 ``day=YYYY-MM-DD/part-NNNNNN.parquet`` (day of the block, UTC) plus ``_state/flush-NNNNNN.json``,
 one manifest per flush naming its parts and its finished txs. A part counts only once its manifest
 exists (both written tmp + rename); parts without one are deleted at the next start, so a crash at
-any point costs at most one flush of requests and never duplicates rows. Txs that were ``missing``
-or ``failed`` are not recorded and are tried again by the next run.
+any point costs at most one flush of requests and never duplicates rows. Txs that were ``missing``,
+``failed`` or ``undecodable`` are not recorded and are tried again by the next run. There is no
+lock: do not run two jobs on one output directory.
 
 Each row carries ``verified`` (its hash is an ``order_id`` the fill store reports in that tx; null
 when the store has no fill with an order_id for the tx) and ``ts_flag`` (null when the stamp is
@@ -367,7 +368,7 @@ def goldsky_ids(con, wallets: list[str] | None, txs: list[str]) -> dict[str, set
 
 # ---------------------------------------------------------------- output and resume
 STATE_DIR = "_state"
-DONE = ("decoded", "not_match_orders", "undecodable")  # recorded; other statuses are retried
+DONE = ("decoded", "not_match_orders")  # recorded; other statuses are retried by the next run
 
 
 def load_done(out: Path) -> tuple[set[str], int]:
@@ -461,7 +462,7 @@ def run(todo: list[tuple[str, int | None, int | None]], pool: Pool, out: Path, *
             if n["budget"] or n["down"]:
                 stopped = "max_requests" if n["budget"] else "endpoints_down"
                 break
-    attempted = sum(n[s] for s in (*DONE, "missing", "failed"))
+    attempted = sum(n[s] for s in (*DONE, "undecodable", "missing", "failed"))
     exp_n, got_n = (sum(c[k] for c in per_wallet.values()) for k in (0, 1))
     wall = time.monotonic() - t0
     return {
@@ -488,7 +489,11 @@ def _ts(s: str) -> int:
 
 def _list(s: str) -> list[str]:
     """A file with one item per line, or a comma-separated list. Lowercased."""
-    text = Path(s).read_text() if Path(s).is_file() else s.replace(",", " ")
+    try:
+        text = Path(s).read_text() if Path(s).is_file() else s
+    except OSError:  # a long list is not a valid file name
+        text = s
+    text = text.replace(",", " ")
     return [x.strip().lower() for x in text.split() if x.strip()]
 
 

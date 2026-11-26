@@ -272,3 +272,18 @@ def test_uint256_garbage_cannot_poison_a_flush(tmp_path):
         ot.decode_match(bad, FX["to"])
     pool = _pool(lambda u, m, p: {"input": bad, "to": FX["to"], "blockNumber": hex(BLOCK)})[0]
     assert ot.fetch_tx(pool, ("0x01", BLOCK_TS, BLOCK), {})["status"] == "undecodable"
+
+
+def test_cli_cohort_mode_prints_one_json_summary(tmp_path, capsys):
+    con = _store(tmp_path, [_fill(1, WA, "0x01", 100), _fill(2, WA, "0x02", 200), _fill(3, WB, "0x03", 300)])
+    con.close()
+    # budget 0: selection, resume and the summary run, the network is never touched
+    assert ot.main(["--store", str(tmp_path / "fills"), "--wallets", f"{WA},{WB.upper()}", "--from", "150",
+                    "--to", "1970-01-01T00:10:00", "--max-requests", "0", "--out", str(tmp_path / "o")]) == 0
+    s = orjson.loads(capsys.readouterr().out)
+    assert (s["txs_selected"], s["txs_not_attempted"], s["stopped"], s["requests"]) == (2, 2, "max_requests", 0)
+    many = ",".join(["0x" + "ab" * 20] * 6)  # longer than a file name may be
+    assert ot._list(many) == ["0x" + "ab" * 20] * 6
+    f = tmp_path / "w.txt"
+    f.write_text(f"{WA}\n{WB}\n")
+    assert ot._list(str(f)) == [WA, WB]
