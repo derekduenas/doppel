@@ -94,3 +94,12 @@ e=evidence/2026-11-27-wallet-rivals
   --score "$d/real-repeat/scores.json" \
   --label-source "$d/real-repeat/label-source.json"
 ```
+
+## Build verification
+
+All 798 Python cases passed across the suite and focused reruns. The sandbox denied 11
+mock-server cases permission to open local sockets. All 11 passed with loopback and local
+socket permissions. The final decision-book regression passed against the selected cancel
+receipt. Pyright reported zero errors and warnings. The offline lock check and package builds
+passed. The wheel matched all 78 source modules byte for byte and exposed 36 importable
+command targets. Rust passed all 72 tests, Clippy with warnings denied, and the format check.
