@@ -8,6 +8,8 @@ describes the quotes that TRADED. The only view of the rest is ordermatch's fing
 weighted by the stated identity precision, and the move is reported (selection-bias check).
 
 INPUTS
+- ``--reconstruct-manifest`` supplies the verified order tape, per-wallet matched orders and
+  aggregate summary. Fingerprint candidates require stand-alone ordermatch inputs.
 - ``--ordermatch-dir``: ``orders.jsonl`` (maker orders located in the book; rows of the wallet,
   ``fill_before_placement`` dropped), optional ``quotes.jsonl`` and ``ordermatch.json``.
 - ``--orders``: the order tape (``doppel-ordertape``): the wallet's own fills (inventory), and
@@ -25,42 +27,69 @@ INPUTS
    record with ``tw < cutoff`` and nothing else: the order's own increase is NOT in it.
    Everything is in Up-exposure terms, cents: BUY Up @ p = bid p; SELL Up @ p = ask p;
    BUY Down @ p = ask 100 - p; SELL Down @ p = bid 100 - p; a Down token's book is mirrored.
-   Columns: ``bb_c``/``ba_c``/``mid_c``/``spread_c``, ``depth_bid``/``depth_ask`` (size at the
-   best), ``d_touch_c`` (limit - same-side best), ``d_mid_c``, ``d_fair_c``, ``tau_s``/``tte_s``,
-   ``fair_c`` (twin ``Features.fair`` at second floor(cutoff): BRTI received by then, 1 s delay;
-   BTC only, null before the window start), ``inv`` (own net Up contracts in the window: tape
-   fills located by a tx-hash print received before cutoff, else block time < cutoff; maker and
-   taker), ``gap_s`` (venue seconds since its previous verified order on that token).
+   STATE columns (``STATE_COLS``; functions of the cutoff and of data received before it, tested
+   against a rewritten future): ``bb_c``/``ba_c``/``mid_c``/``spread_c``, ``depth_bid``/
+   ``depth_ask`` (size at the best), ``tau_s``/``tte_s``, ``fair_c`` (twin ``Features.fair`` at
+   second floor(cutoff): BRTI received by then, 1 s delay; BTC only, null before the window start;
+   cached per (start, end)), ``inv`` (own net Up contracts in the window: tape fills located by a
+   tx-hash print received before the cutoff, else block time < cutoff; maker and taker),
+   ``notional_usd`` (own opening notional in the window from the same fills, accrued as the twin
+   does), ``since_prev_s`` (cutoff minus the receive time of its previous verified order's
+   placement on that token).
+   ORDER columns (``ORDER_COLS``; the order itself, what a rule has to reproduce, never a
+   predictor): ``up_side``, ``px_c``, ``size``, ``placed_venue_ms``, ``d_touch_c`` (limit -
+   same-side best), ``d_mid_c``, ``d_fair_c``, ``gap_s`` (venue seconds since its previous
+   verified order on the token).
    The best bid/ask can contain the wallet's own OTHER resting quotes: they are anonymous.
 2. FITS. Each fitted number is ``{value, n, clusters, ci95, oos}``: ci95 = percentile bootstrap
-   resampling market windows (seeded); oos = time-ordered split, first 70 % fit, last 30 % test
-   (``mae_c`` for models, the holdout's own statistic for descriptive numbers). A window can
-   straddle the split.
+   resampling market windows (seeded). The price fits share a chronological split of market
+   windows (``thresholds``), with roughly 56 % for fit, 14 % for validation and 30 % for test.
+   Windows straddling a boundary are excluded from the price fits. Every price-model choice (reference,
+   constant vs inventory model, keeping the skew) is made on the validation slice with models
+   fitted on the fit slice; the chosen model is refitted on fit + validation and scored ONCE on
+   the test slice (``oos.mae_c``). Reported parameters use a refit on all eligible rows.
+   Descriptive numbers carry the same statistic on the final 30 % of observations.
    a. price, per Up side: limit = ref + a - skew * inv for ref in touch / mid / fair (refs known
-      for >= half the rows compete, on the rows where all of them are known). Per ref the
-      constant-offset (median) and the inventory (least squares) model are fitted on the first
-      70 %; the ref with the lowest test MAE wins; ``tie`` when the bootstrap CI of its test-error
-      difference to the runner-up spans 0 (touch and mid cannot be told apart under a constant
-      spread). Reported: offset median and IQR, the IQR of the chosen model's residual, share within 1 c, skew per contract (genome
-      sign: positive = quotes shift down when long), slopes on time-to-close and spread.
+      for >= half the rows compete, on the rows where all of them are known). ``tie`` when the
+      bootstrap CI of the validation-error difference to the runner-up spans 0 (touch and mid
+      cannot be told apart under a constant spread). Reported: ``rule`` (the selected model),
+      offset median and IQR, the IQR of the model's residual, share within 1 c, skew per contract
+      (genome sign: positive = quotes shift down when long), slopes on time-to-close and spread.
    b. size: ``profile._size`` (fixed sizes / fixed notional / variable), median, slope on price.
    c. timing: re-post gap; what preceded each order since its previous one on the token:
       ``own_fill`` (an own fill in the window in between), else ``book_move`` (same-token best
       bid or ask differs by >= 1 c from the state just after the previous order landed), else
       ``timer``; cancels (ordermatch ``cancelled``): life, time from last fill, replaced within
       1 s, and at the cancel whether the opposite best had moved >= 1 c or the order was behind
-      the best.
-   d. participation: 10 s cells of every window of the wallet's asset-horizons with a known Up
-      book at the cell's start; a cell is ``present`` when a verified order rested in it (placement to
-      ``rest_max_ms``, else ``rest_min_ms``). Rates by time-to-close and mid band, both sides
-      vs one. Absence of a FILLED order is not absence of a quote.
-3. GENOME (``genome.json``, ``status: "draft"``, never registered): the best rule the v1 schema can
-   hold (one reference mid|fair, one symmetric half-spread, one skew) with its test MAE next to
-   the per-side fit's. ``fit_report.json`` -> ``cannot_express`` lists every measured behaviour
-   the schema drops, each with its number.
+      the best. Ladder: share of orders with another own order live on the same token and side at
+      a different price, and how many distinct prices (``fit_ladder``).
+   d. participation: 10 s cells of every window of the wallet's asset-horizons with a known book
+      at the cell's start (the Up token's, else the Down token's mirrored); a cell is ``present``
+      when a verified order rested in it (placement to ``rest_max_ms``, else ``rest_min_ms``).
+      Rates by time-to-close and mid band, both sides vs one. Absence of a FILLED order is not
+      absence of a quote.
+3. GENOME (``genome.json``, ``status: "draft"``; ``Registry.register`` refuses that status): the
+   best rule the v1 schema can hold (one reference mid|fair, one symmetric half-spread, one skew)
+   fitted on orders of assets with fair-v1 only, mid and fair compared on one common set of rows,
+   and scored against the per-side rules on the same test rows. ``Risk.max_inventory`` and
+   ``max_notional_per_window`` are MEASURED from the wallet (>= fitted size and p99 |inventory|;
+   p95 opening notional per window) so the rule can act; they are not limits. The emitted genome
+   is then checked through ``Genome.maker_quotes`` and the twin's ``WindowSim._room`` on its
+   fitting observations (``emitted_genome_check``). This is a static check at observed state.
+   Assess the complete draft with a separately reserved replay window. NO genome is written
+   (``genome.status: "not_emitted"`` with
+   the reasons, exit 1) when: no order is on an asset with fair-v1; no expressible rule could be
+   fitted; half_spread_c < 0.5 (rounds to a self-cross); fewer than 2 windows; or the emitted
+   genome would quote on < 70 % of the wallet's fitting observations.
+   ``fit_report.json`` -> ``cannot_express`` lists every measured behaviour the schema drops, each
+   with its number.
 
-Analysis only. No look-ahead in the state rows (tested); outcome columns come from ordermatch,
-which reads the future by design, and never enter a state row.
+Fingerprint candidates are read in two streaming passes and capped (``--max-candidates``, default
+5,000, proportional per window, seeded); the cap and the file total are in ``inputs.candidates``.
+The refit with them is reported as "if the attribution held", never as a bound.
+
+Analysis only. No look-ahead in the state columns (tested); outcome columns come from ordermatch,
+which reads the future by design, and never enter a state column.
 """
 
 from __future__ import annotations
@@ -71,6 +100,7 @@ import math
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -78,6 +108,7 @@ import orjson
 
 from ..strategy.genome import Condition, Genome, MakerRule, Risk, Source, Universe, to_dict, validate
 from ..tape.segment import read_segment, segment_path
+from ..twin.engine import MIN_QTY, WindowSim
 from ..twin.features import Features, RefStore
 from .census import LEN, window_of
 from .flow import RTDS_STREAMS, _ts, hours_between, iter_rtds
@@ -87,6 +118,15 @@ from .ordermatch import filled_shares
 from .profile import _size, load_rows, prepare
 
 TRAIN_FRAC = 0.7
+INNER_FRAC = 0.8          # of the training slice: fit on the first 80 %, select on the last 20 %
+MAX_CANDIDATES = 5000     # fingerprint candidates kept per wallet (stratified by window, seeded)
+FAIR_ASSETS = ("btc",)    # assets with fair-v1 (raw BRTI); a v1 maker never quotes without fair_up
+MIN_HALF_SPREAD_C = 0.5   # below this bid and ask round to the same cent
+MIN_QUOTE_SHARE = 0.7     # in-sample static intent check for the full-sample draft
+LADDER_SHARE = 0.1
+STATE_COLS = ("bb_c", "ba_c", "mid_c", "spread_c", "depth_bid", "depth_ask", "fair_c", "tau_s", "tte_s", "inv",
+              "notional_usd", "since_prev_s")
+ORDER_COLS = ("placed_venue_ms", "up_side", "px_c", "size", "d_touch_c", "d_mid_c", "d_fair_c", "gap_s")
 N_BOOT = 400
 SEED = 20261126
 MIN_N = 20
@@ -212,22 +252,25 @@ def _top(levels: dict | None) -> tuple | None:
 
 
 def scan(root: Path, stream: str, t_from: int, t_to: int, queries: list[tuple],
-         cancels: dict[tuple, list], txs: set[str], up_by_start: dict[int, list[tuple[str, str]]],
-         length: int) -> dict:
+         cancels: dict[tuple, list], txs: set[str], by_start: dict[int, list[tuple[str, str, int]]],
+         length: int, *, grid_from: int | None = None) -> dict:
     """One pass over a stream in tape order.
 
     ``queries`` (tw_ns, token, key) sorted by tw: each is answered with the token's top of book
     BEFORE the first record with ``tw >= tw_ns`` is applied, i.e. from records received strictly
-    earlier. ``cancels``: (token, price, side, venue_ms) -> [(key, remainder)]: the top just before
-    the closest decrease there (within max(TOL, TOL_REL * remainder)); matched entries are removed. ``txs``: earliest receive ns of a print per tx. Grid: the Up token's top
-    at every GRID_S boundary inside its window."""
+    earlier. ``cancels``: (token, price, side, venue_ms) -> [(key, remainder)]: for each entry, the
+    top just before the decrease at that level and venue ms whose size is CLOSEST to the remainder
+    (within max(TOL, TOL_REL * remainder)). ``txs``: earliest receive ns of a print per tx. Grid: each mapped token's top
+    at every GRID_S boundary inside its window, keyed (slug, boundary, idx)."""
     book = IntlBook()
     state: dict = {}
     at_cancel: dict = {}
+    cancel_diff: dict = {}
     fill_tw: dict[str, int] = {}
-    grid: dict[tuple[str, int], tuple | None] = {}
+    grid: dict[tuple[str, int, int], tuple | None] = {}
     qi = 0
-    next_bin = t_from - t_from % GRID_S + GRID_S
+    grid_start = grid_from if grid_from is not None else t_from
+    next_bin = grid_start - grid_start % GRID_S + GRID_S
 
     def answer(tw: int) -> None:
         nonlocal qi
@@ -240,8 +283,8 @@ def scan(root: Path, stream: str, t_from: int, t_to: int, queries: list[tuple],
         nonlocal next_bin
         answer(tw)
         while next_bin * NS <= tw:
-            for tok, slug in up_by_start.get(next_bin - next_bin % length, ()):
-                grid[(slug, next_bin)] = _top(book.levels.get(tok))
+            for tok, slug, idx in by_start.get(next_bin - next_bin % length, ()):
+                grid[(slug, next_bin, idx)] = _top(book.levels.get(tok))
             next_bin += GRID_S
 
     for hour in range(t_from - t_from % 3600, t_to, 3600):
@@ -261,18 +304,18 @@ def scan(root: Path, stream: str, t_from: int, t_to: int, queries: list[tuple],
                     if it.tx in txs and tw < fill_tw.get(it.tx, 1 << 62):
                         fill_tw[it.tx] = tw
                 elif isinstance(it, LevelEvent) and it.delta < 0:
-                    want = cancels.get((it.asset, it.price, it.side, it.venue_ms))
                     dec = -it.delta
-                    hit = min(want or (), key=lambda c: abs(dec - c[1]), default=None)
-                    if hit is not None and abs(dec - hit[1]) > max(TOL, TOL_REL * hit[1]):
-                        hit = None
-                    if hit is not None and want is not None:
-                        want.remove(hit)
+                    near = [c for c in cancels.get((it.asset, it.price, it.side, it.venue_ms), ())
+                            if abs(dec - c[1]) <= max(TOL, TOL_REL * c[1])
+                            and abs(dec - c[1]) < cancel_diff.get(c[0], math.inf)]
+                    if near:
                         lv = dict(book.levels.get(it.asset) or {})
                         for e in reversed([x for x in items if isinstance(x, LevelEvent) and x.asset == it.asset]):
                             lv[(e.price, e.side)] = e.old_size  # undo this record: the state before it
-                        at_cancel[hit[0]] = _top(lv)
-    answer(1 << 62)  # only states asked for after the last record
+                        top = _top(lv)
+                        for c in near:
+                            at_cancel[c[0]], cancel_diff[c[0]] = top, abs(dec - c[1])
+    answer(t_to * NS - 1)
     return {"state": state, "at_cancel": at_cancel, "fill_tw": fill_tw, "grid": grid, "mates": book.mates()}
 
 
@@ -299,53 +342,103 @@ def up_order(side: str, price: float, idx: int) -> tuple[str, float]:
 
 
 # ---------------------------------------------------------------- inputs
-def load_specs(om_dir: Path, wallet: str) -> tuple[list[dict], list[dict], dict, Counter]:
-    """(the wallet's located maker orders, fingerprint candidates, its ordermatch summary, counts)."""
+ORDER_KEYS = ("order_id", "token_id", "side", "price", "size", "created_ms", "placed_venue_ms", "placed_tw_ns",
+              "outcome", "reason", "end_ms", "remainder", "rest_min_ms", "rest_max_ms", "fills_at")
+QUOTE_KEYS = ("token_id", "price", "venue_ms", "tw_ns", "size")
+
+
+def _jsonl(path: Path):
+    with open(path, "rb") as fh:  # one line at a time: quotes.jsonl can hold 100k+ rows per wallet-hour
+        for line in fh:
+            if line.strip():
+                yield orjson.loads(line)
+
+
+def load_orders(path: Path, summary: Path | None, wallet: str) -> tuple[list[dict], dict, Counter]:
+    """(the wallet's located maker orders, its ordermatch summary, counts). Needed columns only."""
     stats: Counter = Counter()
     orders = []
-    for line in (om_dir / "orders.jsonl").read_bytes().splitlines():
-        if not line.strip():
-            continue
-        r = orjson.loads(line)
+    for r in _jsonl(path):
         if str(r.get("maker", "")).lower() != wallet:
             stats["orders_other_makers"] += 1
         elif r.get("fill_before_placement"):
             stats["orders_wrong_match_dropped"] += 1
         else:
-            orders.append(r)
-    quotes = []
-    qp = om_dir / "quotes.jsonl"
-    if qp.exists():
-        for line in qp.read_bytes().splitlines():
-            if line.strip():
-                r = orjson.loads(line)
-                if str(r.get("wallet", wallet)).lower() == wallet:
-                    quotes.append(r)
+            orders.append({k: r.get(k) for k in ORDER_KEYS})
     doc = {}
-    dp = om_dir / "ordermatch.json"
-    if dp.exists():
-        doc = (orjson.loads(dp.read_bytes()).get("wallets") or {}).get(wallet) or {}
-    stats["orders"], stats["candidates"] = len(orders), len(quotes)
-    return orders, quotes, doc, stats
+    if summary is not None and summary.exists():
+        doc = (orjson.loads(summary.read_bytes()).get("wallets") or {}).get(wallet) or {}
+    stats["orders"] = len(orders)
+    return orders, doc, stats
+
+
+def sample_quotes(path: Path | None, wallet: str, tok: dict[str, dict], cap: int,
+                  bounds: tuple[int, int] | None = None) -> tuple[list[dict], dict]:
+    """At most ``cap`` of the wallet's fingerprint candidates, stratified by window (by token when
+    the token is not mapped), seeded. Two streaming passes; the file is never held in memory."""
+    info = {"cap": cap, "total": 0, "outside_range": 0, "kept": 0, "seed": SEED, "strata": 0,
+            "sampling": "proportional per window (largest remainder), uniform within a window"}
+    if path is None or not path.exists():
+        return [], info
+    def mine(row: dict) -> bool:
+        return str(row.get("wallet", wallet)).lower() == wallet
+
+    def in_range(row: dict) -> bool:
+        return bounds is None or bounds[0] <= row["tw_ns"] < bounds[1]
+    stratum = lambda r: (tok.get(r["token_id"]) or {}).get("slug") or r["token_id"]  # noqa: E731
+    counts: Counter = Counter()
+    for row in _jsonl(path):
+        if mine(row):
+            if in_range(row):
+                counts[stratum(row)] += 1
+            else:
+                info["outside_range"] += 1
+    n = sum(counts.values())
+    info |= {"total": n, "strata": len(counts)}
+    keep: dict[str, set[int] | None] = {s: None for s in counts}  # None = all of the stratum
+    if n > cap:
+        rng = np.random.default_rng(SEED)
+        names = sorted(counts)
+        share = np.array([cap * counts[s] / n for s in names])
+        quota = np.floor(share).astype(int)
+        for i in np.argsort(-(share - quota), kind="stable")[:cap - int(quota.sum())]:
+            quota[i] += 1
+        keep = {s: set(rng.choice(counts[s], int(q), replace=False).tolist()) for s, q in zip(names, quota)}
+    seen: Counter = Counter()
+    out = []
+    for r in _jsonl(path):
+        if not mine(r) or not in_range(r):
+            continue
+        s = stratum(r)
+        k = keep[s]
+        if k is None or seen[s] in k:
+            out.append({c: r[c] for c in QUOTE_KEYS})
+        seen[s] += 1
+    info["kept"] = len(out)
+    return out, info
 
 
 def wallet_fills(orders_path: Path, wallet: str) -> tuple[list[dict], dict, set[str] | None]:
-    """The wallet's verified tape fills [{tx, token, side, shares, block_ts}], input counts, and
-    its verified order ids (None for a legacy tape without a ``verified`` column: nothing to check)."""
+    """The wallet's verified tape fills [{tx, token, side, shares, price, block_ts}], input counts,
+    and its verified order ids (None for a legacy tape without a ``verified`` column)."""
     rows, flagged = load_rows(orders_path, {wallet})
     w = prepare(rows, flagged)
     ids = {r["order_id"] for r in w["rows"]} if flagged else None
     out = [{"tx": r["tx"], "token": r["token_id"], "side": r["side"], "shares": filled_shares(r),
-            "block_ts": r["block_ts"]} for r in w["rows"]
+            "price": float(r.get("limit") or 0.5), "block_ts": r["block_ts"]} for r in w["rows"]
            if r["side"] == "SELL" or r.get("maker_amount") or r.get("limit")]
     return out, w["input"], ids
 
 
 class Inventory:
-    """Own net Up contracts per window from tape fills, as of a receive instant."""
+    """Own net Up contracts and opening notional per window from tape fills, as of a receive
+    instant. Notional accrues as in the twin (``WindowSim._fill``): the part of a fill that opens
+    or adds exposure, at its Up-terms cost (price for Up bought, 1 - price for Up sold). The fill
+    price is the order's limit."""
 
-    def __init__(self, fills: list[dict], tok: dict[str, dict], fill_tw: dict[str, int]):
-        by: dict[str, list[tuple[int, float]]] = defaultdict(list)
+    def __init__(self, fills: list[dict], tok: dict[str, dict], fill_tw: dict[str, int],
+                 bounds: tuple[int, int] | None = None):
+        by: dict[str, list[tuple[int, float, float]]] = defaultdict(list)
         self.unmapped = self.by_block_time = 0
         for f in fills:
             info = tok.get(f["token"])
@@ -356,20 +449,42 @@ class Inventory:
             if t is None:  # no print: the block time trails the match, so the fill counts late
                 t = int(f["block_ts"]) * NS
                 self.by_block_time += 1
+            if bounds is not None and not bounds[0] <= t < bounds[1]:
+                continue
             sign = (1 if f["side"] == "BUY" else -1) * (1 if info["idx"] == 0 else -1)
-            by[info["slug"]].append((t, sign * f["shares"]))
+            up_px = f.get("price", 0.5) if info["idx"] == 0 else 1 - f.get("price", 0.5)
+            by[info["slug"]].append((t, sign * f["shares"], up_px))
         self.t: dict[str, list[int]] = {}
         self.cum: dict[str, list[float]] = {}
+        self.notional: dict[str, list[float]] = {}
         for slug, xs in by.items():
             xs.sort()
-            self.t[slug] = [x[0] for x in xs]
-            self.cum[slug] = np.cumsum([x[1] for x in xs]).tolist()
+            inv = spent = 0.0
+            self.t[slug], self.cum[slug], self.notional[slug] = [], [], []
+            for t, q, p in xs:
+                closing = min(abs(q), max(0.0, -inv if q > 0 else inv))
+                spent += (abs(q) - closing) * (p if q > 0 else 1 - p)
+                inv += q
+                self.t[slug].append(t)
+                self.cum[slug].append(inv)
+                self.notional[slug].append(spent)
         self.n = len(fills)
+
+    def _i(self, slug: str, tw: int) -> int:
+        return bisect.bisect_left(self.t.get(slug, []), tw)
 
     def at(self, slug: str, tw: int) -> float:
         """Net Up contracts from fills located strictly before ``tw``."""
-        i = bisect.bisect_left(self.t.get(slug, []), tw)
+        i = self._i(slug, tw)
         return self.cum[slug][i - 1] if i else 0.0
+
+    def notional_at(self, slug: str, tw: int) -> float:
+        """Opening notional (USD) of the window from fills located strictly before ``tw``."""
+        i = self._i(slug, tw)
+        return self.notional[slug][i - 1] if i else 0.0
+
+    def window_notional(self, windows: set[str]) -> list[float]:
+        return [v[-1] for slug, v in self.notional.items() if slug in windows and v]
 
     def any_between(self, slug: str, lo: int, hi: int) -> bool:
         ts = self.t.get(slug, [])
@@ -384,34 +499,51 @@ class Fair:
         self.store.load_boundaries("btc", t_from - 3600, t_to + 3600)
         self.genome = Genome(name="rulefit-fair", universe=Universe(venue="intl_sim"), mode="maker",
                              source=Source(kind="manual"))
-        self.feat: dict[int, Features | None] = {}
+        self.feat: dict[tuple[int, int], Features | None] = {}
 
     def at(self, info: dict, tw: int) -> float | None:
         d = tw // NS
-        if info["asset"] != "btc" or d < info["start"]:
+        if info["asset"] not in FAIR_ASSETS or d < info["start"]:
             return None
-        if info["start"] not in self.feat:
+        key = (info["start"], info["end"])  # 5m and 15m windows share starts: the end is part of the key
+        if key not in self.feat:
             try:
                 ref = self.store.window_ref("btc", info["start"], info["end"], self.genome.fair.vol_window_s)
-                self.feat[info["start"]] = Features(self.genome, ref)
+                self.feat[key] = Features(self.genome, ref)
             except KeyError:
-                self.feat[info["start"]] = None
-        f = self.feat[info["start"]]
+                self.feat[key] = None
+        f = self.feat[key]
         v = f.fair(d) if f is not None else math.nan
         return 100 * v if v == v else None
 
 
 # ---------------------------------------------------------------- decision table
-def decision_table(root: Path, om_dir: Path, orders_path: Path, wallet: str, t_from: int, t_to: int,
-                   token_files: list[Path], brti_root: Path | None = None, asof: str = "placement"
-                   ) -> dict:
+def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: str, t_from: int, t_to: int,
+                   token_files: list[Path], brti_root: Path | None = None, asof: str = "placement",
+                   max_candidates: int = MAX_CANDIDATES, *, matched_orders: Path | None = None,
+                   match_summary: Path | None = None) -> dict:
     wallet = wallet.lower()
-    orders, quotes, om_doc, stats = load_specs(om_dir, wallet)
+    if t_from >= t_to:
+        raise ValueError("rulefit interval must end after it begins")
+    if om_dir is not None:
+        matched_orders = om_dir / "orders.jsonl"
+        match_summary = om_dir / "ordermatch.json"
+    if matched_orders is None:
+        raise ValueError("missing matched orders")
+    orders, om_doc, stats = load_orders(matched_orders, match_summary, wallet)
+    lo, hi = t_from * NS, t_to * NS
+    in_range = [o for o in orders if lo <= o["placed_tw_ns"] < hi]
+    stats["orders_outside_range_dropped"] = len(orders) - len(in_range)
+    orders = in_range
     fills, fill_input, verified = wallet_fills(orders_path, wallet)
     if verified is not None:  # ordermatch does not look at ``verified``; the order tape does
         stats["orders_not_verified_dropped"] = sum(o["order_id"] not in verified for o in orders)
         orders = [o for o in orders if o["order_id"] in verified]
     tok = token_map(root, t_from, t_to, token_files)
+    quotes_path = om_dir / "quotes.jsonl" if om_dir is not None else None
+    quotes, cand_info = sample_quotes(quotes_path, wallet, tok, max_candidates, (lo, hi))
+    stats["candidates"] = len(quotes)
+    stats["candidates_in_file"] = cand_info["total"] + cand_info["outside_range"]
     s2b = [o["placed_venue_ms"] - o["created_ms"] for o in orders]
     lag_q = int(max(0, np.median(s2b))) if s2b else 0  # candidates have no stamp: the wallet's median
 
@@ -426,7 +558,12 @@ def decision_table(root: Path, om_dir: Path, orders_path: Path, wallet: str, t_f
         specs.append({"kind": "candidate", "id": f"{q['token_id']}:{q['price']}:{q['venue_ms']}:{q['tw_ns']}",
                       "token": q["token_id"], "side": "BUY", "price": px(q["price"]), "size": float(q["size"]),
                       "w": None, "placed_tw": int(q["tw_ns"]), "placed_ms": int(q["venue_ms"]),
-                      "cutoff": int(q["tw_ns"]) - (lag_q if asof == "created" else 0) * 1_000_000, "om": q})
+                      "cutoff": int(q["tw_ns"]) - (lag_q if asof == "created" else 0) * 1_000_000, "om": {}})
+    del quotes
+    # A created-time cutoff may precede its placement by enough to cross the lower bound.
+    # Load one market window of pre-roll to reconstruct state and locate prior fills.
+    first_cutoff = min((s["cutoff"] // NS for s in specs), default=t_from)
+    scan_from = min(t_from, first_cutoff) - max(LEN.values())
 
     mapped = {s["token"] for s in specs} & tok.keys()
     streams = sorted({_stream(tok[t]) for t in mapped}) or sorted(
@@ -445,12 +582,14 @@ def decision_table(root: Path, om_dir: Path, orders_path: Path, wallet: str, t_f
             if x["kind"] == "order" and o.get("outcome") == "cancelled" and o.get("end_ms") is not None:
                 cancels[(x["token"], x["price"], x["side"], o["end_ms"])].append((x["id"], o["remainder"]))
         hz = s.rsplit("_", 1)[1]
-        up_by_start: dict[int, list[tuple[str, str]]] = defaultdict(list)
+        # every mapped token of the stream's windows (Up or Down): a window whose Up token is only
+        # mapped later, as its mate's mate, still gets its grid from the Down book
+        by_start: dict[int, list[tuple[str, str, int]]] = defaultdict(list)
         for t, info in tok.items():
-            if info["idx"] == 0 and _stream(info) == s and (info["asset"], info["hz"]) in pairs:
-                up_by_start[info["start"]].append((t, info["slug"]))
-        got = scan(root, s, t_from, t_to, qs, cancels, txs, up_by_start, LEN.get(hz, 300))
-        stats["cancels_asked"] += sum(len(v) for v in cancels.values()) + len(got["at_cancel"])
+            if _stream(info) == s and (info["asset"], info["hz"]) in pairs:
+                by_start[info["start"]].append((t, info["slug"], info["idx"]))
+        got = scan(root, s, scan_from, t_to, qs, cancels, txs, by_start, LEN.get(hz, 300), grid_from=t_from)
+        stats["cancels_asked"] += sum(len(v) for v in cancels.values())
         stats["cancels_state_found"] += len(got["at_cancel"])
         for k in ("state", "at_cancel", "grid", "mates"):
             res[k].update({a: b for a, b in got[k].items() if k != "state" or b is not None or a not in res[k]})
@@ -461,7 +600,7 @@ def decision_table(root: Path, om_dir: Path, orders_path: Path, wallet: str, t_f
             tok[a] = tok[b] | {"idx": 1 - tok[b]["idx"]}
             stats["tokens_mapped_by_mate"] += 1
 
-    inv = Inventory(fills, tok, res["fill_tw"])
+    inv = Inventory(fills, tok, res["fill_tw"], (scan_from * NS, hi))
     fair = Fair(brti_root, t_from, t_to) if brti_root is not None else None
     rows = []
     prev: dict[str, dict] = {}  # token -> previous verified order's spec
@@ -477,20 +616,28 @@ def decision_table(root: Path, om_dir: Path, orders_path: Path, wallet: str, t_f
         v = up_view(top, info["idx"])
         touch = v["bb_c"] if side == "bid" else v["ba_c"]
         f = fair.at(info, x["cutoff"]) if fair is not None else None
-        row = {"id": x["id"], "kind": x["kind"], "w": x["w"], "window": info["slug"], "asset": info["asset"],
+        p = prev.get(x["token"])
+        if p is not None and p["placed_tw"] >= x["cutoff"]:
+            p = None  # not yet in the book at the cutoff
+        row = {"id": x["id"], "kind": x["kind"], "w": x["w"], "window": info["slug"],
+               "window_start_ns": info["start"] * NS, "window_end_ns": info["end"] * NS, "asset": info["asset"],
                "hz": info["hz"], "token": x["token"], "idx": info["idx"], "cutoff_tw_ns": x["cutoff"],
-               "placed_venue_ms": x["placed_ms"], "up_side": side, "px_c": _r(pc), "size": x["size"],
+               # state (STATE_COLS): functions of the cutoff and of data received before it
                **v, "fair_c": _r(f),
+               "tau_s": _r(x["cutoff"] / NS - info["start"], 3), "tte_s": _r(info["end"] - x["cutoff"] / NS, 3),
+               "inv": _r(inv.at(info["slug"], x["cutoff"])),
+               "notional_usd": _r(inv.notional_at(info["slug"], x["cutoff"])),
+               "since_prev_s": None if p is None else _r((x["cutoff"] - p["placed_tw"]) / NS, 3),
+               # the order itself (ORDER_COLS): what the rule has to reproduce
+               "placed_venue_ms": x["placed_ms"], "up_side": side, "px_c": _r(pc), "size": x["size"],
                "d_touch_c": _r(None if touch is None else pc - touch),
                "d_mid_c": _r(None if v["mid_c"] is None else pc - v["mid_c"]),
-               "d_fair_c": _r(None if f is None else pc - f),
-               "tau_s": _r(x["cutoff"] / NS - info["start"], 3), "tte_s": _r(info["end"] - x["cutoff"] / NS, 3),
-               "inv": _r(inv.at(info["slug"], x["cutoff"])), "gap_s": None}
+               "d_fair_c": _r(None if f is None else pc - f), "gap_s": None}
         if x["kind"] == "order":
-            p = prev.get(x["token"])
-            if p is not None:
-                row["gap_s"] = _r((x["placed_ms"] - p["placed_ms"]) / 1000, 3)
-                x["prev"] = p
+            q = prev.get(x["token"])
+            if q is not None:
+                row["gap_s"] = _r((x["placed_ms"] - q["placed_ms"]) / 1000, 3)
+                x["prev"] = q
             prev[x["token"]] = x
         x["row"], x["info"] = row, info
         rows.append(row)
@@ -498,8 +645,8 @@ def decision_table(root: Path, om_dir: Path, orders_path: Path, wallet: str, t_f
             "om_doc": om_doc, "stats": stats, "pairs": sorted(pairs),
             "inputs": {"fills": fill_input | {"n": inv.n, "unmapped": inv.unmapped,
                                               "timed_by_block": inv.by_block_time},
-                       "streams": streams, "asof": asof, "fair": fair is not None,
-                       "sign_to_book_ms_p50": lag_q}}
+                       "streams": streams, "asof": asof, "from": t_from, "to": t_to, "fair": fair is not None,
+                       "sign_to_book_ms_p50": lag_q, "candidates": cand_info}}
 
 
 # ---------------------------------------------------------------- 2a price rule
@@ -507,89 +654,124 @@ def _arr(rows: list[dict], key: str) -> np.ndarray:
     return np.array([math.nan if r.get(key) is None else r[key] for r in rows], dtype=float)
 
 
-def _side_data(rows: list[dict], side: str) -> dict:
+def thresholds(rows: list[dict]) -> tuple[int, int]:
+    """Validation and test boundaries from chronological market-window starts, in ns."""
+    starts = sorted({r["window_start_ns"] for r in rows})
+    if not starts:
+        return 0, 0
+    test = min(len(starts) - 1, max(2, int(TRAIN_FRAC * len(starts))))
+    val = min(test, max(1, int(INNER_FRAC * test)))
+    return starts[val], starts[test]
+
+
+def _phase(rows: list[dict], th: tuple[int, int]) -> np.ndarray:
+    starts = np.array([r["window_start_ns"] for r in rows], dtype=np.int64)
+    ends = np.array([r["window_end_ns"] for r in rows], dtype=np.int64)
+    # A longer market window may straddle a boundary between two shorter ones.
+    return np.select([ends <= th[0], starts >= th[1], (starts >= th[0]) & (ends <= th[1])],
+                     [0, 2, 1], default=-1)
+
+
+def _side_data(rows: list[dict], side: str, th: tuple[int, int]) -> dict:
     rs = sorted((r for r in rows if r["up_side"] == side), key=lambda r: r["cutoff_tw_ns"])
     y = _arr(rs, "px_c")
-    return {"y": y, "w": _arr(rs, "w"), "inv": _arr(rs, "inv"), "tte": _arr(rs, "tte_s"),
+    return {"y": y, "w": _arr(rs, "w"), "inv": _arr(rs, "inv"), "tte": _arr(rs, "tte_s"), "phase": _phase(rs, th),
             "spread": _arr(rs, "spread_c"), "cl": np.array([r["window"] for r in rs], dtype=object).astype(str),
             "ref": {"touch": y - _arr(rs, "d_touch_c"), "mid": y - _arr(rs, "d_mid_c"),
                     "fair": y - _arr(rs, "d_fair_c")}}
+
+
+def _side_model(d: np.ndarray, X: np.ndarray, w: np.ndarray, i: np.ndarray, model: str) -> np.ndarray:
+    """(intercept, slope on inventory) of d fitted on rows ``i``; slope 0 for the constant model."""
+    if model == "skew" and i.sum() > 2:
+        return wls(X[i], d[i], w[i])
+    return np.array([wmedian(d[i], w[i]), 0.0])
 
 
 def fit_price_side(D: dict, force: str | None = None) -> dict:
     """Price rule of one Up side (module docstring 2a)."""
     n_all = len(D["y"])
     known = {r: np.isfinite(D["ref"][r]) for r in REFS}
-    cands = [r for r in REFS if n_all and known[r].sum() >= max(MIN_N, 0.5 * n_all)]
+    fit_phase = D["phase"] == 0
+    cands = [r for r in REFS if (known[r] & fit_phase).sum() >= max(MIN_N, 0.5 * fit_phase.sum())]
     if force is not None:
         cands = [force] if force in cands else []
     out: dict = {"n_rows": n_all, "ref_coverage": {r: _r(known[r].mean()) if n_all else None for r in REFS},
                  "chosen": None}
     if not cands:
-        return out | {"reason": f"no reference known for >= max({MIN_N}, half) of the rows"}
-    m = np.isfinite(D["inv"]) & np.all([known[r] for r in cands], axis=0)
-    y, w, inv, cl = D["y"][m], D["w"][m], D["inv"][m], D["cl"][m]
+        return out | {"reason": f"no reference known for >= max({MIN_N}, half) of the fit rows"}
+    m = (D["phase"] >= 0) & np.isfinite(D["inv"]) & np.all([known[r] for r in cands], axis=0)
+    y, w, inv, cl, ph = D["y"][m], D["w"][m], D["inv"][m], D["cl"][m], D["phase"][m]
     n = len(y)
-    tr, te = _split(n)
-    if len(tr) < MIN_N // 2 or not len(te):
-        return out | {"reason": "too few rows with every candidate reference"}
+    fit, val, tr, te = ph == 0, ph == 1, ph <= 1, ph == 2
+    if fit.sum() < MIN_N // 2 or not val.any():
+        return out | {"reason": "too few rows with every candidate reference in the fit or validation windows"}
     X = np.column_stack([np.ones(n), inv])
+    # selection (reference, constant vs inventory model) on the validation slice only
     by: dict = {}
-    errs: dict[str, np.ndarray] = {}
+    verr: dict[str, np.ndarray] = {}
     for r in cands:
         d = y - D["ref"][r][m]
-        a = wmedian(d[tr], w[tr])
-        beta = wls(X[tr], d[tr], w[tr])
-        e_c, e_s = np.abs(d - a), np.abs(d - X @ beta)
-        mae_c, mae_s = wmean(e_c[te], w[te]), wmean(e_s[te], w[te])
-        errs[r] = e_s if mae_s < mae_c else e_c
-        by[r] = {"model": "skew" if mae_s < mae_c else "const", "oos_mae_const_c": _r(mae_c),
-                 "oos_mae_skew_c": _r(mae_s), "offset_train_c": _r(a),
-                 "oos_within_1c": _r(wmean((errs[r][te] <= 1.0 + 1e-9).astype(float), w[te]))}
-    rank = sorted(cands, key=lambda r: (wmean(errs[r][te], w[te]), REFS.index(r)))
+        e = {k: np.abs(d - X @ _side_model(d, X, w, fit, k))[val] for k in ("const", "skew")}
+        mae = {k: wmean(v, w[val]) for k, v in e.items()}
+        model = "skew" if mae["skew"] < mae["const"] else "const"
+        verr[r] = e[model]
+        by[r] = {"model": model, "val_mae_const_c": _r(mae["const"]), "val_mae_skew_c": _r(mae["skew"])}
+    rank = sorted(cands, key=lambda r: (wmean(verr[r], w[val]), REFS.index(r)))
     best = rank[0]
-    out |= {"n": n, "n_train": int(len(tr)), "n_test": int(len(te)), "candidates": by, "chosen": best,
-            "model": by[best]["model"], "tie_with": None}
+    model = by[best]["model"]
+    out |= {"n": n, "n_fit": int(fit.sum()), "n_val": int(val.sum()), "n_test": int(te.sum()), "candidates": by,
+            "chosen": best, "model": model, "tie_with": None,
+            "selection": "reference and model chosen on validation windows, refitted on fit and validation "
+                         "windows, and scored once on test windows"}
     if len(rank) > 1:
-        diff = errs[rank[1]][te] - errs[best][te]
-        ci = boot_ci(lambda i: wmean(diff[i], w[te][i]), cl[te])
-        out["runner_up"] = {"ref": rank[1], "oos_mae_gap_c": _r(wmean(diff, w[te])), "ci95": ci}
+        diff = verr[rank[1]] - verr[best]
+        ci = boot_ci(lambda i: wmean(diff[i], w[val][i]), cl[val])
+        out["runner_up"] = {"ref": rank[1], "val_mae_gap_c": _r(wmean(diff, w[val])), "ci95": ci}
         if ci is None or ci[0] <= 0:
             out["tie_with"] = rank[1]
+    # Score the chosen reference and model once, after fitting on fit and validation windows.
     d = y - D["ref"][best][m]
+    bt = _side_model(d, X, w, tr, model)
+    et = np.abs(d - X @ bt)[te]
+    in1 = lambda e: (e <= 1.0 + 1e-9).astype(float)  # noqa: E731
+    oos = {"mae_c": _r(wmean(et, w[te])) if te.any() else None,
+           "within_1c": _r(wmean(in1(et), w[te])) if te.any() else None, "n_test": int(te.sum())}
+    out["train_rule"] = {"ref": best, "offset_c": float(bt[0]), "skew_c_per_contract": float(-bt[1])}
+    # reported parameters: the same model refitted on ALL rows (the test score above is not theirs)
     off = wmedian(d, w)
-    oos = {"mae_c": _r(wmean(errs[best][te], w[te])), "within_1c": by[best]["oos_within_1c"], "n_test": int(len(te))}
     q = lambda p: float(np.percentile(d, p))  # noqa: E731
     out["offset_c"] = est(off, n, cl, boot_ci(lambda i: wmedian(d[i], w[i]), cl), oos) | {
         "p25": _r(q(25)), "p75": _r(q(75)), "iqr": _r(q(75) - q(25))}
-    in1 = (np.abs(d - off) <= 1.0 + 1e-9).astype(float)
-    out["within_1c_of_const_rule"] = est(wmean(in1, w), n, cl, boot_ci(lambda i: wmean(in1[i], w[i]), cl),
-                                         {"holdout_value": by[best]["oos_within_1c"], "n_test": int(len(te))})
+    e_all = in1(np.abs(d - off))
+    ec = np.abs(d - wmedian(d[tr], w[tr]))[te]
+    out["within_1c_of_const_rule"] = est(wmean(e_all, w), n, cl, boot_ci(lambda i: wmean(e_all[i], w[i]), cl),
+                                         {"holdout_value": _r(wmean(in1(ec), w[te])) if te.any() else None,
+                                          "n_test": int(te.sum())})
     slope = lambda i: -wls(X[i], d[i], w[i])[1]  # noqa: E731
     out["skew_c_per_contract"] = est(slope(np.arange(n)), n, cl, boot_ci(slope, cl),
-                                     {"mae_c_const": by[best]["oos_mae_const_c"],
-                                      "mae_c_with_skew": by[best]["oos_mae_skew_c"], "n_test": int(len(te))})
-    out["intercept_c_with_skew"] = _r(wls(X, d, w)[0])
-    skewed = by[best]["model"] == "skew"
-    res = d - (X @ wls(X, d, w) if skewed else off)
-    # the rule as scored: limit = ref + offset_c - skew_c_per_contract * inv
-    out["rule"] = {"ref": best, "offset_c": out["intercept_c_with_skew"] if skewed else _r(off),
-                   "skew_c_per_contract": out["skew_c_per_contract"]["value"] if skewed else 0.0}
+                                     {"val_mae_c_const": by[best]["val_mae_const_c"],
+                                      "val_mae_c_with_skew": by[best]["val_mae_skew_c"], "n_val": int(val.sum())})
+    ba = wls(X, d, w)
+    out["intercept_c_with_skew"] = _r(ba[0])
+    skewed = model == "skew"
+    res = d - (X @ ba if skewed else off)
+    # the rule as selected: limit = ref + offset_c - skew_c_per_contract * inv
+    out["rule"] = {"ref": best, "offset_c": _r(ba[0]) if skewed else _r(off),
+                   "skew_c_per_contract": out["skew_c_per_contract"]["value"] if skewed else 0.0,
+                   "fitted_on": "all eligible rows; offset_c.oos uses only fit and validation windows"}
     out["residual_iqr_c"] = _r(np.percentile(res, 75) - np.percentile(res, 25))  # spread the rule leaves
     out["inventory_range"] = [_r(inv.min()), _r(inv.max())]
-    # dependence on time-to-close and spread, next to inventory
+    # dependence on time-to-close and spread, next to inventory (descriptive; selects nothing)
     tte, sp = D["tte"][m], D["spread"][m]
     ok = np.isfinite(tte) & np.isfinite(sp)
     if ok.sum() >= MIN_N:
         Z = np.column_stack([np.ones(n), inv, tte, sp])[ok]
         dz, wz, cz = d[ok], w[ok], cl[ok]
-        tz, ez = _split(len(dz))
         full = wls(Z, dz, wz)
         ci = boot_ci(lambda i: wls(Z[i], dz[i], wz[i])[2:], cz)
-        mae = wmean(np.abs(dz[ez] - Z[ez] @ wls(Z[tz], dz[tz], wz[tz])), wz[ez]) if len(ez) and len(tz) > 4 else None
-        o = {"mae_c": _r(mae), "n_test": int(len(ez))}
-        out["slope_c_per_s_to_close"] = est(full[2], len(dz), cz, ci[0] if ci else None, o)
-        out["slope_c_per_c_spread"] = est(full[3], len(dz), cz, ci[1] if ci else None, o)
+        out["slope_c_per_s_to_close"] = est(full[2], len(dz), cz, ci[0] if ci else None)
+        out["slope_c_per_c_spread"] = est(full[3], len(dz), cz, ci[1] if ci else None)
     return out
 
 
@@ -598,67 +780,149 @@ def _excludes_zero(e: dict | None) -> bool:
     return bool(ci) and (ci[0] > 0 or ci[1] < 0)
 
 
-def fit_price(rows: list[dict]) -> dict:
-    return {s: fit_price_side(_side_data(rows, s)) for s in ("bid", "ask")}
+def fit_price(rows: list[dict], th: tuple[int, int]) -> dict:
+    return {s: fit_price_side(_side_data(rows, s, th)) for s in ("bid", "ask")}
 
 
-def fit_expressible(rows: list[dict], price: dict) -> dict:
-    """The best rule MakerRule v1 can hold: one ref (mid|fair), symmetric half-spread, one skew."""
+def _side_pred(rows: list[dict], price: dict) -> np.ndarray:
+    """Per-side rule (fit and validation windows) applied to ``rows``. NaN where it has no rule or
+    its reference is unknown."""
+    out = np.full(len(rows), math.nan)
+    for i, r in enumerate(rows):
+        u = price[r["up_side"]].get("train_rule")
+        d = r.get(f"d_{u['ref']}_c") if u else None
+        if u and d is not None and r["inv"] is not None:
+            out[i] = (r["px_c"] - d) + u["offset_c"] - u["skew_c_per_contract"] * r["inv"]
+    return out
+
+
+def fit_expressible(rows: list[dict], price: dict, th: tuple[int, int]) -> dict:
+    """The best rule MakerRule v1 can hold: one ref (mid|fair), symmetric half-spread, one skew.
+    Only rows of assets with fair-v1 enter (a v1 maker cannot quote without fair). Mid and fair
+    are compared on one common set of rows; the choice of reference and of keeping the skew is
+    made on the validation slice, the test slice is scored once."""
+    n_in = len(rows)
+    rows = [r for r in rows if r["asset"] in FAIR_ASSETS]
+    out: dict = {"quote_ref": None, "rows_in": n_in, "rows_dropped_no_fair_model": n_in - len(rows),
+                 "assets": sorted({r["asset"] for r in rows}), "horizons": sorted({r["hz"] for r in rows})}
+    if not rows:
+        return out | {"reason": f"no order on an asset with fair-v1 ({', '.join(FAIR_ASSETS)}): a v1 maker "
+                                "(quote_ref mid|fair) never quotes without fair_up"}
     rs = sorted(rows, key=lambda r: r["cutoff_tw_ns"])
-    y, inv, w = _arr(rs, "px_c"), _arr(rs, "inv"), _arr(rs, "w")
+    inv, w, ph = _arr(rs, "inv"), _arr(rs, "w"), _phase(rs, th)
     sign = np.array([-1.0 if r["up_side"] == "bid" else 1.0 for r in rs])
     cl = np.array([r["window"] for r in rs], dtype=object).astype(str)
-    best: dict | None = None
-    for ref in ("mid", "fair"):
-        d = _arr(rs, f"d_{ref}_c")
-        m = np.isfinite(d) & np.isfinite(inv)
-        if m.sum() < max(MIN_N, 0.5 * len(rs)):
+    dref = {ref: _arr(rs, f"d_{ref}_c") for ref in ("mid", "fair")}
+    base = np.isfinite(inv) & np.isfinite(dref["mid"])
+    has_fair = np.isfinite(dref["fair"])
+    fit_base = base & (ph == 0)
+    refs = ["mid"] + (["fair"] if (fit_base & has_fair).sum() >= max(MIN_N, 0.5 * fit_base.sum()) else [])
+    m = (ph >= 0) & (base & has_fair if "fair" in refs else base)
+    out |= {"refs_compared": refs, "rows_dropped_by_fair_requirement": int((base & ~m & (ph >= 0)).sum()),
+            "rows_straddling_split": int((ph < 0).sum()),
+            "rows_without_book_or_inventory": int((~base).sum())}
+    im, sm, wm, cm, pm = inv[m], sign[m], w[m], cl[m], ph[m]
+    fit, val, tr, te = pm == 0, pm == 1, pm <= 1, pm == 2
+    if fit.sum() < MIN_N // 2 or not val.any():
+        return out | {"reason": "too few rows with a book in the fit or validation windows"}
+    Xd = np.column_stack([sm < 0, sm > 0, im]).astype(float)  # side intercepts, one inventory slope
+
+    def params(d: np.ndarray, i: np.ndarray, skew: bool) -> tuple[float, float, float]:
+        """(half-spread, centre shift, skew) on rows ``i``. The half-spread is NOT clamped here
+        (negative = the quotes sit inside the reference)."""
+        k = -float(wls(Xd[i], d[i], wm[i])[2]) if skew and len(d[i]) > 3 else 0.0
+        z = d[i] + k * im[i]
+        lo, hi = (wmedian(z[sm[i] == s], wm[i][sm[i] == s]) if (sm[i] == s).any() else None for s in (-1.0, 1.0))
+        if lo is not None and hi is not None:
+            return (hi - lo) / 2, (hi + lo) / 2, k
+        return (hi if hi is not None else -(lo or 0.0)), 0.0, k
+
+    def err(d: np.ndarray, p: tuple[float, float, float]) -> np.ndarray:
+        return np.abs(d - sm * max(p[0], 0.0) + p[2] * im)  # the centre shift cannot be held: not used
+
+    grid = [(ref, skew) for ref in refs for skew in (False, True)]
+    vmae = {c: wmean(err(dref[c[0]][m], params(dref[c[0]][m], fit, c[1]))[val], wm[val]) for c in grid}
+    ref, skew = min(grid, key=lambda c: (vmae[c], grid.index(c)))
+    d = dref[ref][m]
+    et = err(d, params(d, tr, skew))[te]
+    mae = wmean(et, wm[te]) if te.any() else None
+    h_raw, c, k = params(d, np.arange(len(d)), skew)
+    ci = boot_ci(lambda i: params(d, i, skew), cm)
+    o = {"mae_c": _r(mae), "n_test": int(te.sum())}
+    out |= {"quote_ref": ref, "half_spread_c": _r(max(h_raw, 0.0), 2), "centre_shift_c": _r(c, 2),
+            "skew_c_per_contract": _r(k, 4), "skew_kept": skew,
+            "validation_mae_c": {f"{a}{'+skew' if b else ''}": _r(v) for (a, b), v in vmae.items()},
+            "selection": "reference and keep-skew chosen on validation windows, refitted on fit and validation "
+                         "windows, and scored once on test windows. Draft parameters use all eligible rows",
+            "half_spread_fit": est(h_raw, len(d), cm, ci[0] if ci else None, o) | {"clamped_to_zero": h_raw < 0},
+            "centre_shift_fit": est(c, len(d), cm, ci[1] if ci else None, o),
+            "skew_fit": est(k, len(d), cm, ci[2] if ci else None, o),
+            "n": int(len(d)), "oos_mae_c": _r(mae), "n_test": int(te.sum()), "windows": int(len(np.unique(cm))),
+            "sides_seen": sorted({"bid" if s < 0 else "ask" for s in sm})}
+    # the per-side rules on exactly the same test rows (where each has its reference)
+    used = [r for r, keep in zip(rs, m) if keep]
+    ps = np.abs(_side_pred(used, price) - _arr(used, "px_c"))[te]
+    both = np.isfinite(ps)
+    if both.any():
+        a, b = wmean(et[both], wm[te][both]), wmean(ps[both], wm[te][both])
+        out |= {"per_side_fit_oos_mae_c": _r(b), "oos_mae_c_same_rows": _r(a), "oos_cost_of_schema_c": _r(a - b),
+                "n_test_common": int(both.sum())}
+    else:
+        out |= {"per_side_fit_oos_mae_c": None, "oos_mae_c_same_rows": None, "oos_cost_of_schema_c": None,
+                "n_test_common": 0}
+    return out
+
+
+def check_genome(g: Genome, rows: list[dict], fair_supplied: bool) -> dict:
+    """Check draft quote intent at observed book, inventory and notional state.
+
+    This is in-sample. The twin's quote timing, landing book and queue need a separate replay.
+    When fair-v1 is unavailable the check substitutes the mid and reports the substitution.
+    """
+    m = g.maker
+    assert m is not None
+    why: Counter = Counter()
+    errs, clamp = [], 0
+    for r in rows:
+        if r["mid_c"] is None or r["inv"] is None:
+            why["no_book"] += 1
             continue
-        dm, im, sm, wm, cm = d[m], inv[m], sign[m], w[m], cl[m]
-        tr, te = _split(len(dm))
-
-        Xd = np.column_stack([sm < 0, sm > 0, im]).astype(float)  # side intercepts, one inventory slope
-        slope = lambda i: -float(wls(Xd[i], dm[i], wm[i])[2])  # noqa: E731
-        k = slope(np.arange(len(dm)))
-        ci = boot_ci(slope, cm)
-        use = ci is not None and (ci[0] > 0 or ci[1] < 0)
-
-        def offsets(i, kk: float) -> tuple[float, float]:
-            """(half-spread, centre shift) at zero inventory: per-side medians of d + kk * inv.
-            The half-spread is NOT clamped here (negative = the quotes sit inside the reference)."""
-            z = dm[i] + kk * im[i]
-            lo, hi = (wmedian(z[sm[i] == s], wm[i][sm[i] == s]) if (sm[i] == s).any() else None
-                      for s in (-1.0, 1.0))
-            if lo is not None and hi is not None:
-                return (hi - lo) / 2, (hi + lo) / 2
-            return (hi if hi is not None else -(lo or 0.0)), 0.0
-
-        use_k = k if use else 0.0
-        h_raw, c = offsets(np.arange(len(dm)), use_k)
-        h = max(h_raw, 0.0)
-        hc_ci = boot_ci(lambda i: offsets(i, use_k), cm)
-        kt = slope(tr) if use and len(tr) > 3 else 0.0
-        ht = max(offsets(tr, kt)[0], 0.0)
-        mae = wmean(np.abs(dm[te] - sm[te] * ht + kt * im[te]), wm[te]) if len(te) else math.nan
-        o = {"mae_c": _r(mae), "n_test": int(len(te)), "train_half_spread_c": _r(ht)}
-        cand = {"quote_ref": ref, "half_spread_c": _r(h, 2), "centre_shift_c": _r(c, 2),
-                "skew_c_per_contract": _r(use_k, 4), "skew_fit": est(k, len(dm), cm, ci, o),
-                "half_spread_fit": est(h_raw, len(dm), cm, hc_ci[0] if hc_ci else None, o) | {
-                    "clamped_to_zero": h_raw < 0},
-                "centre_shift_fit": est(c, len(dm), cm, hc_ci[1] if hc_ci else None, o),
-                "n": int(len(dm)), "oos_mae_c": _r(mae), "n_test": int(len(te)),
-                "sides_seen": sorted({"bid" if s < 0 else "ask" for s in sm})}
-        if best is None or (cand["oos_mae_c"] or 1e9) < (best["oos_mae_c"] or 1e9):
-            best = cand
-    if best is None:
-        return {"quote_ref": None, "reason": "neither mid nor fair known for half the rows"}
-    tot = [(price[s]["offset_c"]["oos"]["mae_c"], price[s]["n_test"]) for s in ("bid", "ask")
-           if price[s].get("chosen") and price[s]["offset_c"]["oos"]["mae_c"] is not None]
-    per_side = sum(a * b for a, b in tot) / sum(b for _, b in tot) if tot else None
-    best["per_side_fit_oos_mae_c"] = _r(per_side)
-    best["oos_cost_of_schema_c"] = _r(None if per_side is None or best["oos_mae_c"] is None
-                                     else best["oos_mae_c"] - per_side)
-    return best
+        fair = r["fair_c"] if fair_supplied else r["mid_c"]
+        x = {"tau_s": r["tau_s"], "tte_s": r["tte_s"], "inventory_up": r["inv"], "mid_up_c": r["mid_c"],
+             "fair_up": math.nan if fair is None else fair / 100}
+        if not g._in_universe(x):
+            why["universe"] += 1
+        elif fair is None:
+            why["no_fair"] += 1
+        elif g.maker_paused(x):
+            why["paused"] += 1
+        else:
+            bid, ask = g.maker_quotes(x)
+            q = bid if r["up_side"] == "bid" else ask
+            if bid is not None and ask is not None and ask <= bid:
+                why["self_cross"] += 1
+            elif q is None:
+                why["inventory_cap_or_side"] += 1
+            elif (r["up_side"] == "bid" and r["ba_c"] is not None and q >= r["ba_c"]) or (
+                    r["up_side"] == "ask" and r["bb_c"] is not None and q <= r["bb_c"]):
+                why["would_cross_book"] += 1
+            else:
+                sim = SimpleNamespace(g=g, notional=r["notional_usd"] or 0.0)
+                room = WindowSim._room(sim, "buy" if r["up_side"] == "bid" else "sell", q / 100, r["inv"])  # type: ignore[arg-type]
+                if min(m.size, room) < MIN_QTY:
+                    why["no_room"] += 1
+                else:
+                    sgn = -1 if r["up_side"] == "bid" else 1
+                    ref = fair if m.quote_ref == "fair" else r["mid_c"]
+                    raw = round(ref + sgn * m.half_spread_c - m.skew_c_per_contract * r["inv"])
+                    clamp += q != max(1, min(99, raw))
+                    errs.append(abs(q - r["px_c"]))
+    n = len(rows)
+    return {"rows": n, "would_quote": len(errs), "would_quote_share": _r(len(errs) / n) if n else None,
+            "mae_c_when_quoting": _r(np.mean(errs)) if errs else None, "silent_by": dict(why),
+            "fair_clamp_binds_share": _r(clamp / len(errs)) if errs else None,
+            "fair_substituted_by_mid": not fair_supplied,
+            "note": "In-sample quote intent at observed state. Out-of-sample execution needs a separate replay."}
 
 
 # ---------------------------------------------------------------- 2b size rule
@@ -771,10 +1035,12 @@ def fit_participation(T: dict) -> dict:
             cells[(x["row"]["window"], b)].add(x["row"]["up_side"])
     win = {i["slug"]: i for i in T["tok"].values()}
     recs = []
-    for (slug, b), top in sorted(T["res"]["grid"].items()):
-        v = up_view(top, 0)
-        if v["mid_c"] is None:
-            continue
+    seen: dict[tuple[str, int], dict] = {}
+    for (slug, b, idx), top in sorted(T["res"]["grid"].items()):  # idx 0 first: the Up book when it is known
+        v = up_view(top, idx)
+        if v["mid_c"] is not None:
+            seen.setdefault((slug, b), v)
+    for (slug, b), v in sorted(seen.items()):
         i = win[slug]
         sides = cells.get((slug, b), set())
         recs.append((slug, i["start"], (i["end"] - b) / (i["end"] - i["start"]), v["mid_c"], sides))
@@ -782,14 +1048,14 @@ def fit_participation(T: dict) -> dict:
     tte = np.array([x["row"]["tte_s"] for x in xs])
     inwin = (tau >= 0) & (tte > 0)
     ocl = np.array([x["row"]["window"] for x in xs], dtype=object).astype(str)
-    p10 = lambda v: np.percentile(v, 10)  # noqa: E731
+    p1 = lambda v: np.percentile(v, 1)  # noqa: E731
     out: dict = {"cells": len(recs), "cell_s": GRID_S, "orders": len(xs),
                  "pre_open_order_share": _r(np.mean(tau < 0)) if len(xs) else None,
                  "tte_s_in_window": _quant(tte[inwin]), "tau_s_in_window": _quant(tau[inwin]),
-                 "tte_s_p10": describe(tte[inwin], ocl[inwin], p10), "tau_s_p10": describe(tau[inwin], ocl[inwin], p10),
+                 "tte_s_p1": describe(tte[inwin], ocl[inwin], p1), "tau_s_p1": describe(tau[inwin], ocl[inwin], p1),
                  "note": "present = a FILLED order was resting in the cell; unfilled quotes are invisible"}
     if not recs:
-        return out | {"reason": "no grid cell with a known Up book"}
+        return out | {"reason": "no grid cell with a known book"}
     recs.sort(key=lambda r: r[1])
     cl = np.array([r[0] for r in recs], dtype=str)
     pres = np.array([bool(r[4]) for r in recs], dtype=float)
@@ -839,6 +1105,37 @@ def _dead_bands(by_mid: list[dict], overall: float | None) -> tuple[float | None
     return lo, hi
 
 
+# ---------------------------------------------------------------- ladders
+def fit_ladder(specs: list[dict]) -> dict:
+    """Simultaneous price levels: orders of the wallet on the same token and side whose lives
+    (placement to ``rest_max_ms``, else ``rest_min_ms``) overlap at DISTINCT prices. ``depth`` of
+    an order = distinct prices live on its token and side when it lands, itself included. Only
+    filled orders are visible, so both numbers are lower bounds."""
+    xs = sorted((x for x in specs if x["kind"] == "order"), key=lambda x: (x["placed_ms"], x["id"]))
+    if not xs:
+        return {"n": 0}
+    live: dict[tuple, list[tuple[int, float, int]]] = defaultdict(list)  # (end_ms, price, index)
+    laddered = np.zeros(len(xs))
+    depth = np.ones(len(xs))
+    for i, x in enumerate(xs):
+        o = x["om"]
+        rest = o.get("rest_max_ms")
+        rest = (o.get("rest_min_ms") or 0) if rest is None else rest
+        key = (x["token"], x["side"])
+        live[key] = [a for a in live[key] if a[0] > x["placed_ms"]]
+        others = [a for a in live[key] if abs(a[1] - x["price"]) > 1e-9]
+        if others:
+            laddered[i] = 1
+            for a in others:
+                laddered[a[2]] = 1
+            depth[i] = 1 + len({a[1] for a in others})
+        live[key].append((x["placed_ms"] + rest, x["price"], i))
+    cl = np.array([x["row"]["window"] for x in xs], dtype=object).astype(str)
+    return {"n": len(xs), "ladder_share": describe(laddered, cl, np.mean), "depth": _quant(depth),
+            "depth_max": int(depth.max()),
+            "note": "lower bounds: an unfilled quote at another level is invisible"}
+
+
 # ---------------------------------------------------------------- selection-bias check
 def selection_check(rows: list[dict], price: dict, precision: float | None) -> dict | None:
     cand = [r for r in rows if r["kind"] == "candidate"]
@@ -848,13 +1145,16 @@ def selection_check(rows: list[dict], price: dict, precision: float | None) -> d
         return {"n_candidates": len(cand), "reason": "no identity precision stated (ordermatch.json "
                 "fingerprint.total.identity_precision_upper or --identity-precision): not refitted"}
     pooled = [r if r["kind"] == "order" else r | {"w": precision} for r in rows]
+    th = thresholds(pooled)
     out: dict = {"n_candidates": len(cand), "identity_precision": precision,
                  "weights": "verified orders 1, fingerprint candidates the identity precision (an upper bound)",
-                 "note": "candidates are not identified as the wallet's; a move here bounds the selection "
-                         "bias only as far as the attribution holds", "sides": {}}
+                 "reading": "IF THE ATTRIBUTION HELD: what the rule would be were the candidates this wallet's "
+                            "quotes at the stated precision. Not a bound on the selection bias: the candidates "
+                            "are not identified, other makers post the same sizes, and the sample is capped",
+                 "sides": {}}
     for s in ("bid", "ask"):
         v = price[s]
-        D = _side_data(pooled, s)
+        D = _side_data(pooled, s, th)
         free = fit_price_side(D)
         doc: dict = {"n_candidates": sum(r["up_side"] == s for r in cand), "verified_ref": v.get("chosen"),
                      "pooled_ref": free.get("chosen"), "pooled_fit": free}
@@ -876,25 +1176,29 @@ def selection_check(rows: list[dict], price: dict, precision: float | None) -> d
 
 # ---------------------------------------------------------------- genome + fit report
 def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | None, dict]:
-    """(draft genome dict, or None when no expressible price rule could be fitted; fit report)."""
+    """(draft genome dict, or None with the reasons in ``report["genome"]``; fit report)."""
     rows = T["rows"]
     ver = [r for r in rows if r["kind"] == "order"]
-    price = fit_price(ver)
-    expr = fit_expressible(ver, price) if ver else {"quote_ref": None, "reason": "no orders"}
+    th = thresholds(ver)
+    price = fit_price(ver, th)
+    expr = fit_expressible(ver, price, th)
     size = fit_size(T["specs"])
     timing = fit_timing(T)
+    ladder = fit_ladder(T["specs"])
     part = fit_participation(T)
     sel = selection_check(rows, price, precision)
+    fit_rows = [r for r in ver if r["asset"] in expr["assets"]]  # the rows the genome is about
 
     # ---- genome fields, each with where it came from
     prov: dict = {}
-    hz_len = {r["hz"]: LEN[r["hz"]] for r in ver}
-    tte_q, tau_q = part["tte_s_p10"]["value"], part["tau_s_p10"]["value"]
-    L = min(hz_len.values()) if hz_len else 300
+    hzs = expr["horizons"]
+    L = min((LEN[h] for h in hzs), default=300)
+    tte_q, tau_q = part["tte_s_p1"]["value"], part["tau_s_p1"]["value"]
     tte_min = int(min(max(math.floor(tte_q), 0), L - 1)) if tte_q is not None else 0
     tau_min = int(min(max(math.floor(tau_q), 0), L - 1)) if tau_q is not None else 0
-    prov["universe.tte_min_s"] = ("floor(participation_rule.tte_s_p10)" if tte_q is not None else "default")
-    prov["universe.tau_min_s"] = ("floor(participation_rule.tau_s_p10)" if tau_q is not None else "default")
+    prov["universe.tte_min_s"] = "floor(participation_rule.tte_s_p1)" if tte_q is not None else "default"
+    prov["universe.tau_min_s"] = "floor(participation_rule.tau_s_p1)" if tau_q is not None else "default"
+    prov["universe.assets/horizons"] = "assets with fair-v1 that are in the fit (expressible_price_rule.assets)"
     med = size.get("median_size", {}).get("value") if size.get("n") else None
     life = (timing.get("cancel") or {}).get("life_ms", {}).get("quantiles")
     p90 = ((timing.get("cancel") or {}).get("life_ms_p90") or {}).get("value")
@@ -907,7 +1211,7 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
     prov["maker.pause_when"] = ("mid bands with >= 20 cells and presence under a tenth of the overall rate"
                                 if pause else "none found")
     edge = edge_fit = None
-    fr = sorted((r for r in ver if r["d_fair_c"] is not None), key=lambda r: r["cutoff_tw_ns"])
+    fr = sorted((r for r in fit_rows if r["d_fair_c"] is not None), key=lambda r: r["cutoff_tw_ns"])
     if len(fr) >= MIN_N:
         df = np.array([(-1 if r["up_side"] == "bid" else 1) * r["d_fair_c"] for r in fr])
         edge_fit = describe(df, np.array([r["window"] for r in fr], dtype=str), lambda v: np.percentile(v, 5))
@@ -918,22 +1222,34 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
     seen = set(expr.get("sides_seen") or [])
     sides = "both" if seen == {"bid", "ask"} or not seen else ("bid_only" if seen == {"bid"} else "ask_only")
     prov["maker.quote_ref/half_spread_c/skew_c_per_contract"] = (
-        "expressible_price_rule: one inventory slope with side intercepts (least squares), kept only when its "
-        "bootstrap CI excludes 0; half-spread = half the gap between the per-side median offsets at zero "
-        "inventory (half_spread_fit, clamped at 0)" if expr.get("quote_ref") else "defaults: " + str(expr.get("reason")))
+        "expressible_price_rule: reference and keep-skew chosen on the validation slice; half-spread = half the "
+        "gap between the per-side median offsets at zero inventory (half_spread_fit, clamped at 0); one "
+        "inventory slope with side intercepts; refitted on all rows" if expr.get("quote_ref")
+        else "defaults: " + str(expr.get("reason")))
     prov["maker.requote_threshold_c"] = "default 1.0 (the trigger threshold used to classify book moves)"
     prov["maker.size"] = "size_rule.median_size" if med else "default"
-    prov["risk/costs/kill/exit"] = "schema defaults, not fitted (fit_report.not_fitted)"
-    ai = np.abs(np.array([r["inv"] for r in ver if r["inv"] is not None], dtype=float))
-    not_fitted = {
-        "risk": {"default_max_inventory": Risk().max_inventory, "fitted_size": med,
-                 "abs_inventory_at_placement": ({f"p{q}": _r(np.percentile(ai, q)) for q in (50, 90, 99, 100)}
-                                                if len(ai) else None),
-                 "note": "Risk is left at the schema default. maker_quotes stops quoting a side once |inventory| "
-                         "reaches max_inventory, so a default below the fitted size silences a side after one fill: "
-                         "set the risk envelope before any twin run"},
-        "costs": "schema default (PM US taker coefficient); intl fees are not fitted",
-        "kill_exit": "schema defaults", "requote_threshold_c": "default 1.0, the threshold used to classify book moves"}
+    # risk envelope from the wallet's own measured state: the emitted rule must be able to quote
+    ai = np.abs(np.array([r["inv"] for r in fit_rows if r["inv"] is not None], dtype=float))
+    wn = np.array(T["inv"].window_notional({r["window"] for r in fit_rows}), dtype=float)
+    p99 = float(np.percentile(ai, 99)) if len(ai) else 0.0
+    n95 = float(np.percentile(wn, 95)) if len(wn) else 0.0
+    base = Risk()
+    risk = Risk(max_inventory=float(max(math.ceil(max(med or 0.0, p99)), 1)),
+                max_notional_per_window=float(max(math.ceil(n95), 1)),
+                max_loss_per_day=base.max_loss_per_day, max_open_windows=base.max_open_windows)
+    risk_fit = {"max_inventory": risk.max_inventory, "max_notional_per_window": risk.max_notional_per_window,
+                "fitted_size": med, "abs_inventory_at_placement": (
+                    {f"p{q}": _r(np.percentile(ai, q)) for q in (50, 90, 99, 100)} if len(ai) else None),
+                "window_opening_notional_usd": ({f"p{q}": _r(np.percentile(wn, q)) for q in (50, 95, 100)}
+                                                | {"windows": int(len(wn))} if len(wn) else None),
+                "note": "MEASURED from this wallet, not a DOPPEL risk limit: max_inventory = ceil(max(fitted size, "
+                        "p99 |inventory at placement|)), max_notional_per_window = ceil(p95 of its opening notional "
+                        "per window, accrued as in the twin). Set the real envelope before any run with money"}
+    prov["risk.max_inventory/max_notional_per_window"] = "fit_report.risk_fit (measured from the wallet)"
+    prov["risk.max_loss_per_day/max_open_windows, costs, kill, exit"] = "schema defaults, not fitted"
+    not_fitted = {"costs": "schema default (PM US taker coefficient); intl fees are not fitted",
+                  "kill_exit": "schema defaults", "risk": "max_loss_per_day and max_open_windows are schema defaults",
+                  "requote_threshold_c": "default 1.0, the threshold used to classify book moves"}
     maker = MakerRule(quote_ref=expr.get("quote_ref") or "mid",
                       half_spread_c=float(expr["half_spread_c"]) if expr.get("quote_ref") else 2.0,
                       size=float(med) if med else 10.0, sides=sides,  # type: ignore[arg-type]
@@ -941,12 +1257,13 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
                       requote_threshold_c=MOVE_C, max_quote_age_s=age, pause_when=pause,
                       min_edge_vs_fair_c=edge or 0.0)
     g = Genome(name=f"rulefit-{wallet[:10]}-maker", mode="maker",
-               universe=Universe(venue="intl_sim", assets=tuple(sorted({r["asset"] for r in ver})) or ("btc",),
-                                 horizons=tuple(sorted(hz_len)) or ("5m",), tau_min_s=tau_min, tte_min_s=tte_min),
+               universe=Universe(venue="intl_sim", assets=tuple(expr["assets"]) or ("btc",),
+                                 horizons=tuple(hzs) or ("5m",), tau_min_s=tau_min, tte_min_s=tte_min),
                source=Source(kind="clone", wallets=(wallet,), mechanism="rule conditional on fill",
                              parents=(), operator="extract"),
-               maker=maker, created_tw=0,
+               maker=maker, risk=risk, created_tw=0,
                evidence={"extractor": "doppel.lab.rulefit v1", "wallet": wallet, "label": "rule conditional on fill",
+                         "fit_range": {"from": T["inputs"]["from"], "to": T["inputs"]["to"]},
                          "n_orders": len(ver), "fields": prov,
                          "price_rule": {s: {k: price[s].get(k) for k in ("chosen", "model", "tie_with", "n", "rule")}
                                         | {"oos_mae_c": ((price[s].get("offset_c") or {}).get("oos") or {}).get("mae_c")}
@@ -956,24 +1273,52 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
     errs = validate(g)
     gd = to_dict(g) | {"status": "draft"}
 
+    # ---- sanity-check the full-sample draft on the observations it describes
+    check = check_genome(g, fit_rows, T["inputs"]["fair"]) if expr.get("quote_ref") else None
+    uni = [not (r["tau_s"] >= tau_min and r["tte_s"] >= tte_min) for r in fit_rows]
+    universe = {"tau_min_s": tau_min, "tte_min_s": tte_min, "orders": len(uni),
+                "own_orders_excluded_share": _r(np.mean(uni)) if uni else None,
+                "pre_open_share": _r(np.mean([r["tau_s"] < 0 for r in fit_rows])) if fit_rows else None}
+
+    # ---- reasons not to emit: a genome that cannot act like the fit must not carry the wallet's name
+    blockers: list[str] = []
+    n_windows = len({r["window"] for r in fit_rows})
+    if n_windows == 1:
+        blockers.append("1 market window in the fit: no clustered CI, need >= 2")
+    if not expr.get("quote_ref"):
+        blockers.append(str(expr.get("reason")))
+    else:
+        if expr["half_spread_c"] < MIN_HALF_SPREAD_C:
+            blockers.append(f"half_spread_c {expr['half_spread_c']} < {MIN_HALF_SPREAD_C}: bid and ask round to the "
+                            "same cent, the twin drops both as a self-cross")
+        if expr["windows"] < 2 and n_windows != 1:
+            blockers.append(f"{expr['windows']} market window in the fit: no clustered CI, need >= 2")
+        if check is not None and (check["would_quote_share"] or 0) < MIN_QUOTE_SHARE:
+            blockers.append(f"the emitted genome would quote {check['would_quote_share']} of the wallet's in-sample "
+                            f"orders (< {MIN_QUOTE_SHARE}): silent by {check['silent_by']}")
+    blockers += [f"validate: {e}" for e in errs]
+
     # ---- what the v1 schema cannot hold, each with its number
     cx: list[dict] = []
 
     def cannot(item: str, measured, why: str) -> None:
         cx.append({"item": item, "measured": measured, "why": why})
 
+    lad = (ladder.get("ladder_share") or {}).get("value") or 0
     for s in ("bid", "ask"):
         v = price[s]
         if v.get("chosen") == "touch":
             cannot(f"{s}: quote pegged to the same-side best", {
                 "oos_mae_c_touch": v["offset_c"]["oos"]["mae_c"], "offset_c": v["offset_c"]["value"],
-                "tie_with": v["tie_with"], "oos_mae_c_by_ref": {r: min(c["oos_mae_const_c"], c["oos_mae_skew_c"])
+                "tie_with": v["tie_with"], "val_mae_c_by_ref": {r: min(c["val_mae_const_c"], c["val_mae_skew_c"])
                                                                 for r, c in v["candidates"].items()}},
                    "MakerRule.quote_ref is fair|mid only")
-        if v.get("chosen") and (v["residual_iqr_c"] or 0) > 2:
-            cannot(f"{s}: several price levels (IQR of the rule's residual > 2 c)", {
-                "residual_iqr_c": v["residual_iqr_c"]} | {k: v["offset_c"][k] for k in ("p25", "value", "p75")},
-                   "one quote per side at one half-spread; no ladder")
+        if v.get("chosen") and (lad >= LADDER_SHARE or (v["residual_iqr_c"] or 0) >= 2):
+            cannot(f"{s}: several price levels", {
+                "ladder_share": lad, "depth_max": ladder.get("depth_max"), "residual_iqr_c": v["residual_iqr_c"]}
+                | {k: v["offset_c"][k] for k in ("p25", "value", "p75")},
+                   f"one quote per side at one half-spread; flagged when ladder share >= {LADDER_SHARE} or the "
+                   "IQR of the rule's residual >= 2 c")
         for key, what in (("slope_c_per_s_to_close", "time to close"), ("slope_c_per_c_spread", "spread")):
             if _excludes_zero(v.get(key)):
                 cannot(f"{s}: offset depends on {what}", v[key], "half_spread_c is a constant (or logit in price)")
@@ -981,10 +1326,12 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
     if b.get("chosen") and a.get("chosen"):
         if b["chosen"] != a["chosen"]:
             cannot("a different reference per side", {"bid": b["chosen"], "ask": a["chosen"]}, "one quote_ref")
-        kb, ka = b["skew_c_per_contract"], a["skew_c_per_contract"]
-        if _excludes_zero(kb) != _excludes_zero(ka) or (
-                _excludes_zero(kb) and (kb["ci95"][1] < ka["ci95"][0] or ka["ci95"][1] < kb["ci95"][0])):
-            cannot("inventory skew differs by side", {"bid": kb, "ask": ka}, "one skew_c_per_contract for both quotes")
+        if (b["model"] == "skew") != (a["model"] == "skew") or (
+                _excludes_zero(b["skew_c_per_contract"]) and _excludes_zero(a["skew_c_per_contract"])
+                and (b["skew_c_per_contract"]["ci95"][1] < a["skew_c_per_contract"]["ci95"][0]
+                     or a["skew_c_per_contract"]["ci95"][1] < b["skew_c_per_contract"]["ci95"][0])):
+            cannot("inventory skew differs by side", {"bid": b["rule"], "ask": a["rule"]},
+                   "one skew_c_per_contract for both quotes")
     if expr.get("quote_ref"):
         if expr["half_spread_fit"]["clamped_to_zero"]:
             cannot("quotes inside the reference (negative half-spread)", expr["half_spread_fit"],
@@ -993,11 +1340,18 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
             cannot("asymmetric offsets around the reference", {"centre_shift_c": expr["centre_shift_c"]},
                    "bid/ask = ref -/+ one half_spread_c")
         cannot("cost of the schema on the price rule", {k: expr.get(k) for k in (
-            "oos_mae_c", "per_side_fit_oos_mae_c", "oos_cost_of_schema_c")},
-               "test MAE of the emitted MakerRule vs the per-side fit")
-        if expr["quote_ref"] == "mid":
-            cannot("mid-referenced quote without fair", {"fair_coverage": b.get("ref_coverage", {}).get("fair")},
-                   "Genome.maker_quotes returns no quote when fair_up is missing, whatever quote_ref is")
+            "oos_mae_c_same_rows", "per_side_fit_oos_mae_c", "oos_cost_of_schema_c", "n_test_common")},
+               "test MAE of the expressible rule vs the per-side rules, on the same test rows")
+        if expr["quote_ref"] == "mid" and check is not None:
+            cannot("mid-referenced quote still bound to fair", {
+                "fair_clamp_binds_share": check["fair_clamp_binds_share"],
+                "fair_substituted_by_mid": check["fair_substituted_by_mid"], "silent_no_fair": check["silent_by"].get("no_fair", 0)},
+                   "Genome.maker_quotes returns no quote when fair_up is missing and clamps every quote to "
+                   "fair -/+ min_edge_vs_fair_c, whatever quote_ref is")
+    if expr.get("rows_dropped_no_fair_model"):
+        cannot("assets without fair-v1", {"rows_dropped": expr["rows_dropped_no_fair_model"],
+                                          "assets": sorted({r["asset"] for r in ver} - set(expr["assets"]))},
+               "a v1 maker never quotes without fair_up; these orders are in the per-side rules only")
     gq = (timing.get("gap_s") or {}).get("quantiles")
     if gq and gq["p50"] < 1:
         cannot("sub-second re-post", {"gap_s": gq}, "decisions are per second; max_quote_age_s is an int >= 1")
@@ -1023,24 +1377,28 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
     if (part.get("pre_open_order_share") or 0) > 0:
         cannot("quoting before the window opens", {"share_of_orders": part["pre_open_order_share"]},
                "the universe starts at tau_min_s >= 0")
-    if len(hz_len) > 1 or len({r["asset"] for r in ver}) > 1:
-        cannot("different parameters per asset / horizon", {"pairs": T["pairs"]}, "one MakerRule per genome")
-    cannot("status draft", "draft", "Status has no 'draft'; the JSON carries it, Genome objects stay 'candidate'")
+    if len(hzs) > 1:
+        cannot("different parameters per horizon", {"horizons": hzs}, "one MakerRule per genome")
+    cannot("status draft", "draft", "Status has no 'draft'; the JSON carries it and Registry.register refuses it")
     cannot("unfilled quotes", CAVEAT, "not a schema gap: the data cannot show them")
 
+    emitted = not blockers
     report = {"wallet": wallet, "label": "rule conditional on fill", "selection_caveat": CAVEAT,
               "definitions": "see doppel.lab.rulefit module docstring",
               "inputs": T["inputs"] | {"counts": dict(T["stats"]), "rows_orders": len(ver),
-                                       "rows_candidates": len(rows) - len(ver), "pairs": T["pairs"]},
+                                       "rows_candidates": len(rows) - len(ver), "pairs": T["pairs"],
+                                       "split": {"t_val_ns": th[0], "t_test_ns": th[1], "unit": "market window"}},
               "price_rule": price, "expressible_price_rule": expr, "size_rule": size, "timing_rule": timing,
-              "participation_rule": part, "selection_check": sel, "edge_outside_fair_c_p5": edge_fit,
-              "genome": {"id": g.id, "status": "draft", "registered": False, "validate": errs, "fields": prov},
+              "ladder": ladder, "participation_rule": part, "selection_check": sel,
+              "edge_outside_fair_c_p5": edge_fit, "risk_fit": risk_fit, "universe_fit": universe,
+              "emitted_genome_check": check,
+              "genome": {"id": g.id if emitted else None, "status": "draft" if emitted else "not_emitted",
+                         "registered": False, "validate": errs, "fields": prov, "reasons": blockers,
+                         "reason": "; ".join(blockers) or None,
+                         "few_windows": bool(expr.get("windows") and expr["windows"] < MIN_N),
+                         "windows": expr.get("windows")},
               "not_fitted": not_fitted, "cannot_express": cx}
-    if not expr.get("quote_ref") or errs:  # no price rule: schema defaults must not pass for this wallet's rule
-        report["genome"] = {"id": None, "status": "not_emitted", "registered": False, "validate": errs,
-                            "reason": expr.get("reason") or "validate() failed", "fields": prov}
-        return None, report
-    return gd, report
+    return (gd if emitted else None), report
 
 
 def card(rep: dict) -> str:
@@ -1062,7 +1420,10 @@ def card(rep: dict) -> str:
                  f"residual IQR {v['residual_iqr_c']} c, {o['clusters']} windows")
     e = rep["expressible_price_rule"]
     L.append(f"- schema v1 can hold: ref {e.get('quote_ref')} +/- {e.get('half_spread_c')} c, skew "
-             f"{e.get('skew_c_per_contract')}; test MAE {e.get('oos_mae_c')} c vs per-side {e.get('per_side_fit_oos_mae_c')} c")
+             f"{e.get('skew_c_per_contract')}; test MAE {e.get('oos_mae_c_same_rows')} c vs per-side "
+             f"{e.get('per_side_fit_oos_mae_c')} c on the same {e.get('n_test_common')} rows"
+             + (f"; {e['rows_dropped_by_fair_requirement']} rows dropped for want of fair" if e.get("rows_dropped_by_fair_requirement") else "")
+             + (f"; {e.get('reason')}" if not e.get("quote_ref") else ""))
     sz, tm, pt = rep["size_rule"], rep["timing_rule"], rep["participation_rule"]
     d = sz.get("descriptor") or {}
     L += ["", "## size", f"- {d.get('rule')}: sizes {d.get('sizes_90')}, median {sz.get('median_size', {}).get('value')}, "
@@ -1074,20 +1435,30 @@ def card(rep: dict) -> str:
           f"cell presence {(pt.get('presence_rate') or {}).get('value')}, both sides when present "
           f"{(pt.get('both_sides_share_when_present') or {}).get('value')}, pre-open order share {pt.get('pre_open_order_share')}"]
     sel = rep["selection_check"]
-    L += ["", "## selection-bias check"]
+    L += ["", "## selection refit (if the attribution held; not a bound)"]
     if not sel or "sides" not in sel:
         L.append(f"- not run: {'no quotes.jsonl candidates' if not sel else sel['reason']}")
     else:
         for s, v in sel["sides"].items():
             m = v.get("at_verified_ref")
-            L.append(f"- {s}: {v['n_candidates']} candidates at weight {sel['identity_precision']}; "
+            L.append(f"- {s}: {v['n_candidates']} candidates (of {rep['inputs']['candidates']['total']} in the file, "
+                     f"cap {rep['inputs']['candidates']['cap']}) at weight {sel['identity_precision']}; "
                      + (f"offset {m['offset_c']['verified']} -> {m['offset_c']['pooled']} c (move {m['offset_c']['move']}), "
                         f"skew move {m['skew_c_per_contract']['move']}; " if m else "no refit; ")
                      + f"ref {v['verified_ref']} -> {v['pooled_ref']}")
-    gn = rep["genome"]
-    L += ["", f"## genome {gn['id'][:12]} (draft, not registered)" if gn["id"] else
-          f"## NO GENOME EMITTED: {gn['reason']}",
-          f"- risk not fitted: {rep['not_fitted']['risk']}", "", "## the v1 schema cannot express"]
+    gn, ck, ld = rep["genome"], rep["emitted_genome_check"], rep["ladder"]
+    L += ["", "## ladder", f"- share of orders with another own level live on the same token and side: "
+          f"{(ld.get('ladder_share') or {}).get('value')}, depth {ld.get('depth')}",
+          "", f"## genome {gn['id'][:12]} (draft, not registered)" if gn["id"] else "## NO GENOME EMITTED"]
+    L += [f"- NOT EMITTED because: {x}" for x in gn["reasons"]]
+    if gn["few_windows"]:
+        L.append(f"- only {gn['windows']} windows: every CI here is crude")
+    if ck:
+        L.append(f"- draft's in-sample quote intent: would quote {ck['would_quote_share']} of {ck['rows']} orders "
+                 f"(silent by {ck['silent_by']}), MAE {ck['mae_c_when_quoting']} c when quoting, fair clamp binds "
+                 f"{ck['fair_clamp_binds_share']}" + ("; fair_up SUBSTITUTED by mid" if ck["fair_substituted_by_mid"] else ""))
+    L += [f"- universe: {rep['universe_fit']}", f"- risk (measured, not a limit): {rep['risk_fit']}",
+          "", "## the v1 schema cannot express"]
     L += [f"- {c['item']}: {c['why']}" for c in rep["cannot_express"]]
     return "\n".join(L) + "\n"
 
@@ -1106,13 +1477,31 @@ def _clean(x) -> Any:
     return x
 
 
-def run(root: Path, om_dir: Path, orders_path: Path, wallet: str, t_from: int, t_to: int, out: Path | None = None,
+def run(root: Path, om_dir: Path | None, orders_path: Path | None, wallet: str, t_from: int, t_to: int,
+        out: Path | None = None,
         token_files: list[Path] | None = None, brti_root: Path | None = None, asof: str = "placement",
-        precision: float | None = None) -> tuple[dict | None, dict, list[dict]]:
+        precision: float | None = None, max_candidates: int = MAX_CANDIDATES, *,
+        reconstruct_manifest: Path | None = None,
+        ) -> tuple[dict | None, dict, list[dict]]:
     """(draft genome dict or None, fit report, decision-table rows); written to ``out`` when given.
-    No genome (and no ``genome.json``) when no expressible price rule could be fitted."""
+    No genome (and no ``genome.json``) when the emitted rule could not act like the fit; the
+    reasons are in ``report["genome"]["reasons"]``."""
     wallet = wallet.lower()
-    T = decision_table(root, om_dir, orders_path, wallet, t_from, t_to, token_files or [], brti_root, asof)
+    matched_orders = match_summary = None
+    if reconstruct_manifest is not None:
+        if om_dir is not None or orders_path is not None:
+            raise ValueError("use reconstruction manifest or standalone order inputs")
+        from .research_manifest import read_reconstruction
+
+        source = read_reconstruction(reconstruct_manifest, wallet, t_from, t_to)
+        orders_path, matched_orders, match_summary = source.orders, source.matched_orders, source.summary
+    if orders_path is None:
+        raise ValueError("missing order tape")
+    T = decision_table(root, om_dir, orders_path, wallet, t_from, t_to, token_files or [], brti_root, asof,
+                       max_candidates, matched_orders=matched_orders, match_summary=match_summary)
+    if reconstruct_manifest is not None:
+        T["inputs"]["reconstruct_manifest"] = str(reconstruct_manifest)
+        T["inputs"]["candidates"]["unavailable"] = "reconstruction does not publish per-wallet candidate quotes"
     if not any(r["kind"] == "order" for r in T["rows"]):
         raise SystemExit(f"doppel-rulefit: no order of {wallet} could be put in a window ({dict(T['stats'])}). "
                          "Token -> window needs rtds_* rows on --data or a tokens.jsonl (--tokens, or "
@@ -1138,11 +1527,12 @@ def run(root: Path, om_dir: Path, orders_path: Path, wallet: str, t_from: int, t
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="doppel-rulefit")
     ap.add_argument("--data", type=Path, required=True, help="tape root")
-    ap.add_argument("--ordermatch-dir", type=Path, required=True, help="doppel-ordermatch output directory")
-    ap.add_argument("--orders", type=Path, required=True, help="doppel-ordertape output (parquet dir or JSONL)")
+    ap.add_argument("--ordermatch-dir", type=Path, help="doppel-ordermatch output directory")
+    ap.add_argument("--orders", type=Path, help="doppel-ordertape output (parquet dir or JSONL)")
+    ap.add_argument("--reconstruct-manifest", type=Path, help="use verified artifacts from a reconstruction manifest")
     ap.add_argument("--wallet", required=True)
-    ap.add_argument("--from", dest="t_from", type=_ts, required=True, help="unix s or ISO UTC")
-    ap.add_argument("--to", dest="t_to", type=_ts, required=True)
+    ap.add_argument("--from", dest="t_from", type=_ts, required=True, help="inclusive receive time, unix s or ISO UTC")
+    ap.add_argument("--to", dest="t_to", type=_ts, required=True, help="exclusive receive time, unix s or ISO UTC")
     ap.add_argument("--brti-lab", type=Path, default=None,
                     help="enables fair-v1; BRTI is read from here if it holds ref_brti_raw, else from --data; "
                          "its tokens.jsonl (if any) joins the token map")
@@ -1151,16 +1541,24 @@ def main(argv=None) -> int:
                     help="state cutoff: the placement's receive time, or that minus the sign-to-book delay")
     ap.add_argument("--identity-precision", type=float, default=None,
                     help="weight of fingerprint candidates (default: ordermatch.json identity_precision_upper)")
+    ap.add_argument("--max-candidates", type=int, default=MAX_CANDIDATES,
+                    help="fingerprint candidates kept (stratified by window, seeded); the cap is reported")
     ap.add_argument("--out", type=Path, required=True, help="directory")
     a = ap.parse_args(argv)
+    if a.reconstruct_manifest is None and (a.ordermatch_dir is None or a.orders is None):
+        ap.error("give --reconstruct-manifest or both --ordermatch-dir and --orders")
     toks = list(a.tokens)
     brti = None
     if a.brti_lab is not None:
         if (a.brti_lab / "tokens.jsonl").exists():
             toks.append(a.brti_lab / "tokens.jsonl")
         brti = a.brti_lab if (a.brti_lab / "ref_brti_raw").exists() else a.data
-    genome, report, _ = run(a.data, a.ordermatch_dir, a.orders, a.wallet, a.t_from, a.t_to, a.out, toks, brti,
-                            a.asof, a.identity_precision)
+    try:
+        genome, report, _ = run(a.data, a.ordermatch_dir, a.orders, a.wallet, a.t_from, a.t_to, a.out, toks, brti,
+                                a.asof, a.identity_precision, a.max_candidates,
+                                reconstruct_manifest=a.reconstruct_manifest)
+    except ValueError as exc:
+        ap.error(str(exc))
     print(card(report))
     return 0 if genome is not None else 1
 
