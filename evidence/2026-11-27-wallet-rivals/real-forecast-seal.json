@@ -1,0 +1,16 @@
+{
+  "schema": "rival-historical-forecast-seal/1",
+  "scope": "real",
+  "utc_window": ["2026-11-25T23:00:00Z", "2026-11-26T00:00:00Z"],
+  "markets": 12,
+  "scheduled_observations": 360,
+  "registration_commit": "a02cf9f",
+  "registration_sha256": "ce5ac05f279af0588879e4054ca78d7145dec22de055958cff825e4b04ac6c44",
+  "public_sha256": "b2fe68d802434c39e5fb288c287fbbb7f12b3a6480479ff741866bf6961436c2",
+  "public_bytes": 76979,
+  "predictions_sha256": "d889568818cdb87bb61035355b6aeb25d42afd24fa0c91136e948efe46938d21",
+  "predictions_bytes": 63575,
+  "apex_files": "/var/backups/doppel-sealed-20261126/research/wallet-rivals.FsyLZq/real/{public.json,predictions.json}",
+  "publication_scope": "Public tape forecasts frozen before opening execution labels for this retrospective comparison. The original hour predates this publication.",
+  "intake_note": "The original public grid completed. The initial separate source receipt failed to serialize its integer window keys. Use a regenerated source receipt only after checking the frozen public bytes."
+}
