@@ -584,15 +584,17 @@ def test_selection_refit_moves_the_rule_when_unfilled_quotes_sit_elsewhere(tmp_p
 
 
 def test_candidates_are_streamed_capped_and_stratified_and_memory_does_not_grow(tmp_path):
-    world40 = world(seed=6, windows=2, candidates=40)
+    frames, orders, tape, all_quotes = world(seed=6, windows=2, candidates=40)
+    d = tmp_path
+    write(d, frames, orders, tape, windows=2)
 
-    def peak(step, name):
-        # the SAME tape both times; only the number of candidate rows in quotes.jsonl differs
-        frames, orders, tape, quotes = world40[0], world40[1], world40[2], world40[3][::step]
-        d = tmp_path / name
-        write(d, frames, orders, tape, quotes, windows=2)
+    def peak(step):
+        # Both measurements read the same compressed bytes. Re-recording identical messages
+        # can produce differently sized zstd frames because the writer flushes on wall time.
+        quotes = all_quotes[::step]
         junk = {"wallet": "0xother", "token_id": "U0", "price": 0.5, "venue_ms": 1, "tw_ns": 1, "size": 97.0}
-        with open(d / "om" / "quotes.jsonl", "ab") as fh:
+        with open(d / "om" / "quotes.jsonl", "wb") as fh:
+            fh.write(jl(quotes))
             fh.write(jl([junk] * 50))
         tracemalloc.start()
         T = rulefit.decision_table(d / "tape", d / "om", d / "ordertape.jsonl", W, T0, T0 + 3600,
@@ -601,8 +603,8 @@ def test_candidates_are_streamed_capped_and_stratified_and_memory_does_not_grow(
         tracemalloc.stop()
         return top, T, len(quotes)
 
-    small, _, n_small = peak(10, "small")
-    big, T, n_big = peak(1, "big")
+    small, _, n_small = peak(10)
+    big, T, n_big = peak(1)
     assert n_big == 10 * n_small > 10_000
     assert big < 1.15 * small  # 10x the candidates on disk, the same 100 in memory
     info = T["inputs"]["candidates"]
@@ -611,7 +613,6 @@ def test_candidates_are_streamed_capped_and_stratified_and_memory_does_not_grow(
     assert len(kept) == 100 and sorted(sum(r["window"] == slug(k) for r in kept) for k in (0, 1)) == [50, 50]
     assert T["stats"]["candidates_in_file"] == n_big
     # seeded: the same file gives the same sample; under the cap nothing is dropped
-    d = tmp_path / "big"
     tok = rulefit.token_map(d / "tape", T0, T0 + 3600, [d / "tokens.jsonl"])
     a, _ = rulefit.sample_quotes(d / "om" / "quotes.jsonl", W, tok, 100)
     assert a == rulefit.sample_quotes(d / "om" / "quotes.jsonl", W, tok, 100)[0]
