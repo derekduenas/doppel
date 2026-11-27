@@ -155,6 +155,33 @@ The true belief is p_w = σ(logit fair + 1.0·lead), with logistic decision nois
 **Disclosure.** "Most of the bias" was measured on T, and the threshold (filtered bias ≤ 0.5 ×
 unfiltered) was set after seeing that β was not the biased quantity.
 
+**Deviation from the brief: balanced accuracy.** The verdict gates on balanced accuracy, not the
+plain share of satisfied inequalities. Plain accuracy depends on the pass ratio the analyst
+chooses. Under balanced accuracy the mid baseline sits at 0.5 by construction, so beating mid is
+only a chance-level bar. The real bar is beating fair_v1.
+
+Every verdict above is unchanged under plain accuracy, which is also in every output. Plain
+model / fair_v1 / mid by wallet:
+
+| Wallet | Model | fair_v1 | mid |
+|---|---|---|---|
+| taker | 0.88 | 0.58–0.59 | 0.54 |
+| pure fair | 0.70–0.72 | 0.71–0.72 | 0.59–0.62 |
+| random | 0.49–0.61 | 0.62–0.64 | 0.85 |
+
+**Low-noise wallets (stated limitation, not tuned away).** With noise-free decisions the data is
+nearly separable, so the ratio β = γ_x / γ_u is set partly by the L2 penalty and comes out about
+1–2 % low. These runs use seeds 1–3 with 50 bootstraps.
+
+| Noise T | β CI covers 1.0 | Notes |
+|---|---|---|
+| 0 | 2 of 3 seeds | seed 3: 0.979 [0.963, 0.995]; fitted T ≈ 0.06 |
+| 0.05 | 3 of 3 seeds | seed 1 also claims the decoy `imbalance`, a false claim |
+
+A symmetric penalty that also covers 1/T overshoots instead (β 1.03–1.05, with the CI excluding 1
+on most seeds), so the asymmetric penalty is kept. On a near-deterministic wallet, treat β CIs as
+too narrow by about the 2 % bias.
+
 **Not tested here.**
 
 - A capped wallet whose cap correlates with a feature. That could bias β itself.
