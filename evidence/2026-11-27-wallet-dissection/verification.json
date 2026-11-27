@@ -1,0 +1,61 @@
+{
+  "schema": "wallet-dissection-verification/1",
+  "runtime_source_commit": "61a06d2a22548ad8167bd39819e47f7153a458a3",
+  "final_case_readers_commit": "2f72c12",
+  "memory_regression_fixture_commit": "a0a3169",
+  "registered_protocols": {
+    "PROTOCOL.md": "19f0de2eb88b82be57e9f44e5c690b293a27e91ea819b9a7acc5d4daaec32255",
+    "OPPORTUNITY-CHECK.md": "2f59bb43e569348d19fe08bef1e73528294607f1e0e5a7bc3dc8fd1f4db4a8ff"
+  },
+  "receipts_sha256": {
+    "first15-summary.json": "cd62bd9987eadc67b3e95b54c1c569b0e94dd2944598d7765d3086c8ee8684fc",
+    "first-case-independent.json": "328aa1bff02b51a54ad4aca781b2a82ce560fd631145b5069f06c43b02775237",
+    "first-reference-inventory.json": "cac24ef4ed5af04141954ada91598fa49ac1c3bb84cf9fd67c3be54a57f44865",
+    "opportunities.json": "c63cd5b59174fa12d9857368b217903410f77fb34abd80b8047442aa90c9c4b5",
+    "prefix-verification.json": "7cf39924be1c75a094592fb964332fd1afeb3d67c2ea6eb6c97404db3a341cdb",
+    "consumer-first15.json": "1c364c60833451972320fdf4be4c289e0c2e4ac91ffe33df8853e16dbeb2c8fd"
+  },
+  "apex_scratch": "/var/backups/doppel-sealed-20261126/research/wallet-dissection.aKSm3Q",
+  "full_order_rows_sha256": "9c1e1a23555acc8f09152a43dd88ce329c980c90e29b72873c0f047e304b7b35",
+  "full_opportunity_grid_sha256": "1155ca5ce8d27ef21223a772cc3121e91dd625e1e5ca6ac01ebcafe585a3bd7a",
+  "book_checks": {
+    "expected_orders": 35,
+    "located": 33,
+    "primary_cutoffs": 3,
+    "cutoff_tokens": 2,
+    "strict_prefix_and_perturbed_future_equal": true,
+    "cutoff_fields_per_token": 14,
+    "independent_signed_numeric_fields": 11
+  },
+  "build_checks": {
+    "pytest_groups": {
+      "all_except_answerkey_and_rulefit": 715,
+      "answerkey": 17,
+      "rulefit": 53
+    },
+    "pytest_total": 785,
+    "pyright": {
+      "scope": "src and all five Layer 3 evidence programs",
+      "errors": 0,
+      "warnings": 0
+    },
+    "cargo_tests": 72,
+    "clippy_warnings_denied": true,
+    "rustfmt": true,
+    "offline_lock": true,
+    "offline_sdist_and_wheel": true,
+    "wheel_byte_matched_modules": 77,
+    "wheel_imported_cli_targets": 35,
+    "genome_ledger_lines": 21,
+    "genome_ledger_head": "7e4843a45ad1dc25",
+    "verified_expression_semantics": "49083cf45e14",
+    "expression_probe": "v3"
+  },
+  "opportunity_confirm": {
+    "byte_identical": true,
+    "primary": "opportunity-v1/opportunities.json",
+    "independent_repeat": "opportunity-confirm/opportunities.json",
+    "bytes": 81912,
+    "full_sha256": "1155ca5ce8d27ef21223a772cc3121e91dd625e1e5ca6ac01ebcafe585a3bd7a"
+  }
+}
