@@ -419,13 +419,23 @@ def _prow(i, oid, verified, role="maker", maker=W1, block_ts=T0 + 5, created=MS 
 def test_ordermatch_reads_the_parquet_directory(tmp_path):
     d = tmp_path / "orders"
     # written newest first, as a cohort run does: order "a" filled at T0+5 (age 4 s) and again at T0+700
-    ot._write_parts(d, 1, [_prow(1, "a", True, block_ts=T0 + 700, fill=2_000_000),
-                           _prow(2, "x", False, maker=TAKER),            # another maker: not verified
-                           _prow(3, "n", None)])                          # store had no order_id
-    ot._write_parts(d, 2, [_prow(4, "a", True), _prow(5, "t", True, role="taker"),
-                           _prow(6, "late", True, created=MS + 4_000_000, block_ts=T0 + 4001)])
+    newest = ot._write_parts(d, 1, [
+        _prow(1, "a", True, block_ts=T0 + 700, fill=2_000_000),
+        _prow(2, "x", False, maker=TAKER),  # another maker: not verified
+        _prow(3, "n", None),                # store had no order_id
+    ])
+    oldest = ot._write_parts(d, 2, [
+        _prow(4, "a", True), _prow(5, "t", True, role="taker"),
+        _prow(6, "late", True, created=MS + 4_000_000, block_ts=T0 + 4001),
+    ])
+    legacy, _, diag = ordermatch.load_orders(d, T0, T0 + 3600)
+    assert [(o.order_id, o.verified) for o in legacy] == [("a", False)]
+    assert diag["legacy_diagnostic_rows"] == 2
+    ot._commit(d, 1, newest, dict.fromkeys(("0x01", "0x02", "0x03"), "decoded"))
+    ot._commit(d, 2, oldest, dict.fromkeys(("0x04", "0x05", "0x06"), "decoded"))
     orders, active, stats = ordermatch.load_orders(d, T0, T0 + 3600)
     assert [o.order_id for o in orders] == ["a"] and active == {W1: {"101"}}
+    assert orders[0].verified
     assert orders[0].fills == {"0x04": (5.0, T0 + 5), "0x01": (10.0, T0 + 700)}  # oldest fill screened first
     assert dict(stats) == {"rows_not_verified": 2, "rows_out_of_range": 1, "maker_orders": 1}
     # the same verified rows as JSONL give the same orders
@@ -555,7 +565,11 @@ def world3(root):
 
     for h in (0, 3_600_000):
         for a in ("101", "102"):
-            frames.append(book(h + (5 if h else 0), a, "m1", [(0.02, 10)], [(0.98, 10)]))
+            bids = [(0.02, 10)]
+            if h and a == "101":
+                # These quotes rest across the chunk boundary and execute later in hour 1.
+                bids += [(0.01, 1)] + [(cents / 100, 50) for cents in range(50, 55)]
+            frames.append(book(h + (5 if h else 0), a, "m1", bids, [(0.98, 10)]))
     for i in range(32):
         an_order(1000 + 1000 * i, 10 + i)
     for i in range(5):
