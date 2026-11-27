@@ -175,7 +175,7 @@ def wls(X: np.ndarray, y: np.ndarray, w: np.ndarray) -> np.ndarray:
     return np.linalg.lstsq(X * s[:, None], y * s, rcond=None)[0]
 
 
-def boot_ci(stat, cl: np.ndarray, n_boot: int = N_BOOT) -> list | None:
+def boot_ci(stat, cl: np.ndarray, n_boot: int = N_BOOT, *, digits: int | None = 4) -> list | None:
     """95 % percentile CI of ``stat(row indices)`` resampling clusters (market windows)."""
     if not len(cl):
         return None
@@ -194,7 +194,7 @@ def boot_ci(stat, cl: np.ndarray, n_boot: int = N_BOOT) -> list | None:
     if len(vals) < n_boot // 2:
         return None
     lo, hi = np.percentile(np.stack(vals), [2.5, 97.5], axis=0)
-    out = [[_r(a), _r(b)] for a, b in zip(lo, hi)]
+    out = [[float(a), float(b)] if digits is None else [_r(a, digits), _r(b, digits)] for a, b in zip(lo, hi)]
     return out[0] if len(out) == 1 else out
 
 
@@ -833,7 +833,7 @@ def fit_price_side(D: dict, force: str | None = None) -> dict:
         d = y - D["ref"][r][m]
         e = {k: np.abs(d - X @ _side_model(d, X, w, fit, k))[val] for k in ("const", "skew")}
         mae = {k: wmean(v, w[val]) for k, v in e.items()}
-        model = "skew" if mae["skew"] < mae["const"] else "const"
+        model = "skew" if np.ptp(inv[fit]) > 0 and mae["skew"] < mae["const"] else "const"
         verr[r] = e[model]
         by[r] = {"model": model, "val_mae_const_c": _r(mae["const"]), "val_mae_skew_c": _r(mae["skew"])}
     rank = sorted(cands, key=lambda r: (wmean(verr[r], w[val]), REFS.index(r)))
@@ -860,18 +860,27 @@ def fit_price_side(D: dict, force: str | None = None) -> dict:
     # reported parameters: the same model refitted on ALL rows (the test score above is not theirs)
     off = wmedian(d, w)
     q = lambda p: float(np.percentile(d, p))  # noqa: E731
-    out["offset_c"] = est(off, n, cl, boot_ci(lambda i: wmedian(d[i], w[i]), cl), oos) | {
+    median_ci = boot_ci(lambda i: wmedian(d[i], w[i]), cl, digits=None)
+    out["offset_c"] = est(off, n, cl, [_r(v) for v in median_ci] if median_ci else None, oos) | {
         "p25": _r(q(25)), "p75": _r(q(75)), "iqr": _r(q(75) - q(25))}
     e_all = in1(np.abs(d - off))
     ec = np.abs(d - wmedian(d[tr], w[tr]))[te]
     out["within_1c_of_const_rule"] = est(wmean(e_all, w), n, cl, boot_ci(lambda i: wmean(e_all[i], w[i]), cl),
                                          {"holdout_value": _r(wmean(in1(ec), w[te])) if te.any() else None,
                                           "n_test": int(te.sum())})
-    slope = lambda i: -wls(X[i], d[i], w[i])[1]  # noqa: E731
-    out["skew_c_per_contract"] = est(slope(np.arange(n)), n, cl, boot_ci(slope, cl),
+    ba = wls(X, d, w)
+
+    def inventory_parameters(i):
+        # A single inventory value leaves intercept and slope underdetermined.
+        if np.ptp(inv[i]) == 0:
+            return [math.nan, math.nan]
+        intercept, slope = wls(X[i], d[i], w[i])
+        return [intercept, -slope]
+
+    inventory_ci = boot_ci(inventory_parameters, cl, digits=None) if np.ptp(inv) else None
+    out["skew_c_per_contract"] = est(-ba[1], n, cl, [_r(v) for v in inventory_ci[1]] if inventory_ci else None,
                                      {"val_mae_c_const": by[best]["val_mae_const_c"],
                                       "val_mae_c_with_skew": by[best]["val_mae_skew_c"], "n_val": int(val.sum())})
-    ba = wls(X, d, w)
     out["intercept_c_with_skew"] = _r(ba[0])
     skewed = model == "skew"
     res = d - (X @ ba if skewed else off)
@@ -879,6 +888,22 @@ def fit_price_side(D: dict, force: str | None = None) -> dict:
     out["rule"] = {"ref": best, "offset_c": _r(ba[0]) if skewed else _r(off),
                    "skew_c_per_contract": out["skew_c_per_contract"]["value"] if skewed else 0.0,
                    "fitted_on": "all eligible rows; offset_c.oos uses only fit and validation windows"}
+    # The raw median residual and the exploratory unconstrained slope above are
+    # distinct estimands from the selected rule's own intercept and coefficient.
+    clusters = len(np.unique(cl))
+    parameter_ci = (inventory_ci if skewed else [median_ci, None]) if clusters >= MIN_CORRECTION_WINDOWS else None
+    out["selected_parameters"] = {
+        "reference": best, "model": model, "clusters": clusters,
+        "interval_scope": ("Market-window bootstrap on observed orders, conditional on the selected reference and "
+                           "model. It excludes model-selection uncertainty and bias from unobserved orders."),
+        "offset_c": {"value": float(ba[0]) if skewed else float(off),
+                     "ci95": parameter_ci[0] if parameter_ci else None,
+                     "estimand": ("weighted regression intercept of limit minus reference at zero inventory" if skewed
+                                  else "weighted median of limit minus reference")},
+        "skew_c_per_contract": {"value": float(-ba[1]) if skewed else 0.0,
+                                "ci95": parameter_ci[1] if parameter_ci else None,
+                                "estimand": ("negative slope of limit minus reference on inventory" if skewed
+                                             else "fixed at zero by the constant model")}}
     out["residual_iqr_c"] = _r(np.percentile(res, 75) - np.percentile(res, 25))  # spread the rule leaves
     out["inventory_range"] = [_r(inv.min()), _r(inv.max())]
     # dependence on time-to-close and spread, next to inventory (descriptive; selects nothing)
@@ -1980,13 +2005,18 @@ def card(rep: dict) -> str:
         if not v.get("chosen"):
             L.append(f"- {s}: no rule ({v.get('reason')}; rows {v['n_rows']})")
             continue
-        o, k, u = v["offset_c"], v["skew_c_per_contract"], v["rule"]
+        o, u = v["offset_c"], v["rule"]
         L.append(f"- {s} = {u['ref']} {u['offset_c']:+g} c"
-                 + (f" - {u['skew_c_per_contract']:g} c x inventory (CI {k['ci95']})" if v["model"] == "skew"
-                    else f" (inventory skew not kept: {k['value']:g}, CI {k['ci95']})")
+                 + (f" - {u['skew_c_per_contract']:g} c x inventory" if v["model"] == "skew" else " (fixed zero skew)")
                  + f"; n={v['n']}, test MAE {o['oos']['mae_c']} c, within 1 c {o['oos']['within_1c']}"
                  + (f"; TIE with {v['tie_with']}" if v["tie_with"] else ""))
-        L.append(f"  offset from {u['ref']}: median {o['value']:+g} c (CI {o['ci95']}), IQR {o['p25']:+g}..{o['p75']:+g}, "
+        parameters = v.get("selected_parameters")
+        if parameters:
+            intervals = {key: (f"[{p['ci95'][0]:.4g}, {p['ci95'][1]:.4g}]" if p["ci95"] else "unavailable")
+                         for key, p in parameters.items() if key in ("offset_c", "skew_c_per_contract")}
+            L.append(f"  intervals conditional on the selected model and observed orders: offset {intervals['offset_c']} c, "
+                     f"skew {intervals['skew_c_per_contract']} c/contract")
+        L.append(f"  observed offset from {u['ref']}: median {o['value']:+g} c (CI {o['ci95']}), IQR {o['p25']:+g}..{o['p75']:+g}, "
                  f"residual IQR {v['residual_iqr_c']} c, {o['clusters']} windows")
     e = rep["expressible_price_rule"]
     L.append(f"- schema v1 can hold: ref {e.get('quote_ref')} +/- {e.get('half_spread_c')} c, skew "

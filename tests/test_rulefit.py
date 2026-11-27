@@ -1123,3 +1123,44 @@ def test_timing_corrections_need_independent_windows(windows, status):
         assert metric["status"] == status
         assert (metric["ci95"] is not None) == (status == "ESTIMATED")
         assert (metric["upper_bound"] is not None) == (status != "UNKNOWN")
+
+
+def test_selected_price_parameters_have_model_aligned_intervals(fitted):
+    _, rep, rows, _ = fitted
+    bid, ask = (rep["price_rule"][s] for s in ("bid", "ask"))
+    const = bid["selected_parameters"]
+    assert const["reference"] == "touch" and const["model"] == "const"
+    assert const["offset_c"]["ci95"] == [0, 0]
+    assert const["skew_c_per_contract"]["ci95"] is None and const["skew_c_per_contract"]["value"] == 0
+    assert "fixed" in const["skew_c_per_contract"]["estimand"]
+
+    skew = ask["selected_parameters"]
+    assert skew["model"] == "skew" and "conditional" in skew["interval_scope"]
+    for key in ("offset_c", "skew_c_per_contract"):
+        parameter = skew[key]
+        assert parameter["value"] == pytest.approx(ask["rule"][key], abs=5e-5)
+        assert parameter["ci95"][0] <= parameter["value"] <= parameter["ci95"][1]
+    assert "zero inventory" in skew["offset_c"]["estimand"]
+    assert skew["offset_c"]["ci95"] != ask["offset_c"]["ci95"]  # raw median residual has a different target
+
+    # Repeating many observations in two markets cannot establish parameter uncertainty.
+    D = rulefit._side_data(rows, "ask", thresholds(rows))
+    D["cl"] = np.where(np.arange(len(D["cl"])) % 2, "w1", "w2")
+    sparse = rulefit.fit_price_side(D)["selected_parameters"]
+    assert sparse["clusters"] == 2 and sparse["offset_c"]["value"] == skew["offset_c"]["value"]
+    assert all(sparse[k]["ci95"] is None for k in ("offset_c", "skew_c_per_contract"))
+
+
+def test_constant_training_inventory_cannot_identify_a_skew():
+    # With flat inventory, least squares can divide the mean between an arbitrary
+    # intercept and slope. It would win validation merely because mean > median.
+    cl = np.repeat(np.arange(6), 30)
+    ph = np.select([cl < 2, cl < 4], [0, 1], default=2)
+    d = np.where(ph == 0, (np.arange(len(ph)) % 5 == 0) * 5.0, 1.0)
+    mid = np.full(len(d), 50.0)
+    D = {"y": mid + d, "w": np.ones_like(d), "inv": np.full_like(d, 10.0),
+         "ref": {r: mid for r in rulefit.REFS}, "cl": cl, "phase": ph, "tte": mid, "spread": mid}
+    fit = rulefit.fit_price_side(D, force="mid")
+    assert fit["selected_parameters"]["model"] == "const"
+    assert fit["selected_parameters"]["skew_c_per_contract"]["ci95"] is None
+    assert fit["skew_c_per_contract"]["ci95"] is None

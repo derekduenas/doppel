@@ -928,6 +928,20 @@ def _covers(ci, x, pad=0.0) -> bool | None:
     return None if not ci or None in ci or x is None else ci[0] - pad <= x <= ci[1] + pad
 
 
+def selected_parameter(side: dict, name: str) -> tuple:
+    selected = (side.get("selected_parameters") or {}).get(name)
+    if selected is not None:
+        return selected["value"], selected.get("ci95")
+    # Earlier fit reports store descriptive intervals for both candidate models.
+    # Only the constant offset and the fitted skew have a matching legacy interval.
+    value = (side.get("rule") or {}).get(name)
+    model = side.get("model")
+    same_parameter = ((name == "offset_c" and model == "const") or
+                      (name == "skew_c_per_contract" and model == "skew"))
+    ci = (side.get(name) or {}).get("ci95") if same_parameter else None
+    return value, ci
+
+
 def _timing_cell(truth, q: dict | None, ob: dict | None) -> dict:
     """A cadence or quote-life cell from rulefit's corrected estimate ``q`` (value, status, ci95 =
     its stated interval, upper_bound) and the profile obligation. The stated interval is scored as
@@ -938,7 +952,7 @@ def _timing_cell(truth, q: dict | None, ob: dict | None) -> dict:
     cover = _covers(q.get("ci95"), truth) if v is not None else None
     ub = q.get("upper_bound")
     holds = None if ub is None or truth is None else truth <= ub
-    if st == "UPPER_BOUND" and holds is not None:
+    if v is not None and holds is not None:
         cover = holds if cover is None else cover and holds
     return _cell(truth, v, _status(ob) if v is not None else "unknown", _ratio_ok(v, truth), cover,
                  tool="rulefit+profile", stated=st, method=q.get("method"), interval=q.get("ci95"),
@@ -977,31 +991,28 @@ def score(name: str, t: dict, tools: dict) -> dict:
         tie = any(ties[s] for s in sides)
         cells["price_reference"] = _cell(e["ref"], refs if have else None,
                                          "hedged" if tie else "claim", ok, tool="rulefit", tie_with=ties)
+    same_ref = bool(have) and all(refs[s] == e["ref"] for s in sides)
     offs, cover, okk = {}, [], []
     for s in sides:
-        o = (pr.get(s) or {}).get("offset_c") or {}
-        r = (pr.get(s) or {}).get("rule") or {}
-        v = r.get("offset_c") if r.get("offset_c") is not None else o.get("value")
+        v, ci = selected_parameter(pr.get(s) or {}, "offset_c")
         offs[s] = v
         tv = t["offset_c_p50"][s]
         okk.append(v is not None and abs(v - tv) <= TOL_OFFSET_C)
-        cover.append(_covers(o.get("ci95"), tv))
+        cover.append(_covers(ci, tv) if same_ref else None)
     cv = False if False in cover else None if not cover or None in cover else True
     cells["price_offset"] = _cell({s: t["offset_c_p50"][s] for s in sides} if maker else None,
-                                  offs if have else None, "claim" if have else "unknown",
-                                  bool(okk) and all(okk), cv, tool="rulefit")
+                                  offs if same_ref else None, "claim" if same_ref else "unknown",
+                                  bool(okk) and all(okk), cv, tool="rulefit", matching_reference=same_ref)
     sk, skc, sko = {}, [], []
     true_skew = t["skew_c_per_contract"]
     for s in sides:
-        r = (pr.get(s) or {}).get("rule") or {}
-        k = (pr.get(s) or {}).get("skew_c_per_contract") or {}
-        v = r.get("skew_c_per_contract")
+        v, ci = selected_parameter(pr.get(s) or {}, "skew_c_per_contract")
         sk[s] = v
         sko.append(v is not None and true_skew is not None and abs(v - true_skew) <= max(TOL_SKEW, 0.5 * abs(true_skew)))
-        skc.append(_covers(k.get("ci95"), true_skew))
+        skc.append(_covers(ci, true_skew) if same_ref else None)
     cv = False if False in skc else None if not skc or None in skc else True
-    cells["skew"] = _cell(true_skew, sk if have else None, "claim" if have else "unknown",
-                          bool(sko) and all(sko), cv, tool="rulefit")
+    cells["skew"] = _cell(true_skew, sk if same_ref else None, "claim" if same_ref else "unknown",
+                          bool(sko) and all(sko), cv, tool="rulefit", matching_reference=same_ref)
     # cadence and quote life: rulefit's corrected estimates, status from the profile ledger
     tm = rf.get("timing_rule") or {}
     cells["cadence"] = _timing_cell(t["repost_gap_s_p50"], tm.get("gap_s"), led.get("placement_cadence"))
