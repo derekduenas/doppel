@@ -106,24 +106,33 @@ def decide(g: Genome, n_traded: int, ci: tuple[float | None, float | None], dd: 
 
 def commercial(g: Genome, ev: list[dict], pw_ci_low: float | None, pc: float | None,
                op_cost_usd_month: float) -> dict:
-    """Commercial hurdle (owner/Astra 2026-11-26): '$ > 0' is not enough. Report a conservative lower
-    bound on net dollars per day at the simulated size, after operating cost, plus the best day's
-    share of total and the break-even volume. Informational: the statistical verdict and owner
-    authorization stay separate decisions."""
-    wpd = sum(86400 // {"5m": 300, "15m": 900}.get(h, 300) for h in g.universe.horizons) * len(g.universe.assets)
+    """Commercial hurdle (owner/Astra 2026-11-26): '$ > 0' is not enough. Dollars per day come from the
+    windows actually EVALUATED, never from every window the schedule offers (Astra audit 2026-11-26:
+    10 windows earning $1 against $2/day of operating cost were projected to +$26.80/day by scaling
+    the per-window lower bound to all 288 scheduled windows). Two numbers, both after operating cost:
+    realised = (net over evaluated windows) / (UTC days covered) - op cost per day; lower bound = the
+    per-window CI low x evaluated windows per covered day - op cost per day. The hurdle needs both > 0.
+    Informational: the statistical verdict and owner authorization stay separate decisions."""
+    wpd_sched = sum(86400 // {"5m": 300, "15m": 900}.get(h, 300) for h in g.universe.horizons) * len(g.universe.assets)
     op_day = op_cost_usd_month / 30.0
     by_day: dict[int, float] = {}
     for r in ev:
         by_day[r["end"] // 86400] = by_day.get(r["end"] // 86400, 0.0) + r["net_usd"]
+    days = len(by_day)
     tot = sum(by_day.values())
     best = max(by_day.values()) if by_day else 0.0
-    lb_day = (pw_ci_low / 100.0) * wpd - op_day if pw_ci_low is not None else None
-    return {"windows_per_day": wpd, "op_cost_usd_per_day": round(op_day, 2),
+    wpd_eval = len(ev) / days if days else 0.0
+    realised = tot / days - op_day if days else None
+    lb_day = (pw_ci_low / 100.0) * wpd_eval - op_day if pw_ci_low is not None and days else None
+    return {"windows_per_day_scheduled": wpd_sched, "windows_per_day_evaluated": round(wpd_eval, 2),
+            "op_cost_usd_per_day": round(op_day, 2),
+            "realised_net_usd_per_day_after_ops": round(realised, 2) if realised is not None else None,
             "net_usd_per_day_lower_bound_after_ops": round(lb_day, 2) if lb_day is not None else None,
-            "clears_hurdle": bool(lb_day is not None and lb_day > 0),
-            "days": len(by_day), "best_day_share_of_total": round(best / tot, 3) if tot > 0 else None,
+            "clears_hurdle": bool(lb_day is not None and lb_day > 0 and realised is not None and realised > 0),
+            "days": days, "best_day_share_of_total": round(best / tot, 3) if tot > 0 else None,
             "breakeven_contracts_per_day": round(op_day / (pc / 100.0), 1) if pc and pc > 0 else None,
-            "note": "incentives/rebates are not in twin P&L, so this is ex-incentives by construction"}
+            "note": "per evaluated window and covered day, not per scheduled window; incentives/rebates are "
+                    "not in twin P&L, so this is ex-incentives by construction"}
 
 
 def verdict(g: Genome, results: list[dict], block: int = 12, n_boot: int = 2000, seed: int = 0,

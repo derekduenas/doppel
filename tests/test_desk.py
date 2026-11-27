@@ -106,7 +106,7 @@ def world(tmp_path: Path) -> dict:
                      ("2026-11-27T00:00:00Z", "2026-11-30T00:00:00Z"))
     h1 = genome("h1/h1-maker-h1.json")
     reg.register(h1, "h1-maker-v1", "fixture: guarded maker", ("2026-11-26T00:00:00Z", "2026-11-29T00:00:00Z"))
-    Registry(root, now=lambda: RES_NOW, code=code).record_result(h3["base"].id, {"p_value": 0.3, "decision": "CONTINUE"})
+    Registry(root, now=lambda: RES_NOW, code=code).record_result(h3["base"].id, {"p_value": 0.3, "decision": "CONTINUE"}, (H3_S, H3_E))
     t = 1796090000
     for i, (arm, g) in enumerate(h3.items()):
         put(lab / "twin" / "h3" / f"{arm}.json", twin_doc(g, arm_results(arm), (H3_S, H3_E)), t + i)
@@ -176,7 +176,7 @@ def test_registry_families_phases_and_twin(world):
     assert b["twin"]["windows_evaluated"] == N_WIN and b["twin"]["windows_traded"] == N_WIN
     exp = round(sum(base_net(i) for i in range(N_WIN)) / N_WIN, 4)
     assert b["twin"]["net_c_per_window"]["mean"] == exp
-    assert "commercial" in b["twin"] and b["twin"]["commercial"]["windows_per_day"] == 288
+    assert "commercial" in b["twin"] and b["twin"]["commercial"]["windows_per_day_scheduled"] == 288
     assert h3["ident"]["twin"]["src"]["file"] == "lab:twin/h3/ident.json"       # not the 5 s delay run
     h1 = fams["h1-maker-v1"]["genomes"][0]
     assert h1["phase"] == "awaiting result" and h1["twin"]["window_fit"] == "partial"
