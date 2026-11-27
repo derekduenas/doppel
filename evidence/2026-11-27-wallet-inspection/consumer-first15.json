@@ -1,0 +1,100 @@
+{
+  "revision": "8c44ca1f471387f1210b511c6110302202e0915f",
+  "expected_match_sha256": "f3b4e8b28055c4f532652db2c0b57adc432b28b118697890e7246cdab5b2511d",
+  "match_aggregate_equal": true,
+  "match_output_sha256": {
+    "ordermatch.json": "9582acda53947cd32cd6abc5a10c62dac5e800be03a8c7bec5f929bc4e3d37bb",
+    "orders.jsonl": "59e10a50e11ddadb26e8203ef169b0e47151b675b04accc56a236890c5ca3e27",
+    "quotes.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "window": [
+    1795629600,
+    1795630500
+  ],
+  "stream": "clob_btc_5m",
+  "token_map_sha256": "72f6055444f589d317fb24716b0dc9bb222a6d63b00fbc540ec82534abac0875",
+  "limits": {
+    "MemoryMax": "1G",
+    "MemorySwapMax": 0,
+    "Nice": 19,
+    "IOSchedulingClass": "idle",
+    "PrivateNetwork": true
+  },
+  "wallets": {
+    "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": {
+      "exit_code": 1,
+      "fit_label": "insufficient maker placement evidence",
+      "genome_file": false,
+      "genome_status": "not_emitted",
+      "genome_registered": false,
+      "reasons": [
+        "no maker order of this wallet has a qualified placement in a mapped window"
+      ],
+      "fit_counts": {
+        "orders_other_makers": 16,
+        "orders_duplicate_receipt_dropped": 0,
+        "orders": 0,
+        "orders_outside_range_dropped": 0,
+        "orders_not_verified_dropped": 0,
+        "candidates": 0,
+        "candidates_in_file": 0,
+        "cancels_asked": 0,
+        "cancels_state_found": 0,
+        "mapped_maker_fills": 30
+      },
+      "fill_counts": {
+        "n": 30,
+        "unmapped": 0,
+        "timed_by_block": 0
+      },
+      "rows_orders": 0,
+      "rows_candidates": 0,
+      "decision_table_rows": 0,
+      "streams": [
+        "clob_btc_5m"
+      ],
+      "fit_report_sha256": "4c1d650ea87f84a752ba4f44b2397dbaa0705d1f3cbf219ca6073f7545e93f05",
+      "decision_table_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "0x28cc505fb60501dbb2199a9662ba175919af904f": {
+      "exit_code": 1,
+      "fit_label": "rule conditional on fill",
+      "genome_file": false,
+      "genome_status": "not_emitted",
+      "genome_registered": false,
+      "reasons": [
+        "1 market window in the fit: no clustered CI, need >= 2",
+        "too few rows with a book in the fit or validation windows",
+        "not explained by observed inputs: side: undetermined, fewer than 3 windows with >= 4 visible orders (balanced accuracy None, interval None)",
+        "not explained by observed inputs: price: held-out skill interval must exceed zero (skill None, CI None)",
+        "not explained by observed inputs: timing: held-out participation skill interval must exceed 0.05 (skill None, CI None)",
+        "not explained by observed inputs: placement clock lacks a passing real and shifted-placebo comparison for the fit interval"
+      ],
+      "fit_counts": {
+        "orders_unqualified_placement_dropped": 9,
+        "orders_duplicate_receipt_dropped": 0,
+        "orders": 7,
+        "orders_outside_range_dropped": 0,
+        "orders_not_verified_dropped": 0,
+        "candidates": 0,
+        "candidates_in_file": 0,
+        "cancels_asked": 0,
+        "cancels_state_found": 0,
+        "mapped_maker_fills": 35
+      },
+      "fill_counts": {
+        "n": 35,
+        "unmapped": 0,
+        "timed_by_block": 2
+      },
+      "rows_orders": 7,
+      "rows_candidates": 0,
+      "decision_table_rows": 7,
+      "streams": [
+        "clob_btc_5m"
+      ],
+      "fit_report_sha256": "d7db28359b4b22999f8f081673ea2245b34f0c670edc8ddb9ec6ab588040bdc3",
+      "decision_table_sha256": "7a587dd38a55f966d686dbd5c0cffe9ef6a35df508d45aeaa561d38758ed0417"
+    }
+  }
+}
