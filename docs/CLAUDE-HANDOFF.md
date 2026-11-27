@@ -1,5 +1,14 @@
 # Claude Code handoff
 
+## Current wallet-by-wallet audit
+
+Resume Layer 0 in `/Users/derekduenas/doppel-wallet-selection-20261127` on
+`review/wallet-selection-20261127` at `6cef9f7`. The walkthrough follows wallet
+`0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c` from its first recorded trade to
+prospective selection. Week one closes December 4 at 03:30 UTC. The frozen study,
+real evidence, test results and collection procedure are in the
+[Layer 0 audit](https://github.com/derekduenas/doppel/blob/6cef9f7f3304db3f6751528688bf7c80fdef477b/docs/WALLET-SELECTION.md).
+
 ## November 27 rule-twin pickup
 
 Resume in `/Users/derekduenas/doppel-rule-twin-readiness` on
