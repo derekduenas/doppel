@@ -163,16 +163,20 @@ class _Projection:
             return
         token = msg.get('asset_id')
         tx = str(msg.get('transaction_hash') or '').lower() if kind == 'last_trade_price' else ''
+        if kind == 'last_trade_price' and tx not in self.wanted:
+            return
         if kind != 'price_change' and token not in self.tokens and tx not in self.wanted:
             return
         # Receive time is not interchangeable with a missing venue timestamp.
         raw_time = msg.get('timestamp')
-        if type(raw_time) is not int and not (isinstance(raw_time, str) and raw_time.isascii() and raw_time.isdecimal()):
-            self.reset('invalid_venue_time')
-            return
-        ms = int(raw_time)
+        ms = 0
+        if type(raw_time) is int or (isinstance(raw_time, str) and raw_time.isascii() and raw_time.isdecimal()):
+            ms = int(raw_time)
         if ms <= 0:
-            self.reset('invalid_venue_time')
+            if kind == 'last_trade_price':
+                self.out.counts['unclocked_prints'] += 1
+            else:
+                self.reset('invalid_venue_time')
             return
         if kind == 'price_change':
             for i, row in enumerate(msg['price_changes']):
@@ -192,8 +196,8 @@ class _Projection:
             return
         if not isinstance(token, str) or not token:
             raise ValueError('missing book token')
-        span, initial = self.observe(token, ms, tw, kind == 'book')
         if kind == 'book':
+            span, initial = self.observe(token, ms, tw, True)
             assert span is not None
             values = {}
             for name, side in (('bids', 'BUY'), ('asks', 'SELL')):
@@ -208,6 +212,10 @@ class _Projection:
             for key in self.by_token.get(token, ()):
                 self.level(key, values.get(key, 0.0), span, seq, ordinal, kind, initial)
         elif tx in self.wanted:
+            # Prints label executions. Their delivery need not be ordered against depth and
+            # does not prove depth continuity. Bind to the capture epoch only. The caller
+            # checks explicit snapshot/delta coverage independently on both clocks.
+            span = self.active.get(token)
             side = msg['side']
             if side not in ('BUY', 'SELL'):
                 raise ValueError('invalid print side')
