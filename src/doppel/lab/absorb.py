@@ -97,6 +97,7 @@ SEL_GET_OWNERS = "a0e67e2b"  # Gnosis Safe getOwners()
 U = 1_000_000
 SPELL_MIN = U  # a one-sided spell needs at least one share of imbalance
 DEFAULT_CHUNK = 200
+DEFAULT_LOG_RPC, DEFAULT_STATE_RPC = DEFAULT_RPCS
 
 
 # ---------------------------------------------------------------- ABI helpers
@@ -178,8 +179,9 @@ class Chain:
     """RPC reads through ``ordertape.Pool``, every answer cached in ``cache`` (a JSONL file), so a
     rerun repeats no request. Errors and budget exhaustion propagate to the caller."""
 
-    def __init__(self, pool: Pool, cache: Path):
+    def __init__(self, pool: Pool, cache: Path, routes: dict[str, frozenset[str]] | None = None):
         self.pool, self.cache = pool, Path(cache)
+        self.routes = routes or {}
         self.mem: dict[str, Any] = {}
         if self.cache.exists():
             for line in self.cache.read_bytes().splitlines():
@@ -190,7 +192,7 @@ class Chain:
     def get(self, method: str, params: list) -> Any:
         k = orjson.dumps([method, params]).decode()
         if k not in self.mem:
-            res, _ = self.pool.call(method, params)
+            res, _ = self.pool.call(method, params, allowed=self.routes.get(method))
             if res is None and method != "eth_getCode":
                 raise RpcError("null_result")
             self.cache.parent.mkdir(parents=True, exist_ok=True)
@@ -660,7 +662,9 @@ def main(argv: list[str] | None = None, transport: Callable = http_transport) ->
     ap.add_argument("--from-block", type=int, help="instead of --from")
     ap.add_argument("--to-block", type=int, help="instead of --to")
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--rpc", nargs="+", default=list(DEFAULT_RPCS))
+    ap.add_argument("--rpc", nargs="+", help="general RPC endpoints; also overrides the built-in role defaults")
+    ap.add_argument("--log-rpc", nargs="+", help="only endpoints serving eth_getLogs")
+    ap.add_argument("--state-rpc", nargs="+", help="only endpoints serving historical eth_call and eth_getCode")
     ap.add_argument("--max-requests", type=int, default=None, help="HTTP requests, retries included")
     ap.add_argument("--rate", type=float, default=2.0, help="requests per second per endpoint")
     ap.add_argument("--chunk-blocks", type=int, default=DEFAULT_CHUNK, help="eth_getLogs block span")
@@ -678,8 +682,15 @@ def main(argv: list[str] | None = None, transport: Callable = http_transport) ->
         ap.error("invalid block interval")
     wallets = [w.lower() for w in a.wallets]
     a.out.mkdir(parents=True, exist_ok=True)
-    pool = Pool(a.rpc, transport, rate=a.rate, max_requests=a.max_requests)
-    chain = Chain(pool, a.out / "_chain" / "rpc-cache.jsonl")
+    general = a.rpc or list(DEFAULT_RPCS)
+    log_rpc = a.log_rpc or a.rpc or [DEFAULT_LOG_RPC]
+    state_rpc = a.state_rpc or a.rpc or [DEFAULT_STATE_RPC]
+    routes = {"eth_getLogs": frozenset(log_rpc), "eth_call": frozenset(state_rpc),
+              "eth_getCode": frozenset(state_rpc)}
+    for method in ("eth_blockNumber", "eth_getBlockByNumber", "eth_getTransactionReceipt"):
+        routes[method] = frozenset(general)
+    pool = Pool([*general, *log_rpc, *state_rpc], transport, rate=a.rate, max_requests=a.max_requests)
+    chain = Chain(pool, a.out / "_chain" / "rpc-cache.jsonl", routes)
     try:
         head = int(chain.get("eth_blockNumber", []), 16) if a.from_block is None or a.to_block is None else 0
         b0 = a.from_block if a.from_block is not None else chain.block_at(a.t_from, head)

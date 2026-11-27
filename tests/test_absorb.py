@@ -284,10 +284,19 @@ def test_cli_end_to_end_with_fill_store(chain, tmp_path):
                                               "status": "open"}) + b"\n"
                                 for i, t in enumerate((YES, NO))))
     out = tmp_path / "out"
+    routed = []
+    def transport(url, method, params):
+        expected = "logs" if method == "eth_getLogs" else "state" if method in ("eth_call", "eth_getCode") else "general"
+        assert url == expected
+        routed.append(expected)
+        return chain(url, method, params)
+
     assert ab.main(["--store", str(tmp_path / "store"), "--wallets", W, "--from", str(1000 + 2 * 10),
-                    "--to", str(1000 + 2 * 101), "--out", str(out), "--rpc", "fake",
+                    "--to", str(1000 + 2 * 101), "--out", str(out), "--rpc", "general",
+                    "--log-rpc", "logs", "--state-rpc", "state",
                     "--pages", str(pages), "--tokens", str(tokens), "--rate", "1e9"],
-                   transport=chain) == 0
+                   transport=transport) == 0
+    assert set(routed) == {"logs", "state", "general"}
     doc = orjson.loads((out / f"wallet-{W}.json").read_bytes())
     assert doc["window_blocks"] == [10, 100] and doc["status"] == "reconciled"
     assert doc["pairing"]["completing_share_of_buys"] == 0.5
@@ -323,3 +332,21 @@ def test_one_sided_order_evidence_and_duplicate_order_hashes(chain):
     assert result["causes"] == ["fill_orders_disagree"]
     assert result["fill_check"]["order_filled"]["chain_only"] == 1
     assert result["fill_check"]["order_filled"]["goldsky_only"] == 1
+
+def test_rpc_roles_share_budget_and_never_fall_back_to_incompatible_node(tmp_path):
+    calls = []
+    def transport(url, method, params):
+        calls.append((url, method))
+        if method == "eth_call":
+            raise RpcError("unsupported_state")
+        return []
+
+    pool = Pool(["logs", "state"], transport, rate=1e9, max_requests=3, attempts=2,
+                sleep=lambda _: None, backoff_s=0)
+    chain = ab.Chain(pool, tmp_path / "cache", {"eth_getLogs": frozenset(["logs"]), "eth_call": frozenset(["state"])})
+    chain.get("eth_getLogs", [])
+    with pytest.raises(RpcError):
+        chain.get("eth_call", [])
+    with pytest.raises(ab.BudgetExhausted):
+        chain.get("eth_getLogs", [{}])
+    assert calls == [("logs", "eth_getLogs"), ("state", "eth_call"), ("state", "eth_call")]

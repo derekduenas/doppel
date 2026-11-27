@@ -19,13 +19,14 @@ The audit's three faults and the fix for each:
 
 ```
 doppel-absorb --store LAB/fills --wallets 0x... 0x... --from T0 --to T1 --out DIR \
-  [--rpc URL ...] [--max-requests N] [--rate R] [--chunk-blocks B] \
+  [--rpc URL ...] [--log-rpc URL ...] [--state-rpc URL ...] [--max-requests N] [--rate R] [--chunk-blocks B] \
   [--pages TAPE/goldsky_activity/pagination.jsonl] [--tokens LAB/tokens.jsonl] [--orders LAB/orders/...]
 ```
 
 - **Window.** `--from`/`--to` are unix seconds. The window is the block range `[first block with ts ≥ from, last block with ts < to]`. `--from-block`/`--to-block` set it in blocks directly.
 - **Outputs.** `DIR/wallet-<addr>.json` per wallet, `DIR/cohort.tsv` and `DIR/cohort.json` with the cohort table and RPC statistics.
 - **Cache.** Every RPC answer is cached in `DIR/_chain/rpc-cache.jsonl`. A run stopped by `--max-requests` or by endpoint errors is resumed by running the same command again. Answers already received are never requested again, so a resumed scan adds no duplicate logs: they are keyed by (tx, logIndex).
+- **Endpoint roles.** By default logs go to publicnode and historical balance/code reads to drpc. Use `--rpc` to override all roles, or `--log-rpc` and `--state-rpc` for role-specific overrides. All routes share the same per-run request budget and per-endpoint rate state.
 - **Block span.** `--chunk-blocks` is the `eth_getLogs` span. 1rpc.io allows 50 blocks. Find the largest span publicnode or drpc accept on Apex before a large run.
 - **Pagination file.** Without `--pages`, Goldsky counts as incomplete and no wallet can be `reconciled`.
 - **Token pairs.** `--tokens` is the ledger's Gamma cache (token → condition, idx). Pairs are also learned from split, merge and redemption batches on chain. A token with no known pair is listed in `pairing.tokens_without_pair`, and no pairing is claimed for it.
