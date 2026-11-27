@@ -1,6 +1,15 @@
 # Claude Code handoff
 
-## Where to resume
+## November 27 rule-twin pickup
+
+Resume in `/Users/derekduenas/doppel-rule-twin-readiness` on
+`review/rule-twin-readiness-20261127` at `d29b3cc` on GitHub and Apex. The
+review records the recovered builder code, the 72-market map, calibration regressions,
+the wallet pagination receipt and the remaining storage, exam and reconciliation gates.
+The owner chose to leave the existing Apex baseline running and keep the tape on Apex.
+[November 27 system review and next actions](https://github.com/derekduenas/doppel/blob/d29b3cc53e3c12bbc42aa83fefe05d3f2f96b78a/docs/RULE-TWIN-REVIEW-20261127.md)
+
+## November 26 integration pickup
 
 Open `/Users/derekduenas/doppel-integration`. The integration worktree now uses the review branch
 `review/system-audit-20261126`, based on `3cff434`. The first audit status baseline is
