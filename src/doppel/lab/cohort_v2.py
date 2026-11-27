@@ -36,16 +36,22 @@ c_w = sum(qty * markout), Q_w = sum(qty) over its marked fills.
 
 Slices (disjoint, in this order):
 - SNIPER (100, stored in rank order): volume ranks 101-2500, >= 50 windows, median per-window notional in [$50, $5000];
-  rank by sniper t(+10 s) descending, tie-break sniper t(+60 s) (undefined = last), then address.
-  Wallets without a defined t(+10 s) are not rankable.
-- DONOR (50): any wallet with >= 50 windows, not a sniper; requires donor t(+2 s) < 0 and
-  t(+10 s) < 0, and the donor-winsorized means at +2 s and +10 s negative in BOTH halves of
+  eligible only with a defined sniper t(+10 s) > 1.0 (FLOOR); rank by sniper t(+10 s) descending,
+  tie-break sniper t(+60 s) (undefined = last), then address.
+- DONOR (50): any wallet with >= 50 windows, not a sniper; requires donor t(+2 s) < -1.0 and
+  t(+10 s) < -1.0 (FLOOR), and the donor-winsorized means at +2 s and +10 s negative in BOTH halves of
   Period A (split at the midpoint of [first Period-A RTDS hour, freeze) by window start; each half
   needs >= 10 marked windows). Ranked by max(t2, t10) ascending (most persistently negative), then
   t10, then address.
 - CONTROLS (50): ``random.Random(20261127).sample`` of the wallets at volume ranks 101-2500 with
   >= 50 windows, minus both slices, in rank order; stored sorted.
-A slice that cannot be filled is published short, with its shortfall recorded.
+A slice that cannot be filled is published short (never topped up with weaker wallets), with its
+shortfall recorded.
+
+Winner's-curse check (informational, never a gate): for every wallet, NULL_PERMS sign-flip
+permutations of its window residuals (c_w - mu Q_w, one sign per window shared across horizons,
+seeded by NULL_SEED and the address) are scored with the same statistics; ``null`` records the
+expected number of wallets passing each floor under zero skill beside the observed number.
 """
 
 from __future__ import annotations
@@ -82,6 +88,9 @@ MEDIAN_USD = (50.0, 5000.0)
 WINSOR_K = 3
 MIN_MARKED = 20
 MIN_HALF = 10
+T_FLOOR = 1.0                 # sniper t(+10 s) > T_FLOOR; donor t(+2 s), t(+10 s) < -T_FLOOR
+NULL_PERMS = 20
+NULL_SEED = 20261128
 FINALIZE_LAG_S = 300          # a token's path is closed this long after its window end / last fill + 60 s
 SCHEMA = "doppel-cohort-v2/1"
 RULE = {
@@ -96,11 +105,16 @@ RULE = {
     "t_stat": "mu = sum c / sum Q; Newey-West (Bartlett, L = floor(4 (G/100)^(2/9))) on residuals c_w - mu Q_w "
               "ordered by window start, G/(G-1) correction",
     "min_marked_windows": MIN_MARKED,
+    "t_floor": T_FLOOR,
+    "short_slices": "published short with the shortfall recorded; never filled with wallets failing a floor",
+    "winners_curse_null": {"permutations": NULL_PERMS, "seed": NULL_SEED,
+                           "method": "sign flips of window residuals, informational only"},
     "probability_skill": "not used: a fill implies an inequality on belief, not a probability",
     "sniper": {"n": 100, "volume_ranks": list(BAND), "min_windows": MIN_WINDOWS, "median_window_usd": list(MEDIAN_USD),
-               "rank": "t(+10s) desc, then t(+60s) desc (undefined last), then address"},
+               "t_floor": f"t(+10s) > {T_FLOOR}", "rank": "t(+10s) desc, then t(+60s) desc (undefined last), then address"},
     "donor": {"n": 50, "min_windows": MIN_WINDOWS, "excludes": "sniper",
-              "require": "t(+2s) < 0 and t(+10s) < 0; donor-winsorized +2s and +10s means < 0 in both halves "
+              "t_floor": f"t(+2s) < {-T_FLOOR} and t(+10s) < {-T_FLOOR}",
+              "require": "t floors; donor-winsorized +2s and +10s means < 0 in both halves "
                          f"(>= {MIN_HALF} marked windows per half; split at midpoint of Period A by window start)",
               "rank": "max(t2, t10) asc, then t10 asc, then address"},
     "controls": {"n": 50, "volume_ranks": list(BAND), "min_windows": MIN_WINDOWS, "excludes": "sniper, donor",
@@ -287,21 +301,67 @@ def wallet_stats(cells: dict[str, list[float]], starts: dict[str, int], split_s:
 def _donor_ok(s: dict) -> bool:
     for k in ("2s", "10s"):
         d = s[k]["donor"]
-        if d["t"] is None or d["t"] >= 0:
+        if d["t"] is None or d["t"] >= -T_FLOOR:
             return False
         if any(h["windows"] < MIN_HALF or h["mean_w_c"] is None or h["mean_w_c"] >= 0 for h in d["halves"]):
             return False
     return True
 
 
-def select(stats: dict[str, dict], n_sniper: int = 100, n_donor: int = 50, n_ctrl: int = 50,
-           seed: int = SEED) -> dict:
-    """Slices from per-wallet Period-A stats (every wallet with >= MIN_WINDOWS windows)."""
+def _sniper_ok(s: dict) -> bool:
+    t = s["10s"]["sniper"]["t"]
+    return t is not None and t > T_FLOOR
+
+
+def _pools(stats: dict[str, dict]) -> tuple[list[str], list[str]]:
     lo, hi = BAND
     band = sorted((a for a, s in stats.items() if s["rank"] is not None and lo <= s["rank"] <= hi),
                   key=lambda a: stats[a]["rank"])
-    sn_pool = [a for a in band if MEDIAN_USD[0] <= stats[a]["median_window_usd"] <= MEDIAN_USD[1]]
-    rankable = [a for a in sn_pool if stats[a]["markout"]["10s"]["sniper"]["t"] is not None]
+    return band, [a for a in band if MEDIAN_USD[0] <= stats[a]["median_window_usd"] <= MEDIAN_USD[1]]
+
+
+def null_counts(cells: dict[str, dict[str, list[float]]], starts: dict[str, int], split_s: int,
+                stats: dict[str, dict], perms: int = NULL_PERMS, seed: int = NULL_SEED) -> dict:
+    """Expected number of wallets passing each floor under zero skill (sign-flipped residuals)."""
+    _, sn_pool = _pools(stats)
+    sn_set = set(sn_pool)
+    exp_sn = exp_do = 0.0
+    for a in sorted(stats):
+        cw = cells.get(a) or {}
+        if not cw:
+            continue
+        mus = []
+        for j in range(len(HK)):
+            num = sum(v[2 * j] for v in cw.values())
+            den = sum(v[2 * j + 1] for v in cw.values())
+            mus.append(num / den if den > 0 else 0.0)
+        rng = random.Random(f"{seed}:{a}")
+        slugs = sorted(cw, key=lambda x: (starts[x], x))
+        hit_sn = hit_do = 0
+        for _ in range(perms):
+            sign = {x: rng.choice((-1.0, 1.0)) for x in slugs}
+            flipped = {x: [v for j in range(len(HK)) for v in
+                           (sign[x] * (cw[x][2 * j] - mus[j] * cw[x][2 * j + 1]), cw[x][2 * j + 1])] for x in slugs}
+            ms = wallet_stats(flipped, starts, split_s)
+            hit_sn += a in sn_set and _sniper_ok(ms)
+            hit_do += _donor_ok(ms)
+        exp_sn += hit_sn / perms
+        exp_do += hit_do / perms
+    obs_do = sum(_donor_ok(s["markout"]) for s in stats.values())
+    return {"method": "per-wallet sign flips of window residuals c_w - mu Q_w (one sign per window), "
+                      "same winsorizing and t; expected = sum over wallets of the pass rate",
+            "permutations": perms, "seed": seed,
+            "sniper_floor": {"pool": len(sn_pool), "observed": sum(_sniper_ok(stats[a]["markout"]) for a in sn_pool),
+                             "expected_null": round(exp_sn, 3)},
+            "donor_floor": {"pool": len(stats), "observed": obs_do, "expected_null": round(exp_do, 3),
+                            "note": "over all >= 50-window wallets, before excluding snipers"}}
+
+
+def select(stats: dict[str, dict], n_sniper: int = 100, n_donor: int = 50, n_ctrl: int = 50,
+           seed: int = SEED) -> dict:
+    """Slices from per-wallet Period-A stats (every wallet with >= MIN_WINDOWS windows)."""
+    band, sn_pool = _pools(stats)
+    rankable = [a for a in sn_pool if _sniper_ok(stats[a]["markout"])]
 
     def sk(a):
         m = stats[a]["markout"]
@@ -411,6 +471,7 @@ def build(root: Path, tokens: Path, freeze_s: int, *, cohort_v1: Path | None = N
             "period_a": {"from_tw": first * NS, "until_tw": freeze_s * NS, "split_tw": split_s * NS,
                          "rtds_hours": len(rtds_hours), "rtds_hours_missing": missing},
             "eligible": sel["counts"], "shortfall": sel["shortfall"],
+            "null": null_counts(cells, starts, split_s, stats),
             "sniper": sel["sniper"], "donor": sel["donor"], "controls": sel["controls"],
             "v1_overlap": overlap, "inputs": inputs,
             "code_sha256": hashlib.sha256(code).hexdigest(),

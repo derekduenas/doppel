@@ -136,6 +136,32 @@ def test_slices_recover_planted_wallets_and_lucky_is_not_picked(tape):
     cv.verify(doc, stats)
 
 
+def test_floors_publish_short_slices_and_null_counts(tape):
+    root, tokens = tape
+    doc, stats = cv.build(root, tokens, FREEZE, n_sniper=20, n_donor=20, n_ctrl=5)
+    ws = stats["wallets"]
+    t10 = {a: ws[a]["markout"]["10s"]["sniper"]["t"] for a in ws}
+    passing = {a for a in ws if 101 <= ws[a]["rank"] <= 2500 and t10[a] is not None and t10[a] > cv.T_FLOOR}
+    assert set(doc["sniper"]) == passing and set(SNIPERS) <= passing      # every pass, nothing below the floor
+    assert len(doc["sniper"]) < 20 and doc["shortfall"]["sniper"] == 20 - len(doc["sniper"])
+    for a in doc["donor"]:
+        m = ws[a]["markout"]
+        assert m["2s"]["donor"]["t"] < -cv.T_FLOOR and m["10s"]["donor"]["t"] < -cv.T_FLOOR
+    assert set(DONORS) <= set(doc["donor"]) and doc["shortfall"]["donor"] == 20 - len(doc["donor"])
+    nl = doc["null"]
+    assert nl["sniper_floor"]["observed"] == len(passing) and nl["permutations"] == cv.NULL_PERMS
+    # Zero-skill wallets pass t > 1 about 16% of the time; planted skill is far above that.
+    assert 0 < nl["sniper_floor"]["expected_null"] < nl["sniper_floor"]["pool"] * 0.4
+    assert nl["donor_floor"]["expected_null"] < nl["donor_floor"]["observed"]
+    assert doc["rule"]["t_floor"] == 1.0 and "t_floor" in doc["rule"]["sniper"] and "t_floor" in doc["rule"]["donor"]
+    # A floor nobody passes gives an empty, short slice rather than weaker wallets.
+    stats2 = {a: {**s, "markout": {**s["markout"], "10s": {**s["markout"]["10s"],
+                                                           "sniper": {"mean_w_c": 0.0, "t": 0.5}}}}
+              for a, s in ws.items()}
+    sel = cv.select(stats2, 5, 0, 0)
+    assert sel["sniper"] == [] and sel["shortfall"]["sniper"] == 5
+
+
 def test_volume_matches_v1_scan(tape):
     root, _ = tape
     table = cv.volume_table(root, FREEZE)
@@ -219,9 +245,11 @@ def test_deterministic_cli_and_v1_untouched(tape, tmp_path):
     doc = orjson.loads(outs[0][0])
     assert doc["frozen_tw"] == FREEZE * NS
     cv.verify(doc, orjson.loads(outs[0][1]))
-    # Default sizes on a 26-wallet pool: the sniper slice (rank order) takes every rankable wallet.
-    assert set(doc["sniper"][:5]) == set(SNIPERS) and len(doc["sniper"]) == 26 and doc["donor"] == []
-    assert doc["shortfall"] == {"sniper": 74, "donor": 50, "controls": 50}
+    # Default sizes on a 26-wallet pool: slices are published short, ranked best first.
+    assert set(doc["sniper"][:5]) == set(SNIPERS) and set(DONORS) <= set(doc["donor"])
+    assert doc["shortfall"]["sniper"] == 100 - len(doc["sniper"]) > 0
+    assert doc["shortfall"]["donor"] == 50 - len(doc["donor"]) > 0
+    assert len(doc["controls"]) == 26 - len(doc["sniper"]) - len(doc["donor"])
     assert doc["v1_overlap"]["sniper"]["v1_candidates"] == [SNIPERS[0]]
     assert "cohort_v1" in doc["inputs"] and doc["inputs"]["tokens"]
     with pytest.raises(ValueError, match="hour boundary"):
