@@ -1,0 +1,198 @@
+{
+  "schema": "wallet-dissection/1",
+  "use": "retrospective_execution_context",
+  "clock": "recorder_receipt_strictly_before_cutoff",
+  "window_time": [
+    1795629600,
+    1795630500
+  ],
+  "inspection_summary_sha256": "9e33e16eb058a238ae0b3c1d949b5aec307b43d3e506e624406e00603f31e860",
+  "inspection_orders_sha256": "0cb300eddb24a68a267d813d8ac4fd6859fe3a4c902a80ab058ad5033eae4f63",
+  "source_segments": [
+    {
+      "file": "clob_btc_5m/20261125/18.dtape.zst",
+      "sha256": "9691cd2cc196e6d9e5a36dedf10eba79a9d4cfbacb3146aa6bcda53dc83de883",
+      "bytes": 236324236,
+      "records": 2429165,
+      "selected_records": 553638,
+      "first_tw": 1795629654345353667,
+      "last_tw": 1795633199983155536
+    }
+  ],
+  "missing_segments": [],
+  "wallets": {
+    "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": {
+      "orders": 17,
+      "located": 17,
+      "missing_anchor": 0,
+      "signed_book_status": {
+        "known": 17
+      },
+      "observable_two_sided": 17,
+      "last_depth_after_anchor_venue_time": 1,
+      "audit_integrity": {
+        "covered": 17
+      }
+    },
+    "0x28cc505fb60501dbb2199a9662ba175919af904f": {
+      "orders": 18,
+      "located": 16,
+      "missing_anchor": 2,
+      "signed_book_status": {
+        "known": 16
+      },
+      "observable_two_sided": 16,
+      "last_depth_after_anchor_venue_time": 0,
+      "audit_integrity": {
+        "covered": 16
+      }
+    }
+  },
+  "case_sha256": "7c06504c28f39ca076bbbc7ebf7b046697cacf01ded4a0e3a8c44da057c52e4d",
+  "primary": {
+    "addition_1": {
+      "receive_cutoff_ns": 1795629742997199250,
+      "anchor_venue_ms": 1795629742895,
+      "anchor_seq": 39659,
+      "signed": {
+        "token": "26573549377964720488352327783145014153434918240677129399684144995785340448937",
+        "state": {
+          "status": "known",
+          "known": true,
+          "best_bid": 0.07,
+          "bid_size": 1570.84,
+          "best_ask": 0.08,
+          "ask_size": 872.82,
+          "level_size": 1570.84,
+          "last_depth_tw_ns": 1795629742997143420,
+          "last_depth_venue_ms": 1795629742895,
+          "last_depth_seq": 39658,
+          "flow_status": "covered",
+          "prior_1s_buy_shares": 80.714287,
+          "prior_1s_sell_shares": 0,
+          "prior_1s_print_count": 5
+        },
+        "retrospective_integrity": "covered",
+        "last_depth_after_anchor_venue_time": false
+      },
+      "complement": {
+        "token": "56309084475058052347073243507166410713832612599997091400073130353157683326397",
+        "state": {
+          "status": "known",
+          "known": true,
+          "best_bid": 0.92,
+          "bid_size": 872.82,
+          "best_ask": 0.93,
+          "ask_size": 1570.84,
+          "level_size": 1570.84,
+          "last_depth_tw_ns": 1795629742997143420,
+          "last_depth_venue_ms": 1795629742895,
+          "last_depth_seq": 39658,
+          "flow_status": "covered",
+          "prior_1s_buy_shares": 35.585108,
+          "prior_1s_sell_shares": 5.0,
+          "prior_1s_print_count": 6
+        },
+        "retrospective_integrity": "covered",
+        "last_depth_after_anchor_venue_time": false
+      }
+    },
+    "addition_2": {
+      "receive_cutoff_ns": 1795629743009910470,
+      "anchor_venue_ms": 1795629742915,
+      "anchor_seq": 39674,
+      "signed": {
+        "token": "26573549377964720488352327783145014153434918240677129399684144995785340448937",
+        "state": {
+          "status": "known",
+          "known": true,
+          "best_bid": 0.07,
+          "bid_size": 1685.84,
+          "best_ask": 0.08,
+          "ask_size": 872.82,
+          "level_size": 1685.84,
+          "last_depth_tw_ns": 1795629743009854624,
+          "last_depth_venue_ms": 1795629742914,
+          "last_depth_seq": 39673,
+          "flow_status": "covered",
+          "prior_1s_buy_shares": 80.714287,
+          "prior_1s_sell_shares": 0,
+          "prior_1s_print_count": 5
+        },
+        "retrospective_integrity": "covered",
+        "last_depth_after_anchor_venue_time": false
+      },
+      "complement": {
+        "token": "56309084475058052347073243507166410713832612599997091400073130353157683326397",
+        "state": {
+          "status": "known",
+          "known": true,
+          "best_bid": 0.92,
+          "bid_size": 872.82,
+          "best_ask": 0.93,
+          "ask_size": 1685.84,
+          "level_size": 1685.84,
+          "last_depth_tw_ns": 1795629743009854624,
+          "last_depth_venue_ms": 1795629742914,
+          "last_depth_seq": 39673,
+          "flow_status": "covered",
+          "prior_1s_buy_shares": 35.585108,
+          "prior_1s_sell_shares": 5.0,
+          "prior_1s_print_count": 6
+        },
+        "retrospective_integrity": "covered",
+        "last_depth_after_anchor_venue_time": false
+      }
+    },
+    "execution": {
+      "receive_cutoff_ns": 1795629744042136014,
+      "anchor_venue_ms": 1795629743926,
+      "anchor_seq": 40549,
+      "signed": {
+        "token": "26573549377964720488352327783145014153434918240677129399684144995785340448937",
+        "state": {
+          "status": "known",
+          "known": true,
+          "best_bid": 0.07,
+          "bid_size": 3093.03,
+          "best_ask": 0.08,
+          "ask_size": 5.0,
+          "level_size": 3093.03,
+          "last_depth_tw_ns": 1795629744042050912,
+          "last_depth_venue_ms": 1795629743925,
+          "last_depth_seq": 40548,
+          "flow_status": "covered",
+          "prior_1s_buy_shares": 55.0,
+          "prior_1s_sell_shares": 0,
+          "prior_1s_print_count": 3
+        },
+        "retrospective_integrity": "covered",
+        "last_depth_after_anchor_venue_time": false
+      },
+      "complement": {
+        "token": "56309084475058052347073243507166410713832612599997091400073130353157683326397",
+        "state": {
+          "status": "known",
+          "known": true,
+          "best_bid": 0.92,
+          "bid_size": 5.0,
+          "best_ask": 0.93,
+          "ask_size": 3093.03,
+          "level_size": 3093.03,
+          "last_depth_tw_ns": 1795629744042050912,
+          "last_depth_venue_ms": 1795629743925,
+          "last_depth_seq": 40548,
+          "flow_status": "covered",
+          "prior_1s_buy_shares": 8.602127,
+          "prior_1s_sell_shares": 0,
+          "prior_1s_print_count": 3
+        },
+        "retrospective_integrity": "covered",
+        "last_depth_after_anchor_venue_time": false
+      }
+    }
+  },
+  "posting_identity": "unresolved",
+  "posting_training_labels": 0,
+  "orders_sha256": "9c1e1a23555acc8f09152a43dd88ce329c980c90e29b72873c0f047e304b7b35"
+}

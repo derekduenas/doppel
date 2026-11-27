@@ -1,0 +1,211 @@
+{
+  "window": [
+    1795629600,
+    1795630500
+  ],
+  "fit_scope": "BTC five-minute, one archived hour, first 15 minutes scored",
+  "matched_source": {
+    "ordermatch.json": "9582acda53947cd32cd6abc5a10c62dac5e800be03a8c7bec5f929bc4e3d37bb",
+    "orders.jsonl": "59e10a50e11ddadb26e8203ef169b0e47151b675b04accc56a236890c5ca3e27",
+    "quotes.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "signed_source_sha256": "d60083957ca6fec33781adee8b9e37c55b39159bae51276b3fc6ff1d83b15f47",
+  "token_map_sha256": "72f6055444f589d317fb24716b0dc9bb222a6d63b00fbc540ec82534abac0875",
+  "sealed_tape": {
+    "clob_btc_5m/20261125/18.dtape.zst": "9691cd2cc196e6d9e5a36dedf10eba79a9d4cfbacb3146aa6bcda53dc83de883",
+    "rtds_a/20261125/18.dtape.zst": "061a25175ea0bc31dfa5c5d3ab8dfa551958c3c3f710d7efbcec560b385d2437",
+    "rtds_b/20261125/18.dtape.zst": "acb266ce9db69bedcd14ae21ab981691daa8c3d1455811c00980796863afd0e8"
+  },
+  "wallets": {
+    "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": {
+      "exit_code": 1,
+      "genome": {
+        "id": null,
+        "status": "not_emitted",
+        "registered": false,
+        "reasons": [
+          "no maker order of this wallet has a qualified placement in a mapped window"
+        ],
+        "reason": "no maker order of this wallet has a qualified placement in a mapped window"
+      },
+      "label": "insufficient maker placement evidence",
+      "inputs": {
+        "fills": {
+          "rows": 30,
+          "rows_used": 30,
+          "rows_excluded_by_role": {},
+          "verified_false": 0,
+          "verified_null": 0,
+          "unflagged_input": false,
+          "n": 30,
+          "unmapped": 0,
+          "without_print_receipt": 0,
+          "timed_by_block": 0,
+          "identity_unobserved_at_fill": 0,
+          "simulated_flat_start_fills": false,
+          "controlled_simulation": false,
+          "inventory_basis": "attributed_fill_delta_from_zero_at_compatible_transaction_prints"
+        },
+        "streams": [
+          "clob_btc_5m"
+        ],
+        "opportunities": {
+          "scheduled_cells": 90,
+          "scheduled_windows": 3,
+          "listed_cells": 84,
+          "eligible_cells": 71,
+          "windows_with_unlocated_maker_fills": [
+            "btc-updown-5m-1795629600",
+            "btc-updown-5m-1795629900",
+            "btc-updown-5m-1795630200"
+          ]
+        },
+        "asof": "placement",
+        "from": 1795629600,
+        "to": 1795630500,
+        "fair": false,
+        "sign_to_book_ms_p50": null,
+        "anonymous_created_time": "unavailable_without_prior_signed_publication_receipts",
+        "candidates": {
+          "cap": 0,
+          "total": 0,
+          "outside_range": 0,
+          "kept": 0,
+          "seed": 20261126,
+          "strata": 0,
+          "sampling": "proportional per window (largest remainder), uniform within a window"
+        },
+        "counts": {
+          "orders_other_makers": 16,
+          "orders_duplicate_receipt_dropped": 0,
+          "orders": 0,
+          "orders_outside_range_dropped": 0,
+          "orders_not_verified_dropped": 0,
+          "candidates": 0,
+          "candidates_in_file": 0,
+          "cancels_asked": 0,
+          "cancels_state_found": 0,
+          "mapped_maker_fills": 30
+        },
+        "rows_orders": 0,
+        "rows_candidates": 0,
+        "pairs": [
+          [
+            "btc",
+            "5m"
+          ]
+        ]
+      },
+      "report_sha256": "12069f40ec9a451d024b3e840cb5ee1ce09f4c6416814dae5c44d115557be393",
+      "decision_rows_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "0x28cc505fb60501dbb2199a9662ba175919af904f": {
+      "exit_code": 1,
+      "genome": {
+        "id": null,
+        "status": "not_emitted",
+        "registered": false,
+        "validate": [],
+        "fields": {
+          "universe.tte_min_s": "floor(participation_rule.tte_s_p1)",
+          "universe.tau_min_s": "floor(participation_rule.tau_s_p1)",
+          "universe.assets/horizons": "assets with fair-v1 that are in the fit (expressible_price_rule.assets)",
+          "maker.max_quote_age_s": "default 30: no cancelled order with a known life",
+          "maker.pause_when": "none found",
+          "maker.min_edge_vs_fair_c": "default 0: fair not supplied or known for < 20 orders",
+          "maker.quote_ref/half_spread_c/skew_c_per_contract": "defaults: too few rows with a book in the fit or validation windows",
+          "maker.requote_threshold_c": "default 1.0 (the trigger threshold used to classify book moves)",
+          "maker.size": "size_rule.median_size",
+          "risk.max_inventory/max_notional_per_window": "fit_report.risk_fit (replay envelope from attributed fill deltas)",
+          "risk.max_loss_per_day/max_open_windows, costs, kill, exit": "schema defaults, not fitted"
+        },
+        "reasons": [
+          "1 market window in the fit: no clustered CI, need >= 2",
+          "too few rows with a book in the fit or validation windows",
+          "not explained by observed inputs: side: undetermined, fewer than 3 windows with >= 4 visible orders (balanced accuracy None, interval None)",
+          "not explained by observed inputs: price: held-out skill interval must exceed zero (skill None, CI None)",
+          "not explained by observed inputs: timing: held-out participation skill interval must exceed 0.05 (skill None, CI None)",
+          "not explained by observed inputs: placement clock lacks a passing real and shifted-placebo comparison for the fit interval"
+        ],
+        "reason": "1 market window in the fit: no clustered CI, need >= 2; too few rows with a book in the fit or validation windows; not explained by observed inputs: side: undetermined, fewer than 3 windows with >= 4 visible orders (balanced accuracy None, interval None); not explained by observed inputs: price: held-out skill interval must exceed zero (skill None, CI None); not explained by observed inputs: timing: held-out participation skill interval must exceed 0.05 (skill None, CI None); not explained by observed inputs: placement clock lacks a passing real and shifted-placebo comparison for the fit interval",
+        "few_windows": false,
+        "windows": null
+      },
+      "label": "rule conditional on fill",
+      "inputs": {
+        "fills": {
+          "rows": 35,
+          "rows_used": 35,
+          "rows_excluded_by_role": {},
+          "verified_false": 0,
+          "verified_null": 0,
+          "unflagged_input": false,
+          "n": 35,
+          "unmapped": 0,
+          "without_print_receipt": 2,
+          "timed_by_block": 0,
+          "identity_unobserved_at_fill": 0,
+          "simulated_flat_start_fills": false,
+          "controlled_simulation": false,
+          "inventory_basis": "attributed_fill_delta_from_zero_at_compatible_transaction_prints"
+        },
+        "streams": [
+          "clob_btc_5m"
+        ],
+        "opportunities": {
+          "scheduled_cells": 90,
+          "scheduled_windows": 3,
+          "listed_cells": 84,
+          "eligible_cells": 71,
+          "windows_with_unlocated_maker_fills": [
+            "btc-updown-5m-1795629600",
+            "btc-updown-5m-1795629900",
+            "btc-updown-5m-1795630200"
+          ]
+        },
+        "asof": "placement",
+        "from": 1795629600,
+        "to": 1795630500,
+        "fair": false,
+        "sign_to_book_ms_p50": 226.0,
+        "anonymous_created_time": "unavailable_without_prior_signed_publication_receipts",
+        "candidates": {
+          "cap": 0,
+          "total": 0,
+          "outside_range": 0,
+          "kept": 0,
+          "seed": 20261126,
+          "strata": 0,
+          "sampling": "proportional per window (largest remainder), uniform within a window"
+        },
+        "counts": {
+          "orders_unqualified_placement_dropped": 9,
+          "orders_duplicate_receipt_dropped": 0,
+          "orders": 7,
+          "orders_outside_range_dropped": 0,
+          "orders_not_verified_dropped": 0,
+          "candidates": 0,
+          "candidates_in_file": 0,
+          "cancels_asked": 0,
+          "cancels_state_found": 0,
+          "mapped_maker_fills": 35
+        },
+        "rows_orders": 7,
+        "rows_candidates": 0,
+        "pairs": [
+          [
+            "btc",
+            "5m"
+          ]
+        ],
+        "split": {
+          "t_val_ns": 1795630200000000000,
+          "t_test_ns": 1795630200000000000,
+          "unit": "market window"
+        }
+      },
+      "report_sha256": "2b25a8e493cf62f2e4d66d7ec0dcbbe7bbe000bbc5cafcb4c9635d2f5cf82f14",
+      "decision_rows_sha256": "4c493d35f436cdc5e380ae38f8f2faeadd2f4806e5b5ecef66e7217283147531"
+    }
+  }
+}

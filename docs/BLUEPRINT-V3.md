@@ -93,6 +93,13 @@ upper bound on continuous displayed residence. The day had 59 sole additions ver
 shifted for the candidate and 241 versus 25 shifted for the control. Layer 3 needs a decision-time anchor before
 it can label posting behaviour. [Layer 2 audit and receipts](WALLET-INSPECTION.md)
 
+Stage 3 reconstructed pre-execution books for 33 of the two wallets’ 35 signed maker
+orders. The first candidate buy has the same best prices at both possible additions and
+execution, with materially different depth. The opening reference, the wallet’s client
+inventory and its posting identity remain unknown at decision time. The Layer 4 gate is
+a prespecified comparison on independently labelled, held-out cases.
+[Layer 3 walkthrough](WALLET-DISSECTION.md)
+
 ## 5. Genome v2
 
 Rule fitting on real orders listed what today's genome format cannot say. v2 adds: quotes pegged to

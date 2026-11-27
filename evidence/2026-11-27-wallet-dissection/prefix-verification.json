@@ -1,0 +1,153 @@
+{
+  "schema": "wallet-dissection-prefix-check/1",
+  "source_sha256": "9691cd2cc196e6d9e5a36dedf10eba79a9d4cfbacb3146aa6bcda53dc83de883",
+  "full_summary_sha256": "cd62bd9987eadc67b3e95b54c1c569b0e94dd2944598d7765d3086c8ee8684fc",
+  "independent_sha256": "328aa1bff02b51a54ad4aca781b2a82ce560fd631145b5069f06c43b02775237",
+  "signed_token": "26573549377964720488352327783145014153434918240677129399684144995785340448937",
+  "checks": {
+    "addition_1": {
+      "cutoff_ns": 1795629742997199250,
+      "prior_records": 39658,
+      "last_prefix_receipt_ns": 1795629742997143420,
+      "independent_numeric_fields_equal": [
+        "ask_size",
+        "best_ask",
+        "best_bid",
+        "bid_size",
+        "last_depth_seq",
+        "last_depth_tw_ns",
+        "last_depth_venue_ms",
+        "level_size",
+        "prior_1s_buy_shares",
+        "prior_1s_print_count",
+        "prior_1s_sell_shares"
+      ],
+      "all_causal_fields_equal_on_both_legs": [
+        "ask_size",
+        "best_ask",
+        "best_bid",
+        "bid_size",
+        "flow_status",
+        "known",
+        "last_depth_seq",
+        "last_depth_tw_ns",
+        "last_depth_venue_ms",
+        "level_size",
+        "prior_1s_buy_shares",
+        "prior_1s_print_count",
+        "prior_1s_sell_shares",
+        "status"
+      ],
+      "offline_integrity": {
+        "full": {
+          "signed": "covered",
+          "complement": "covered"
+        },
+        "prefix": {
+          "signed": "right_censored",
+          "complement": "right_censored"
+        },
+        "changed_future": {
+          "signed": "covered",
+          "complement": "covered"
+        }
+      }
+    },
+    "addition_2": {
+      "cutoff_ns": 1795629743009910470,
+      "prior_records": 39673,
+      "last_prefix_receipt_ns": 1795629743009854624,
+      "independent_numeric_fields_equal": [
+        "ask_size",
+        "best_ask",
+        "best_bid",
+        "bid_size",
+        "last_depth_seq",
+        "last_depth_tw_ns",
+        "last_depth_venue_ms",
+        "level_size",
+        "prior_1s_buy_shares",
+        "prior_1s_print_count",
+        "prior_1s_sell_shares"
+      ],
+      "all_causal_fields_equal_on_both_legs": [
+        "ask_size",
+        "best_ask",
+        "best_bid",
+        "bid_size",
+        "flow_status",
+        "known",
+        "last_depth_seq",
+        "last_depth_tw_ns",
+        "last_depth_venue_ms",
+        "level_size",
+        "prior_1s_buy_shares",
+        "prior_1s_print_count",
+        "prior_1s_sell_shares",
+        "status"
+      ],
+      "offline_integrity": {
+        "full": {
+          "signed": "covered",
+          "complement": "covered"
+        },
+        "prefix": {
+          "signed": "right_censored",
+          "complement": "right_censored"
+        },
+        "changed_future": {
+          "signed": "covered",
+          "complement": "covered"
+        }
+      }
+    },
+    "execution": {
+      "cutoff_ns": 1795629744042136014,
+      "prior_records": 40548,
+      "last_prefix_receipt_ns": 1795629744042050912,
+      "independent_numeric_fields_equal": [
+        "ask_size",
+        "best_ask",
+        "best_bid",
+        "bid_size",
+        "last_depth_seq",
+        "last_depth_tw_ns",
+        "last_depth_venue_ms",
+        "level_size",
+        "prior_1s_buy_shares",
+        "prior_1s_print_count",
+        "prior_1s_sell_shares"
+      ],
+      "all_causal_fields_equal_on_both_legs": [
+        "ask_size",
+        "best_ask",
+        "best_bid",
+        "bid_size",
+        "flow_status",
+        "known",
+        "last_depth_seq",
+        "last_depth_tw_ns",
+        "last_depth_venue_ms",
+        "level_size",
+        "prior_1s_buy_shares",
+        "prior_1s_print_count",
+        "prior_1s_sell_shares",
+        "status"
+      ],
+      "offline_integrity": {
+        "full": {
+          "signed": "covered",
+          "complement": "covered"
+        },
+        "prefix": {
+          "signed": "right_censored",
+          "complement": "right_censored"
+        },
+        "changed_future": {
+          "signed": "covered",
+          "complement": "covered"
+        }
+      }
+    }
+  }
+}

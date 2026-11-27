@@ -1,0 +1,235 @@
+{
+  "cutoffs": {
+    "addition_1": {
+      "cutoff_tw_ns": 1795629742997199250,
+      "observed_wallet_client_inventory": null,
+      "reference": {
+        "decision_second": 1795629742,
+        "fair_c": null,
+        "latest_raw_source_receipt_s": 1795629741.458852,
+        "opening_receipt_ns": null,
+        "opening_value": null,
+        "raw_receipt_basis": "upstream_perelman_only",
+        "raw_seconds_known": 301,
+        "raw_seconds_required": 301,
+        "raw_source_lag_s": {
+          "max": 42.959685,
+          "median": 0.683355,
+          "min": 0.309292
+        },
+        "source": "pmus_btc_brti_proxy",
+        "status": "insufficient_reference_evidence",
+        "volatility_first_second": 1795629441,
+        "volatility_last_second": 1795629741
+      },
+      "wallet_identified_in_public_execution_records": false
+    },
+    "addition_2": {
+      "cutoff_tw_ns": 1795629743009910470,
+      "observed_wallet_client_inventory": null,
+      "reference": {
+        "decision_second": 1795629743,
+        "fair_c": null,
+        "latest_raw_source_receipt_s": 1795629742.6054204,
+        "opening_receipt_ns": null,
+        "opening_value": null,
+        "raw_receipt_basis": "upstream_perelman_only",
+        "raw_seconds_known": 301,
+        "raw_seconds_required": 301,
+        "raw_source_lag_s": {
+          "max": 42.959685,
+          "median": 0.683355,
+          "min": 0.309292
+        },
+        "source": "pmus_btc_brti_proxy",
+        "status": "insufficient_reference_evidence",
+        "volatility_first_second": 1795629442,
+        "volatility_last_second": 1795629742
+      },
+      "wallet_identified_in_public_execution_records": false
+    },
+    "execution": {
+      "cutoff_tw_ns": 1795629744042136014,
+      "observed_wallet_client_inventory": null,
+      "reference": {
+        "decision_second": 1795629744,
+        "fair_c": null,
+        "latest_raw_source_receipt_s": 1795629743.6603527,
+        "opening_receipt_ns": null,
+        "opening_value": null,
+        "raw_receipt_basis": "upstream_perelman_only",
+        "raw_seconds_known": 301,
+        "raw_seconds_required": 301,
+        "raw_source_lag_s": {
+          "max": 42.959685,
+          "median": 0.682651,
+          "min": 0.309292
+        },
+        "source": "pmus_btc_brti_proxy",
+        "status": "insufficient_reference_evidence",
+        "volatility_first_second": 1795629443,
+        "volatility_last_second": 1795629743
+      },
+      "wallet_identified_in_public_execution_records": false
+    }
+  },
+  "first_retained_opening_receipt_ns": 1795634335537441927,
+  "opening_revision_count": 1,
+  "reference_scope": "The raw proxy uses the PERELMAN capture's upstream receive clock or the DOPPEL live poll receipt. Historical PM US series downloads supply the opening price only after receipt. The international venue's native settlement benchmark and the wallet's feeds are unobserved.",
+  "reference_sources": {
+    "ref_brti_live": {
+      "manifest_sha256": "e943a7cbad736c99f0ab28a24c839daf32bce35114d2953f178c2014173708bf",
+      "selected_files": {
+        "20261125/17.dtape.zst": null,
+        "20261125/18.dtape.zst": null,
+        "20261125/19.dtape.zst": null
+      }
+    },
+    "ref_brti_raw": {
+      "manifest_sha256": "4d0b0162a11f129507f1c4f322f7f521c580caf00b89039a96880d4c89bc9681",
+      "selected_files": {
+        "20261125/17.dtape.zst": {
+          "bytes": 110695,
+          "sha256": "e880fad2cbc6944d4f6368ab696873dfbf7e66ca33ec4848ea82ac60ef0ec782"
+        },
+        "20261125/18.dtape.zst": {
+          "bytes": 110622,
+          "sha256": "f35668018715b1df8883fe1c3cf86b68e450bba6241b55de3ced02e271d0c583"
+        }
+      }
+    },
+    "ref_prices": {
+      "manifest_sha256": "661692e8277c2ed6f6cf3d736c48ed1a77d9df28fc541304458a71894bb9ad26",
+      "selected_files": {
+        "20261125/19.dtape.zst": {
+          "bytes": 78661718,
+          "sha256": "7e5e1db0e30323f00d5b5d7e4ae6252459f61f9824f2c1b5f621b51e63245b0c"
+        },
+        "20261125/20.dtape.zst": {
+          "bytes": 119162,
+          "sha256": "b3cd0c23e0a3afcb8e5b759061a0d3ac696b8d1b302d9bc3ff06ffa423b04c79"
+        },
+        "20261125/21.dtape.zst": {
+          "bytes": 120705,
+          "sha256": "5aa4570a936ac2781ad0ef4d9ceb809517e7b8756da00f916940ba069f5b54a5"
+        },
+        "20261125/22.dtape.zst": {
+          "bytes": 111026,
+          "sha256": "4998f4788313c6ca3a30b4ae271c52bd4f9f5e131ff6238527f5b4ba2736db18"
+        },
+        "20261125/23.dtape.zst": {
+          "bytes": 114856,
+          "sha256": "1e107437297f08c63060fe9e798fe40620fdc45b541e8a82753d70ed9b5fc22a"
+        },
+        "20261126/00.dtape.zst": {
+          "bytes": 127317,
+          "sha256": "e95c911168ff99bcfee2cfe04756e837cd7acae5119aed59bb9b909b33be004b"
+        },
+        "20261126/01.dtape.zst": {
+          "bytes": 122555,
+          "sha256": "15af5b183c2c9fae59611e63b9648d021ba9aa2c61dc6053cc855c8f69369fcf"
+        },
+        "20261126/02.dtape.zst": {
+          "bytes": 126015,
+          "sha256": "baa8e9ae3a9109a9a012e7499319e24ac45f7865fdd4e2af2a490cf828b00564"
+        },
+        "20261126/03.dtape.zst": {
+          "bytes": 117532,
+          "sha256": "1aacca6f7006682bea47906d5e068c3e92da1daabc80c4c3a95e03cc52a229a7"
+        },
+        "20261126/04.dtape.zst": {
+          "bytes": 112274,
+          "sha256": "5d35601afd8cc454472c29e2b3e68db819eb96f27c82f1eed1ca6ff0355569cb"
+        },
+        "20261126/05.dtape.zst": {
+          "bytes": 118507,
+          "sha256": "b6955c06a2891ccc2098bfa43940e009106d5f35010b4943508dd05ef460e2d7"
+        },
+        "20261126/06.dtape.zst": {
+          "bytes": 119418,
+          "sha256": "499ca2a8cb7dc87e615cfc71b57bec20caabb6f2a611a6fd29df3216ed57fd82"
+        },
+        "20261126/07.dtape.zst": {
+          "bytes": 113191,
+          "sha256": "bcf0bbbe90024c5074af8a65135139c112349d70d7feee09ed5482008f2cdc5a"
+        },
+        "20261126/08.dtape.zst": {
+          "bytes": 118242,
+          "sha256": "ba5a2bed16dddd876b3c1eae4106b5ebdc26f6e607200dc0846ac27cb8c1d377"
+        },
+        "20261126/09.dtape.zst": {
+          "bytes": 112495,
+          "sha256": "c27b11b124c6874af62ed312bf0357df54596928c100e85242c1bfcdd26a8803"
+        },
+        "20261126/10.dtape.zst": {
+          "bytes": 109722,
+          "sha256": "eed932ddb129bee7052c9bfd9d43c4d142b9d1ff300f034c47088afc0851b5d0"
+        },
+        "20261126/11.dtape.zst": {
+          "bytes": 106972,
+          "sha256": "a3797fce3cf4333d347953d1b318bfdb6b56fe9f76fff1a053c116841eb735e9"
+        },
+        "20261126/12.dtape.zst": {
+          "bytes": 117820,
+          "sha256": "8c2af05b369c741f801cd9e10e8cbd4d8c3825abd68ef52b08e5369cfb8bfa1a"
+        },
+        "20261126/13.dtape.zst": {
+          "bytes": 109504,
+          "sha256": "b0f1f5cbeb5d4468cd85aef19036ecb591ca8bfcbbf75be6202dd41fe5d5e0a3"
+        },
+        "20261126/14.dtape.zst": {
+          "bytes": 119110,
+          "sha256": "a239d97b458971418bac8de461a778e361a2a3897a8a4c1f84e1433eaeb43575"
+        },
+        "20261126/15.dtape.zst": {
+          "bytes": 130635,
+          "sha256": "0477bc6ff5acd863f77dbb57ca9ad672809ec752d9a6f0c5b3ef50b6d238b01c"
+        },
+        "20261126/16.dtape.zst": {
+          "bytes": 126531,
+          "sha256": "028378b496764bf208602a0592b222d1d64efc696290aad6db7c97a4e2e4510b"
+        },
+        "20261126/17.dtape.zst": {
+          "bytes": 113972,
+          "sha256": "fa53b74b8e2f41cdb1ea3814a8ac5e55eba7b4b162d293a783b9e027b9aac755"
+        },
+        "20261126/18.dtape.zst": {
+          "bytes": 114714,
+          "sha256": "05080ba847ba703fe8f2c3d32223129ef9696049a8f76035a3b88a776fc760ef"
+        },
+        "20261126/19.dtape.zst": {
+          "bytes": 112611,
+          "sha256": "d091d07b70a5cfa1a803329a3201320981201aec67f9f9954ff87a74fe7487dc"
+        }
+      }
+    }
+  },
+  "retrospective_economic_inventory": {
+    "condition": "0x54960a36107b4c53431898bcf2d991af3038ca75ffe9b266ea0f54fbd0007204",
+    "down_opening_shares": 0.0,
+    "economic_movements_in_condition_prior_to_block": 0,
+    "first_retained_public_identity_receipt_ns": 1795629746384458913,
+    "first_scanned_block": 97949420,
+    "goldsky_receipt_ns": 1795630961027209164,
+    "opening_balance_block": 97949419,
+    "own_post_block_net_up": -60.0,
+    "own_pre_block_down_shares": 0.0,
+    "own_pre_block_net_up": 0.0,
+    "own_pre_block_up_shares": 0.0,
+    "receipt_sha256": "13c190f982c5d84fbfbd3f1a7f025e6ead0411254dedff464a6aa8d843c8543d",
+    "rtds_receipts_ns": {
+      "rtds_a": 1795629746494786695,
+      "rtds_b": 1795629746384458913
+    },
+    "scope": "Retrospective conditional-token holdings at settlement. Client fills, pending settlements, orders, and exposures outside this condition are unobserved.",
+    "settlement_block": 97949517,
+    "up_opening_shares": 0.0
+  },
+  "schema": "wallet-dissection-first-reference-inventory/2",
+  "tx": "0x32aa9fa6cb2815070bc6e3a9d9d56163e24c3aa09a5ca78017f27fc977a2b6d8",
+  "wallet": "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c",
+  "window": [
+    1795629600,
+    1795629900
+  ]
+}

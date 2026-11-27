@@ -1,0 +1,205 @@
+{
+  "between_additions": {
+    "from_tw_ns": 1795629742997199250,
+    "prior_states_at_distinct_receipts": 16,
+    "range": {
+      "ask_size": {
+        "distinct": 1,
+        "max": 872.82,
+        "min": 872.82
+      },
+      "best_ask": {
+        "distinct": 1,
+        "max": 0.08,
+        "min": 0.08
+      },
+      "best_bid": {
+        "distinct": 1,
+        "max": 0.07,
+        "min": 0.07
+      },
+      "bid_size": {
+        "distinct": 4,
+        "max": 1685.84,
+        "min": 1570.84
+      },
+      "level_size": {
+        "distinct": 4,
+        "max": 1685.84,
+        "min": 1570.84
+      },
+      "prior_1s_buy_shares": {
+        "distinct": 1,
+        "max": 80.714287,
+        "min": 80.714287
+      },
+      "prior_1s_print_count": {
+        "distinct": 1,
+        "max": 5,
+        "min": 5
+      },
+      "prior_1s_sell_shares": {
+        "distinct": 1,
+        "max": 0,
+        "min": 0
+      }
+    },
+    "to_tw_ns": 1795629743009910470
+  },
+  "book": {
+    "addition_1": {
+      "ask_size": 872.82,
+      "best_ask": 0.08,
+      "best_bid": 0.07,
+      "bid_size": 1570.84,
+      "last_depth_seq": 39658,
+      "last_depth_tw_ns": 1795629742997143420,
+      "last_depth_venue_ms": 1795629742895,
+      "level_size": 1570.84,
+      "prior_1s_buy_shares": 80.714287,
+      "prior_1s_print_count": 5,
+      "prior_1s_sell_shares": 0
+    },
+    "addition_2": {
+      "ask_size": 872.82,
+      "best_ask": 0.08,
+      "best_bid": 0.07,
+      "bid_size": 1685.84,
+      "last_depth_seq": 39673,
+      "last_depth_tw_ns": 1795629743009854624,
+      "last_depth_venue_ms": 1795629742914,
+      "level_size": 1685.84,
+      "prior_1s_buy_shares": 80.714287,
+      "prior_1s_print_count": 5,
+      "prior_1s_sell_shares": 0
+    },
+    "execution": {
+      "ask_size": 5.0,
+      "best_ask": 0.08,
+      "best_bid": 0.07,
+      "bid_size": 3093.03,
+      "last_depth_seq": 40548,
+      "last_depth_tw_ns": 1795629744042050912,
+      "last_depth_venue_ms": 1795629743925,
+      "level_size": 3093.03,
+      "prior_1s_buy_shares": 55.0,
+      "prior_1s_print_count": 3,
+      "prior_1s_sell_shares": 0
+    }
+  },
+  "external": {
+    "kalshi_books": {
+      "key": "KXBTC15M-26NOV251315-15",
+      "quality": "REST upstream freshness unverified",
+      "source": {
+        "bytes": 13051256,
+        "file": "kalshi_books/20261125/18.dtape.zst",
+        "sha256": "02ba3a04410f7d5063d9ae95beff33dbd0fab78311c2cc34c656012d15c0ec6c"
+      },
+      "states": {
+        "addition_1": {
+          "ask": 0.71,
+          "ask_size": 29898.45,
+          "bid": 0.7,
+          "bid_size": 1180.55,
+          "receipt_age_ms": 735.595163,
+          "seq": 345,
+          "tw_ns": 1795629742261604087
+        },
+        "addition_2": {
+          "ask": 0.71,
+          "ask_size": 29898.45,
+          "bid": 0.7,
+          "bid_size": 1180.55,
+          "receipt_age_ms": 748.306383,
+          "seq": 345,
+          "tw_ns": 1795629742261604087
+        },
+        "execution": {
+          "ask": 0.7,
+          "ask_size": 15034.13,
+          "bid": 0.69,
+          "bid_size": 7768.3,
+          "receipt_age_ms": 719.948481,
+          "seq": 352,
+          "tw_ns": 1795629743322187533
+        }
+      }
+    },
+    "pmus_books": {
+      "key": "cpc-btc-updown-5m-2026-11-25-1800z",
+      "quality": "REST upstream freshness unverified",
+      "source": {
+        "bytes": 12167213,
+        "file": "pmus_books/20261125/18.dtape.zst",
+        "sha256": "13f0886c049da44c1d3a05c68dd37b99665517beb33c9deaa436270d6c060851"
+      },
+      "states": {
+        "addition_1": {
+          "ask": 0.86,
+          "ask_size": 8.84,
+          "bid": 0.85,
+          "bid_size": 1799.65,
+          "receipt_age_ms": 646.807567,
+          "seq": 692,
+          "tw_ns": 1795629742350391683
+        },
+        "addition_2": {
+          "ask": 0.86,
+          "ask_size": 8.84,
+          "bid": 0.85,
+          "bid_size": 1799.65,
+          "receipt_age_ms": 659.518787,
+          "seq": 692,
+          "tw_ns": 1795629742350391683
+        },
+        "execution": {
+          "ask": 0.86,
+          "ask_size": 8.84,
+          "bid": 0.85,
+          "bid_size": 1799.65,
+          "receipt_age_ms": 720.589586,
+          "seq": 700,
+          "tw_ns": 1795629743321546428
+        }
+      }
+    },
+    "spot_coinbase": {
+      "key": "BTC-USD",
+      "quality": "public spot trade",
+      "source": {
+        "bytes": 9353771,
+        "file": "spot_coinbase/20261125/18.dtape.zst",
+        "sha256": "67e60bd01f8c3a8827d7128b52d6f8dd27669236b79b88c72d4d2208afad5f8f"
+      },
+      "states": {
+        "addition_1": {
+          "receipt_age_ms": 244.907319,
+          "seq": 4825,
+          "trade_price_usd": 59654.97,
+          "tw_ns": 1795629742752291931,
+          "venue_time": "2026-11-25T18:02:22.705642Z"
+        },
+        "addition_2": {
+          "receipt_age_ms": 257.618539,
+          "seq": 4825,
+          "trade_price_usd": 59654.97,
+          "tw_ns": 1795629742752291931,
+          "venue_time": "2026-11-25T18:02:22.705642Z"
+        },
+        "execution": {
+          "receipt_age_ms": 196.902279,
+          "seq": 4845,
+          "trade_price_usd": 59647.85,
+          "tw_ns": 1795629743845233735,
+          "venue_time": "2026-11-25T18:02:23.818066Z"
+        }
+      }
+    }
+  },
+  "source": {
+    "bytes": 236324236,
+    "file": "clob_btc_5m/20261125/18.dtape.zst",
+    "sha256": "9691cd2cc196e6d9e5a36dedf10eba79a9d4cfbacb3146aa6bcda53dc83de883"
+  }
+}

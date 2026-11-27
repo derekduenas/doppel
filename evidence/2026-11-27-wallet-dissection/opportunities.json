@@ -1,0 +1,747 @@
+{
+  "candidate": "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c",
+  "control": "0x28cc505fb60501dbb2199a9662ba175919af904f",
+  "economic_labels": "Counts include every matched economic fill row of the wallet, by the actual token's market. Interval counts use half-open block time. Market selection uses the full source ledger. Pairing measures conditional-token holdings over that ledger after reconciliation.",
+  "full_report_sha256": "1155ca5ce8d27ef21223a772cc3121e91dd625e1e5ca6ac01ebcafe585a3bd7a",
+  "layer1_summary_sha256": "652d8f5225786fc83ebca8c5cd3b8e06d6eb4803465977778fd8a3973103eae2",
+  "primary": {
+    "cell_s": 10,
+    "coverage_state_fields": [
+      "identity_observed",
+      "book_state",
+      "capture_integrity",
+      "eligible"
+    ],
+    "economic_sources": {
+      "0x28cc505fb60501dbb2199a9662ba175919af904f": {
+        "all_reconciled_fills": 35,
+        "economic_pairing_in_ledger_window": {
+          "completing_share_of_buys": 0.2256,
+          "coverage": "complete",
+          "event_time_anchors_consistent": true,
+          "interpolated_event_blocks": 0,
+          "log_timestamp_event_blocks": 20,
+          "longest_one_sided_s": 420,
+          "paired_share_of_holding_time": 0.2249
+        },
+        "ledger_sha256": "9c528de64e36fb2e44b5257f7f86018dae61a472a0de1ea90b3faf9632909952",
+        "ledger_window_time": [
+          1795629600,
+          1795630500
+        ],
+        "order_manifest_sha256": "d60083957ca6fec33781adee8b9e37c55b39159bae51276b3fc6ff1d83b15f47",
+        "store_manifest_sha256": "716acfdf84aa831c05b451201488ebc0ac609ce875625a549cbf53034d4f980e",
+        "token_metadata_sha256": "72f6055444f589d317fb24716b0dc9bb222a6d63b00fbc540ec82534abac0875"
+      },
+      "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": {
+        "all_reconciled_fills": 30,
+        "economic_pairing_in_ledger_window": {
+          "completing_share_of_buys": 0.3346,
+          "coverage": "complete",
+          "event_time_anchors_consistent": true,
+          "interpolated_event_blocks": 0,
+          "log_timestamp_event_blocks": 19,
+          "longest_one_sided_s": 677,
+          "paired_share_of_holding_time": 0.5517
+        },
+        "ledger_sha256": "13c190f982c5d84fbfbd3f1a7f025e6ead0411254dedff464a6aa8d843c8543d",
+        "ledger_window_time": [
+          1795629600,
+          1795630500
+        ],
+        "order_manifest_sha256": "d60083957ca6fec33781adee8b9e37c55b39159bae51276b3fc6ff1d83b15f47",
+        "store_manifest_sha256": "716acfdf84aa831c05b451201488ebc0ac609ce875625a549cbf53034d4f980e",
+        "token_metadata_sha256": "72f6055444f589d317fb24716b0dc9bb222a6d63b00fbc540ec82534abac0875"
+      }
+    },
+    "excluded_wallet_transactions": 65,
+    "fills_outside_scheduled_windows": {
+      "0x28cc505fb60501dbb2199a9662ba175919af904f": {},
+      "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": {}
+    },
+    "from": 1795629600,
+    "interpretation": "Reconciled fills are retrospective labels. Missing wallet fills in an observed market leave posting, cancellation and deliberate nonparticipation unknown.",
+    "scope": [
+      [
+        "btc",
+        "5m"
+      ]
+    ],
+    "sources": {
+      "missing": [
+        "rtds_a/20261125/17.dtape.zst",
+        "rtds_b/20261125/17.dtape.zst",
+        "clob_btc_5m/20261125/17.dtape.zst"
+      ],
+      "sources": [
+        {
+          "bytes": 22276105,
+          "file": "rtds_a/20261125/18.dtape.zst",
+          "sha256": "061a25175ea0bc31dfa5c5d3ab8dfa551958c3c3f710d7efbcec560b385d2437"
+        },
+        {
+          "bytes": 22309260,
+          "file": "rtds_b/20261125/18.dtape.zst",
+          "sha256": "acb266ce9db69bedcd14ae21ab981691daa8c3d1455811c00980796863afd0e8"
+        },
+        {
+          "bytes": 236324236,
+          "file": "clob_btc_5m/20261125/18.dtape.zst",
+          "sha256": "9691cd2cc196e6d9e5a36dedf10eba79a9d4cfbacb3146aa6bcda53dc83de883"
+        }
+      ]
+    },
+    "to": 1795630500,
+    "warmup_from": 1795629300,
+    "windows": [
+      {
+        "coverage_runs": [
+          {
+            "from": 1795629600,
+            "state": [
+              false,
+              "unknown",
+              null,
+              false
+            ],
+            "to": 1795629660
+          },
+          {
+            "from": 1795629660,
+            "state": [
+              true,
+              "two_sided",
+              "covered",
+              true
+            ],
+            "to": 1795629690
+          },
+          {
+            "from": 1795629690,
+            "state": [
+              true,
+              "two_sided",
+              "unbracketed_gap",
+              false
+            ],
+            "to": 1795629700
+          },
+          {
+            "from": 1795629700,
+            "state": [
+              true,
+              "two_sided",
+              "covered",
+              true
+            ],
+            "to": 1795629850
+          },
+          {
+            "from": 1795629850,
+            "state": [
+              true,
+              "one_sided",
+              null,
+              false
+            ],
+            "to": 1795629900
+          }
+        ],
+        "eligible_cells": 18,
+        "listed_cells": 24,
+        "scheduled_cells": 30,
+        "slug": "btc-updown-5m-1795629600",
+        "wallets": {
+          "0x28cc505fb60501dbb2199a9662ba175919af904f": {
+            "fills_in_market_over_source_ledger": 2,
+            "market_pairing_over_source_ledger": {
+              "completing": 2.872223,
+              "directional": 100.0,
+              "longest_one_sided_s": 420,
+              "max_one_sided": 97.127777,
+              "one_sided_at_end": 0.0,
+              "one_sided_share_s": 39851.1108,
+              "paired_share_s": 1177.61143,
+              "tokens": [
+                "56309084475058052347073243507166410713832612599997091400073130353157683326397",
+                "26573549377964720488352327783145014153434918240677129399684144995785340448937"
+              ]
+            },
+            "observation": "observed_fill",
+            "reconciled_fills": 2
+          },
+          "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": {
+            "fills_in_market_over_source_ledger": 8,
+            "market_pairing_over_source_ledger": {
+              "completing": 119.9783,
+              "directional": 132.5,
+              "longest_one_sided_s": 677,
+              "max_one_sided": 119.9783,
+              "one_sided_at_end": 12.5217,
+              "one_sided_share_s": 12020.033775,
+              "paired_share_s": 86504.7015,
+              "tokens": [
+                "56309084475058052347073243507166410713832612599997091400073130353157683326397",
+                "26573549377964720488352327783145014153434918240677129399684144995785340448937"
+              ]
+            },
+            "observation": "observed_fill",
+            "reconciled_fills": 8
+          }
+        },
+        "window_end": 1795629900,
+        "window_start": 1795629600,
+        "witnesses": [
+          {
+            "asset": "btc",
+            "end": 1795629900,
+            "hz": "5m",
+            "idx": 0,
+            "known_tw_ns": 1795629655190974688,
+            "slug": "btc-updown-5m-1795629600",
+            "start": 1795629600,
+            "token": "56309084475058052347073243507166410713832612599997091400073130353157683326397",
+            "witness_seq": 3,
+            "witness_source": "rtds_a"
+          },
+          {
+            "asset": "btc",
+            "end": 1795629900,
+            "hz": "5m",
+            "idx": 1,
+            "known_tw_ns": 1795629655268348379,
+            "slug": "btc-updown-5m-1795629600",
+            "start": 1795629600,
+            "token": "26573549377964720488352327783145014153434918240677129399684144995785340448937",
+            "witness_seq": 11,
+            "witness_source": "rtds_a"
+          }
+        ]
+      },
+      {
+        "coverage_runs": [
+          {
+            "from": 1795629900,
+            "state": [
+              true,
+              "two_sided",
+              "covered",
+              true
+            ],
+            "to": 1795630010
+          },
+          {
+            "from": 1795630010,
+            "state": [
+              true,
+              "unknown",
+              null,
+              false
+            ],
+            "to": 1795630020
+          },
+          {
+            "from": 1795630020,
+            "state": [
+              true,
+              "two_sided",
+              "covered",
+              true
+            ],
+            "to": 1795630170
+          },
+          {
+            "from": 1795630170,
+            "state": [
+              true,
+              "one_sided",
+              null,
+              false
+            ],
+            "to": 1795630200
+          }
+        ],
+        "eligible_cells": 26,
+        "listed_cells": 30,
+        "scheduled_cells": 30,
+        "slug": "btc-updown-5m-1795629900",
+        "wallets": {
+          "0x28cc505fb60501dbb2199a9662ba175919af904f": {
+            "fills_in_market_over_source_ledger": 4,
+            "market_pairing_over_source_ledger": {
+              "completing": 25.55,
+              "directional": 89.5,
+              "longest_one_sided_s": 414,
+              "max_one_sided": 89.5,
+              "one_sided_at_end": 0.0,
+              "one_sided_share_s": 32049.6,
+              "paired_share_s": 4803.4,
+              "tokens": [
+                "16599607434803192236874979218239516696361280041607653234893024263809191304638",
+                "96723621375684216206364720060176277370795658884123655608402540140851063581789"
+              ]
+            },
+            "observation": "observed_fill",
+            "reconciled_fills": 4
+          },
+          "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": {
+            "fills_in_market_over_source_ledger": 6,
+            "market_pairing_over_source_ledger": {
+              "completing": 36.511105,
+              "directional": 114.994286,
+              "longest_one_sided_s": 581,
+              "max_one_sided": 78.483181,
+              "one_sided_at_end": 78.483181,
+              "one_sided_share_s": 37688.217115,
+              "paired_share_s": 15882.330675,
+              "tokens": [
+                "16599607434803192236874979218239516696361280041607653234893024263809191304638",
+                "96723621375684216206364720060176277370795658884123655608402540140851063581789"
+              ]
+            },
+            "observation": "observed_fill",
+            "reconciled_fills": 6
+          }
+        },
+        "window_end": 1795630200,
+        "window_start": 1795629900,
+        "witnesses": [
+          {
+            "asset": "btc",
+            "end": 1795630200,
+            "hz": "5m",
+            "idx": 0,
+            "known_tw_ns": 1795629700247137584,
+            "slug": "btc-updown-5m-1795629900",
+            "start": 1795629900,
+            "token": "16599607434803192236874979218239516696361280041607653234893024263809191304638",
+            "witness_seq": 2653,
+            "witness_source": "rtds_a"
+          },
+          {
+            "asset": "btc",
+            "end": 1795630200,
+            "hz": "5m",
+            "idx": 1,
+            "known_tw_ns": 1795629700353986760,
+            "slug": "btc-updown-5m-1795629900",
+            "start": 1795629900,
+            "token": "96723621375684216206364720060176277370795658884123655608402540140851063581789",
+            "witness_seq": 2683,
+            "witness_source": "rtds_a"
+          }
+        ]
+      },
+      {
+        "coverage_runs": [
+          {
+            "from": 1795630200,
+            "state": [
+              true,
+              "two_sided",
+              "covered",
+              true
+            ],
+            "to": 1795630360
+          },
+          {
+            "from": 1795630360,
+            "state": [
+              true,
+              "unknown",
+              null,
+              false
+            ],
+            "to": 1795630370
+          },
+          {
+            "from": 1795630370,
+            "state": [
+              true,
+              "two_sided",
+              "covered",
+              true
+            ],
+            "to": 1795630480
+          },
+          {
+            "from": 1795630480,
+            "state": [
+              true,
+              "one_sided",
+              null,
+              false
+            ],
+            "to": 1795630500
+          }
+        ],
+        "eligible_cells": 27,
+        "listed_cells": 30,
+        "scheduled_cells": 30,
+        "slug": "btc-updown-5m-1795630200",
+        "wallets": {
+          "0x28cc505fb60501dbb2199a9662ba175919af904f": {
+            "fills_in_market_over_source_ledger": 29,
+            "market_pairing_over_source_ledger": {
+              "completing": 202.919917,
+              "directional": 604.557418,
+              "longest_one_sided_s": 290,
+              "max_one_sided": 401.637501,
+              "one_sided_at_end": 401.637501,
+              "one_sided_share_s": 38287.466832,
+              "paired_share_s": 13190.556156,
+              "tokens": [
+                "25358391140914405191271405509990090097676791852086708468681237166507473717390",
+                "54836341314770413145827288195747538825505222885965449537239474178813385535967"
+              ]
+            },
+            "observation": "observed_fill",
+            "reconciled_fills": 29
+          },
+          "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": {
+            "fills_in_market_over_source_ledger": 16,
+            "market_pairing_over_source_ledger": {
+              "completing": 101.612858,
+              "directional": 265.666542,
+              "longest_one_sided_s": 296,
+              "max_one_sided": 235.666542,
+              "one_sided_at_end": 164.053684,
+              "one_sided_share_s": 39686.022974,
+              "paired_share_s": 7619.997196,
+              "tokens": [
+                "25358391140914405191271405509990090097676791852086708468681237166507473717390",
+                "54836341314770413145827288195747538825505222885965449537239474178813385535967"
+              ]
+            },
+            "observation": "observed_fill",
+            "reconciled_fills": 16
+          }
+        },
+        "window_end": 1795630500,
+        "window_start": 1795630200,
+        "witnesses": [
+          {
+            "asset": "btc",
+            "end": 1795630500,
+            "hz": "5m",
+            "idx": 0,
+            "known_tw_ns": 1795629743720926660,
+            "slug": "btc-updown-5m-1795630200",
+            "start": 1795630200,
+            "token": "25358391140914405191271405509990090097676791852086708468681237166507473717390",
+            "witness_seq": 4799,
+            "witness_source": "rtds_a"
+          },
+          {
+            "asset": "btc",
+            "end": 1795630500,
+            "hz": "5m",
+            "idx": 1,
+            "known_tw_ns": 1795629743760388985,
+            "slug": "btc-updown-5m-1795630200",
+            "start": 1795630200,
+            "token": "54836341314770413145827288195747538825505222885965449537239474178813385535967",
+            "witness_seq": 4817,
+            "witness_source": "rtds_a"
+          }
+        ]
+      }
+    ]
+  },
+  "protocol_sha256": "19f0de2eb88b82be57e9f44e5c690b293a27e91ea819b9a7acc5d4daaec32255",
+  "schema": "wallet-dissection-opportunities/1",
+  "secondary": {
+    "cell_s": 10,
+    "coverage_state_fields": [
+      "identity_observed",
+      "book_state",
+      "capture_integrity",
+      "eligible"
+    ],
+    "economic_sources": {
+      "0x28cc505fb60501dbb2199a9662ba175919af904f": {
+        "all_reconciled_fills": 2082,
+        "economic_pairing_in_ledger_window": {
+          "completing_share_of_buys": 0.279,
+          "coverage": "complete",
+          "event_time_anchors_consistent": true,
+          "interpolated_event_blocks": 0,
+          "log_timestamp_event_blocks": 1364,
+          "longest_one_sided_s": 683,
+          "paired_share_of_holding_time": 0.3143
+        },
+        "ledger_sha256": "c67c054bf7ae3c3f5bcbcb627fad79c3da5aac40df7ab38e3a2bfdc3aa89a372",
+        "ledger_window_time": [
+          1795632727,
+          1795719127
+        ],
+        "order_manifest_sha256": "3aab16dbaa9f7b1d182e06031556967667623260256b7e59fdd82a1a8d54f8fe",
+        "store_manifest_sha256": "b3208483994478024f18182602710d3896a6c58f04b412fc0173fc8c9f2814a9",
+        "token_metadata_sha256": "7ae259f2e20ef16802728bc1ce75a54cbaf9e50c313b7ffdb90dd06a93830535"
+      },
+      "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": {
+        "all_reconciled_fills": 4556,
+        "economic_pairing_in_ledger_window": {
+          "completing_share_of_buys": 0.361,
+          "coverage": "complete",
+          "event_time_anchors_consistent": true,
+          "interpolated_event_blocks": 0,
+          "log_timestamp_event_blocks": 3437,
+          "longest_one_sided_s": 22523,
+          "paired_share_of_holding_time": 0.444
+        },
+        "ledger_sha256": "9a7cf87049d2dbfb28700646d9e6092204b92f1ab42459eb30f86dbc08d9dc90",
+        "ledger_window_time": [
+          1795632727,
+          1795719127
+        ],
+        "order_manifest_sha256": "4af1e9a20ad450966639d4cce07272168fdb73743b4ed4fb2ea5a78779bf6b30",
+        "store_manifest_sha256": "14b34170fa5afa84f4c4d26e2af1f1320b33c6bdd6963141eb516793bf84e7bb",
+        "token_metadata_sha256": "7ae259f2e20ef16802728bc1ce75a54cbaf9e50c313b7ffdb90dd06a93830535"
+      }
+    },
+    "excluded_wallet_transactions": 6617,
+    "fills_outside_scheduled_windows": {
+      "0x28cc505fb60501dbb2199a9662ba175919af904f": {},
+      "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": {}
+    },
+    "from": 1795646100,
+    "interpretation": "Reconciled fills are retrospective labels. Missing wallet fills in an observed market leave posting, cancellation and deliberate nonparticipation unknown.",
+    "scope": [
+      [
+        "btc",
+        "5m"
+      ]
+    ],
+    "sources": {
+      "missing": [],
+      "sources": [
+        {
+          "bytes": 13952866,
+          "file": "rtds_a/20261125/22.dtape.zst",
+          "sha256": "f3387714977ae778c575cb058fbdb6fadf0d67f393edb6bb8dca90aab7cb2c09"
+        },
+        {
+          "bytes": 14117975,
+          "file": "rtds_b/20261125/22.dtape.zst",
+          "sha256": "95dda05ba8e2aed3caccc1323fac13b5e962c92f5f321c3fb3af58a27dc63b03"
+        },
+        {
+          "bytes": 161606967,
+          "file": "clob_btc_5m/20261125/22.dtape.zst",
+          "sha256": "1283f05f983b05c0d78ce3a49ee8be1b6a77ae5e81f8cfc19c92442c33c4ed76"
+        }
+      ]
+    },
+    "to": 1795646700,
+    "warmup_from": 1795645800,
+    "windows": [
+      {
+        "coverage_runs": [
+          {
+            "from": 1795646100,
+            "state": [
+              true,
+              "two_sided",
+              "covered",
+              true
+            ],
+            "to": 1795646290
+          },
+          {
+            "from": 1795646290,
+            "state": [
+              true,
+              "unknown",
+              null,
+              false
+            ],
+            "to": 1795646310
+          },
+          {
+            "from": 1795646310,
+            "state": [
+              true,
+              "two_sided",
+              "covered",
+              true
+            ],
+            "to": 1795646340
+          },
+          {
+            "from": 1795646340,
+            "state": [
+              true,
+              "one_sided",
+              null,
+              false
+            ],
+            "to": 1795646400
+          }
+        ],
+        "eligible_cells": 22,
+        "listed_cells": 30,
+        "scheduled_cells": 30,
+        "slug": "btc-updown-5m-1795646100",
+        "wallets": {
+          "0x28cc505fb60501dbb2199a9662ba175919af904f": {
+            "fills_in_market_over_source_ledger": 9,
+            "market_pairing_over_source_ledger": {
+              "completing": 105.361916,
+              "directional": 107.846236,
+              "longest_one_sided_s": 334,
+              "max_one_sided": 91.347826,
+              "one_sided_at_end": 0.0,
+              "one_sided_share_s": 17124.055539,
+              "paired_share_s": 15837.534036,
+              "tokens": [
+                "69270187812658973764878331163638895357121768890166931199657371380410922626686",
+                "69990569206471560858218686010904437571142128952020895140117423931790772786824"
+              ]
+            },
+            "observation": "observed_fill",
+            "reconciled_fills": 9
+          },
+          "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": {
+            "fills_in_market_over_source_ledger": 0,
+            "market_pairing_over_source_ledger": null,
+            "observation": "no_observed_fill_in_partially_observed_market",
+            "reconciled_fills": 0
+          }
+        },
+        "window_end": 1795646400,
+        "window_start": 1795646100,
+        "witnesses": [
+          {
+            "asset": "btc",
+            "end": 1795646400,
+            "hz": "5m",
+            "idx": 0,
+            "known_tw_ns": 1795645896739269240,
+            "slug": "btc-updown-5m-1795646100",
+            "start": 1795646100,
+            "token": "69270187812658973764878331163638895357121768890166931199657371380410922626686",
+            "witness_seq": 294883,
+            "witness_source": "rtds_b"
+          },
+          {
+            "asset": "btc",
+            "end": 1795646400,
+            "hz": "5m",
+            "idx": 1,
+            "known_tw_ns": 1795645896791150231,
+            "slug": "btc-updown-5m-1795646100",
+            "start": 1795646100,
+            "token": "69990569206471560858218686010904437571142128952020895140117423931790772786824",
+            "witness_seq": 294895,
+            "witness_source": "rtds_b"
+          }
+        ]
+      },
+      {
+        "coverage_runs": [
+          {
+            "from": 1795646400,
+            "state": [
+              true,
+              "two_sided",
+              "covered",
+              true
+            ],
+            "to": 1795646630
+          },
+          {
+            "from": 1795646630,
+            "state": [
+              true,
+              "one_sided",
+              null,
+              false
+            ],
+            "to": 1795646700
+          }
+        ],
+        "eligible_cells": 23,
+        "listed_cells": 30,
+        "scheduled_cells": 30,
+        "slug": "btc-updown-5m-1795646400",
+        "wallets": {
+          "0x28cc505fb60501dbb2199a9662ba175919af904f": {
+            "fills_in_market_over_source_ledger": 7,
+            "market_pairing_over_source_ledger": {
+              "completing": 199.0,
+              "directional": 273.696087,
+              "longest_one_sided_s": 371,
+              "max_one_sided": 243.696087,
+              "one_sided_at_end": 0.0,
+              "one_sided_share_s": 23073.506968,
+              "paired_share_s": 28394.26,
+              "tokens": [
+                "19209346529847831937064437844739455632210270821818937982370290511777843963836",
+                "115483075861558211802481592012767243838827561776329501121429086938081229889448"
+              ]
+            },
+            "observation": "observed_fill",
+            "reconciled_fills": 7
+          },
+          "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": {
+            "fills_in_market_over_source_ledger": 1,
+            "market_pairing_over_source_ledger": {
+              "completing": 0.0,
+              "directional": 40.0,
+              "longest_one_sided_s": 334,
+              "max_one_sided": 40.0,
+              "one_sided_at_end": 0.0,
+              "one_sided_share_s": 13360.0,
+              "paired_share_s": 0.0,
+              "tokens": [
+                "19209346529847831937064437844739455632210270821818937982370290511777843963836",
+                "115483075861558211802481592012767243838827561776329501121429086938081229889448"
+              ]
+            },
+            "observation": "observed_fill",
+            "reconciled_fills": 1
+          }
+        },
+        "window_end": 1795646700,
+        "window_start": 1795646400,
+        "witnesses": [
+          {
+            "asset": "btc",
+            "end": 1795646700,
+            "hz": "5m",
+            "idx": 0,
+            "known_tw_ns": 1795645952589589660,
+            "slug": "btc-updown-5m-1795646400",
+            "start": 1795646400,
+            "token": "19209346529847831937064437844739455632210270821818937982370290511777843963836",
+            "witness_seq": 296163,
+            "witness_source": "rtds_b"
+          },
+          {
+            "asset": "btc",
+            "end": 1795646700,
+            "hz": "5m",
+            "idx": 1,
+            "known_tw_ns": 1795645952626779125,
+            "slug": "btc-updown-5m-1795646400",
+            "start": 1795646400,
+            "token": "115483075861558211802481592012767243838827561776329501121429086938081229889448",
+            "witness_seq": 296171,
+            "witness_source": "rtds_b"
+          }
+        ]
+      }
+    ]
+  },
+  "secondary_protocol_sha256": "2f59bb43e569348d19fe08bef1e73528294607f1e0e5a7bc3dc8fd1f4db4a8ff",
+  "secondary_selection": {
+    "earlier_pairs_checked": 12,
+    "end": 1795646700,
+    "ledger_scope_candidate_fill_counts": {
+      "btc-updown-5m-1795646100": 0,
+      "btc-updown-5m-1795646400": 1
+    },
+    "start": 1795646100
+  }
+}
