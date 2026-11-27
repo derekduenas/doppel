@@ -84,7 +84,7 @@ async def run(data: Path, only: set[str], seconds: float | None, *, require_brti
             if time.monotonic() >= next_receipt_check:
                 try:
                     await asyncio.to_thread(finish_receipts, data, last_hour, require_brti_import)
-                except (OSError, ValueError) as exc:
+                except Exception as exc:  # bookkeeping must never stop capture (release review)
                     logging.warning("receipt tracking failed: %s", exc)
                 next_receipt_check = time.monotonic() + 60
             try:

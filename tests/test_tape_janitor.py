@@ -42,3 +42,18 @@ def test_entry_point_refuses_future_only_tree_below_floor(tmp_path):
     assert subprocess.run(["sh", script, str(root), "1000000"]).returncode == 1
     assert future.is_dir()
     assert "nothing deletable" in (root / "janitor.log").read_text()
+
+
+def test_protected_days_survive_and_one_run_deletes_one_day(tmp_path, monkeypatch):
+    """Release review 2026-11-27: with free space pinned below the floor the janitor deleted every
+    closed day in a row, including registered evaluation inputs."""
+    root = tmp_path / "tape"
+    for day in ("20000101", "20000102", "20000103"):
+        (root / "pmus_ws_5m" / day).mkdir(parents=True)
+    (root / "janitor-protect.txt").write_text("20000102\n")
+    monkeypatch.setattr(janitor.shutil, "disk_usage", lambda _: SimpleNamespace(free=0))  # never recovers
+    assert janitor.prune(root, 12) == 0
+    assert sorted(p.name for p in (root / "pmus_ws_5m").iterdir()) == ["20000102", "20000103"]  # one day only
+    assert janitor.prune(root, 12) == 0
+    assert [p.name for p in (root / "pmus_ws_5m").iterdir()] == ["20000102"]                    # protected stays
+    assert janitor.prune(root, 12) == 1 and (root / "pmus_ws_5m" / "20000102").is_dir()         # nothing deletable
