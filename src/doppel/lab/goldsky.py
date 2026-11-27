@@ -404,7 +404,7 @@ def _cohort(a, ledger: Ledger, key: str) -> int:
     if not a.execute or worst == 0:
         return 0
     end = a.end or int(time.time())
-    start = end - int(a.days * 86400)
+    start = end - round(a.days * 86400)  # round: a float day count must reproduce the exact interval
     tag = doc["sha256"][:12]
     spent = 0
     with activity_writer(a.data) as writer:

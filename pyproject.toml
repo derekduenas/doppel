@@ -55,6 +55,8 @@ doppel-desk = "doppel.desk.cli:main"
 doppel-answerkey = "doppel.lab.answerkey:main"
 doppel-absorb = "doppel.lab.absorb:main"
 doppel-opening-parity = "doppel.lab.opening_parity:main"
+doppel-absorb-cohort = "doppel.lab.absorb_cohort:main"
+doppel-census-absorbed = "doppel.lab.absorb_cohort:census_main"
 
 [dependency-groups]
 dev = [
