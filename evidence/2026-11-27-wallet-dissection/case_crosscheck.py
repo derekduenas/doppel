@@ -12,6 +12,7 @@ import orjson
 from doppel.lab.goldsky_proof import digest
 from doppel.lab.structural import parse_kalshi_rest, parse_pmus_ws
 from doppel.tape.segment import read_segment, segment_path
+from doppel.tape.universe import pmus_slug
 
 NS = 10**9
 
@@ -28,9 +29,8 @@ def sealed(root, stream, start):
 
 def public_context(root, cutoff_marks, start):
     """As-of last quote/trade actually received, with upstream freshness kept separate."""
-    opening = datetime.fromtimestamp(start, timezone.utc)
     close = datetime.fromtimestamp(start + 900, timezone.utc).astimezone(ZoneInfo("America/New_York"))
-    pm = "cpcbtc-btc-updown-5m-" + opening.strftime("%Y-%m-%d-%H%Mz")
+    pm = pmus_slug("btc", "5m", start)
     kalshi = "KXBTC15M-" + close.strftime("%y%b%d%H%M-%M").upper()
     reports = {}
     for stream, key in (("kalshi_books", kalshi), ("pmus_books", pm), ("spot_coinbase", "BTC-USD")):
