@@ -51,8 +51,19 @@ def test_marks_signed_net_of_fee_and_block_anchor():
     (re,) = mo.reanchor([blk], {"0xabc": S * NS + 7})
     assert re.anchor == "receive" and re.t_ns == S * NS + 7
     rows = [(buy, m, "w")]
-    net = mo.curve(rows, net=True, n_boot=50)["by_h"]["2s"]["mean_c"]
+    net = mo.curve(rows, fee="paid", n_boot=50)["by_h"]["2s"]["mean_c"]
     assert net == 8.0
+
+
+def test_net_markout_fee_tiers_side_by_side():
+    """+1.5 c at 50 c on 100 contracts: positive only under the rebated API rate and maker 0."""
+    p = _path([(S * NS, 0.49, 0.51), ((S + 1) * NS, 0.505, 0.525)])
+    f = Fill("k", S * NS, "buy", 0.50, 100, 0.0, "taker", "receive")
+    rows = [(f, mo.marks(f, p, fair=False), "w")]
+    net = {t: mo.curve(rows, fee=t, n_boot=50)["by_h"]["2s"]["mean_c"] for t in mo.TIERS}
+    assert net == {"gateway_0095": -0.88, "api_base_0695": -0.24, "api_live_rebated": 0.978, "maker_0": 1.5}
+    res = mo.analyse([f], {"k": p}, n_boot=50)["groups"]["all"]
+    assert set(res["mid_net"]) == {"paid", *mo.TIERS} and set(res["fair_net"]) == {"paid", *mo.TIERS}
 
 
 # ---------------------------------------------------------------- planted shapes

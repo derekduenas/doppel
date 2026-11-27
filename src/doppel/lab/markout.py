@@ -17,8 +17,20 @@ FILLS (format detected per file):
 Measurement (no look-ahead, our receive clock): the mid at t + h is the last book RECEIVED at or
 before t + h (never the next one); a gap record after that book makes it unknown; at or after the
 window end the mark is the settlement (100 * outcome), exactly the twin's ``_mid_c``. Markouts are
-cents per contract, signed for the fill's side (buy: mark - px, sell: px - mark); ``net`` subtracts
-the fee the fill paid (100 * fee / qty). Fair marks use ``fair_up_asof`` (BRTI received by t + h,
+cents per contract, signed for the fill's side (buy: mark - px, sell: px - mark). Net curves come
+in five columns side by side, never one: ``paid`` subtracts the fee recorded on the fill (100 * fee /
+qty), and the four PM US fee tiers (``TIERS``) subtract that schedule's fee at the fill's px and qty
+(one fill, cent half-even, ``xvenue.pmus_fee``), whatever the fill's role or venue:
+  gateway_0095      coef 0.095, the feeCoefficient the PM US gateway reports (worst case)
+  api_base_0695     coef 0.0695, PM US API takers (E25); the API rate after 2026-12-31
+  api_live_rebated  coef 0.0695 with 70% of the cent-rounded fee rebated through 2026-12-31
+                    (``pmus_fee(rebate=0.70)``, the xvenue model; effective ~0.02085 p(1-p))
+  maker_0           0 fee (PM US makers pay 0: a resting order)
+Which applies (per the PMUS_COEF comment in ``xvenue.py`` and E25, not reconciled to statements):
+our order path is the API, so a taker fill reads under ``api_live_rebated`` until 2026-12-31 and
+``api_base_0695`` after; ``gateway_0095`` is the bound if the gateway's coefficient is what is
+actually charged; a resting (maker) fill reads under ``maker_0``. For intl fills the tiers are a
+counterfactual "same fill on PM US"; ``paid`` is what the intl venue charged. Fair marks use ``fair_up_asof`` (BRTI received by t + h,
 the twin's 2 s BRTI delay) with the opening known at t + h (published revision received, else the
 received-raw computation). Goldsky fills carry chain block time, not our receive time: they are
 re-anchored to the receive time of the intl print with the same transaction hash when the tape has
@@ -54,6 +66,24 @@ SETTLE = "settle"
 BLOCK_UNRESOLVED_S = 2.0      # block-time anchors leave horizons <= this empty
 N_BOOT = 2000
 EARLY, LATE = 2.0, 60.0
+TIERS: dict[str, tuple[float, float]] = {      # name -> (coef, rebated fraction); see module docstring
+    "gateway_0095": (0.095, 0.0),
+    "api_base_0695": (0.0695, 0.0),
+    "api_live_rebated": (0.0695, 0.70),
+    "maker_0": (0.0, 0.0),
+}
+
+
+def tier_fee_usd(tier: str, px: float, qty: float) -> float:
+    """Dollars for ONE fill of qty at px under a PM US fee tier (cent half-even, then the rebate)."""
+    from .xvenue import pmus_fee
+    coef, rebate = TIERS[tier]
+    return pmus_fee(px, qty, coef=coef, rebate=rebate)
+
+
+def fee_c_by_tier(px: float, qty: float) -> dict[str, float]:
+    """Cents per contract of one fill under each tier."""
+    return {t: 100.0 * tier_fee_usd(t, px, qty) / qty if qty > 0 else 0.0 for t in TIERS}
 
 
 # ---------------------------------------------------------------------------- market paths
@@ -73,9 +103,10 @@ class MarketPath:
     index: Callable[[float], float | None] | None = None    # underlying index known at unix s
     cluster: int = 0                        # bootstrap block id (mechanisms: 15-min clock block)
     window: str = ""                        # markout bootstrap unit (default: key); intl: the market
+    bid_lv: list[tuple[tuple[float, float], ...]] = field(default_factory=list)  # L2 (px $, qty) best first,
+    ask_lv: list[tuple[tuple[float, float], ...]] = field(default_factory=list)  # parallel to tws; [] = no L2
 
-    def top_asof(self, t_ns: int) -> tuple[float | None, float | None] | None:
-        """(bid, ask) of the last book received at or before t_ns; None if unknown."""
+    def _j(self, t_ns: int) -> int | None:
         if self.valid_until is not None and t_ns > self.valid_until:
             return None
         j = bisect.bisect_right(self.tws, t_ns) - 1
@@ -84,7 +115,20 @@ class MarketPath:
         k = bisect.bisect_right(self.gaps, t_ns) - 1
         if k >= 0 and self.gaps[k] > self.tws[j]:
             return None
-        return self.bids[j], self.asks[j]
+        return j
+
+    def top_asof(self, t_ns: int) -> tuple[float | None, float | None] | None:
+        """(bid, ask) of the last book received at or before t_ns; None if unknown."""
+        j = self._j(t_ns)
+        return None if j is None else (self.bids[j], self.asks[j])
+
+    def levels_asof(self, t_ns: int) -> tuple[tuple[tuple[float, float], ...], tuple[tuple[float, float], ...]] | None:
+        """(bid levels, ask levels) of the last book received at or before t_ns, same rules as
+        ``top_asof``; None if unknown or if the path carries no L2 (never "the top holds it")."""
+        j = self._j(t_ns)
+        if j is None or len(self.bid_lv) != len(self.tws):
+            return None
+        return self.bid_lv[j], self.ask_lv[j]
 
     def mid_asof(self, t_ns: int) -> float | None:
         """Mid in cents at t_ns; the settlement value at or after the end."""
@@ -115,6 +159,8 @@ def path_from_window(wt, ref, raw: tuple[int, np.ndarray, np.ndarray] | None = N
         p.tws.append(b.tw)
         p.bids.append(b.best_bid if b.open else None)
         p.asks.append(b.best_ask if b.open else None)
+        p.bid_lv.append(b.bids if b.open else ())
+        p.ask_lv.append(b.asks if b.open else ())
     if raw is None and ref.raw is not None and ref.rcv is not None:
         raw = (ref.raw_t0, ref.raw, ref.rcv)
     if raw is not None:
@@ -299,7 +345,8 @@ def marks(f: Fill, path: MarketPath, horizons=HORIZONS, fair: bool = True) -> di
     """Per-fill signed markouts (cents/contract): {"mid": {h: gross}, "fair": {...}, "fee_c": ...}."""
     pc = 100.0 * f.px
     sign = 1.0 if f.side == "buy" else -1.0
-    out: dict = {"mid": {}, "fair": {}, "fee_c": 100.0 * f.fee_usd / f.qty if f.qty > 0 else 0.0}
+    out: dict = {"mid": {}, "fair": {}, "fee_c": 100.0 * f.fee_usd / f.qty if f.qty > 0 else 0.0,
+                 "fee_tiers_c": fee_c_by_tier(f.px, f.qty)}
     block = not f.anchor == "receive"
     for h in (*horizons, SETTLE):
         k = _hkey(h)
@@ -356,9 +403,10 @@ def _r(x):
     return None if x is None or not math.isfinite(x) else round(float(x), 4)
 
 
-def curve(rows: list[tuple[Fill, dict, int]], kind: str = "mid", net: bool = False,
+def curve(rows: list[tuple[Fill, dict, int]], kind: str = "mid", fee: str | None = None,
           horizons=HORIZONS, n_boot: int = N_BOOT, seed: int = 0) -> dict:
-    """rows: (fill, marks, cluster). Quantity-weighted mean per horizon with cluster-bootstrap CIs."""
+    """rows: (fill, marks, cluster). Quantity-weighted mean per horizon with cluster-bootstrap CIs.
+    fee: None = gross, "paid" = the fee recorded on the fill, else a ``TIERS`` name."""
     keys = [_hkey(h) for h in (*horizons, SETTLE)]
     if not rows:
         return {"n_fills": 0, "n_windows": 0, "by_h": {k: None for k in keys}}
@@ -369,7 +417,7 @@ def curve(rows: list[tuple[Fill, dict, int]], kind: str = "mid", net: bool = Fal
         for j, k in enumerate(keys):
             v = m[kind].get(k)
             if v is not None:
-                val[i, j] = v - (m["fee_c"] if net else 0.0)
+                val[i, j] = v - (0.0 if fee is None else m["fee_c"] if fee == "paid" else m["fee_tiers_c"][fee])
     ok = np.isfinite(val)
     est, draws = cluster_draws(cl, np.where(ok, val * q[:, None], 0.0), np.where(ok, q[:, None], 0.0), n_boot, seed)
     by = {}
@@ -378,7 +426,7 @@ def curve(rows: list[tuple[Fill, dict, int]], kind: str = "mid", net: bool = Fal
         by[k] = {"mean_c": _r(est[j]), "ci95": [_r(lo), _r(hi)], "n": int(ok[:, j].sum()),
                  "windows": int(len(set(cl[ok[:, j]])))}
     out = {"n_fills": len(rows), "n_windows": int(len(set(cl))), "contracts": round(float(q.sum()), 4), "by_h": by}
-    if kind == "mid" and not net and _hkey(EARLY) in keys and _hkey(LATE) in keys:
+    if kind == "mid" and fee is None and _hkey(EARLY) in keys and _hkey(LATE) in keys:
         e = keys.index(_hkey(EARLY))
         diffs = {}
         for late in (_hkey(LATE), SETTLE):
@@ -428,10 +476,11 @@ def analyse(fills: list[Fill], paths: dict[str, MarketPath], horizons=HORIZONS, 
     for g, rs in groups.items():
         if not rs:
             continue
-        gross = curve(rs, "mid", False, horizons, n_boot, seed)
-        out["groups"][g] = {"mid_gross": gross, "mid_net": curve(rs, "mid", True, horizons, n_boot, seed),
-                            "fair_gross": curve(rs, "fair", False, horizons, n_boot, seed),
-                            "fair_net": curve(rs, "fair", True, horizons, n_boot, seed),
+        gross = curve(rs, "mid", None, horizons, n_boot, seed)
+        out["groups"][g] = {"mid_gross": gross,
+                            "mid_net": {k: curve(rs, "mid", k, horizons, n_boot, seed) for k in ("paid", *TIERS)},
+                            "fair_gross": curve(rs, "fair", None, horizons, n_boot, seed),
+                            "fair_net": {k: curve(rs, "fair", k, horizons, n_boot, seed) for k in ("paid", *TIERS)},
                             "shape": classify(gross, maker=g == "maker")}
     return out
 
@@ -508,9 +557,11 @@ def main(argv=None) -> int:
     a.out.parent.mkdir(parents=True, exist_ok=True)
     a.out.write_bytes(orjson.dumps(res, option=orjson.OPT_INDENT_2))
     for g, v in res["groups"].items():
-        by = v["mid_net"]["by_h"]
-        print(f"{g:6} fills={v['mid_net']['n_fills']} windows={v['mid_net']['n_windows']} shape={v['shape']} net c/ct: "
-              + " ".join(f"{k}={b['mean_c']}" for k, b in by.items() if b))
+        gr = v["mid_gross"]
+        print(f"{g:6} fills={gr['n_fills']} windows={gr['n_windows']} shape={v['shape']} gross c/ct: "
+              + " ".join(f"{k}={b['mean_c']}" for k, b in gr["by_h"].items() if b))
+        for k, c in v["mid_net"].items():
+            print(f"       net[{k}] c/ct: " + " ".join(f"{h}={b['mean_c']}" for h, b in c["by_h"].items() if b))
     return 0
 
 
