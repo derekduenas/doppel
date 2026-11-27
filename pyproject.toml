@@ -55,6 +55,9 @@ doppel-desk = "doppel.desk.cli:main"
 doppel-answerkey = "doppel.lab.answerkey:main"
 doppel-absorb = "doppel.lab.absorb:main"
 doppel-opening-parity = "doppel.lab.opening_parity:main"
+doppel-markout = "doppel.lab.markout:main"
+doppel-skilldecay = "doppel.lab.skilldecay:main"
+doppel-mechanisms = "doppel.lab.mechanisms:main"
 
 [dependency-groups]
 dev = [
