@@ -120,9 +120,34 @@ There is one line per page and one per stop, written under the pull lock:
 ## What the Mac check proved, and what to validate on Apex
 
 - **Mac.** The real-wallet sanity run had no fill store, so it can only show chain self-consistency: the log scan explains the `balanceOf` deltas, and the `OrderFilled` logs line up with the transfer legs. See the commit report.
-- **Apex, step 1.** Build pagination records: re-pull the cohort with `--end` fixed. Older pulls have none, so every wallet is `goldsky_incomplete` until then.
-- **Apex, step 2.** Find the publicnode/drpc `eth_getLogs` span limit, and check that historical `eth_call` works at day-old blocks (archive state). If it does not, every wallet is `balances_unavailable`.
+- **Apex, step 1.** For the captured cohort day ending Nov 26 at 18:52:07 UTC, use the recovered pagination proof below. For another interval, verify coverage independently. Paid resumes must use the original window and the shared spending ledger.
+- **Apex, step 2.** Verify availability for the selected historical blocks on the configured log and state routes. An unavailable historical balance prevents reconciliation.
 - **Apex, step 3.** Run on a few G0-passing wallets for one day.
   - Check that `fill_check.order_filled.matched` equals the chain count: Goldsky `amount_*`/`fee` match `OrderFilled`.
   - Check that cash residuals are zero. This confirms the fee convention for both roles. Taker BUYs in `_matchBuyOrders` may receive a surplus refund, which would show as `cash_residual`.
 - **Apex, step 4.** Only then use `not_reconciled` to filter census and G1 rankings.
+
+## Recovering pagination from retained tape
+
+For a closed capture, verify its manifest hash, strict Zstandard frame and record CRC, the
+request wallet and interval, returned row ownership and timestamps, and continuity from the
+first request through the terminal cursor. A wallet ending with a live cursor is explicitly
+incomplete. Missing wallets stay absent. Output is a new directory, separate from the live
+pagination ledger. The resulting `pagination.jsonl` is accepted directly by `doppel-absorb --pages`.
+
+```sh
+python -m doppel.lab.goldsky_proof --data "$tape" --cohort "$lab/cohorts/cohort-v1.json" \
+  --start 1795632727 --end 1795719127 \
+  --segments 20261126/18.dtape.zst 20261126/19.dtape.zst --out "$new_dir"
+```
+
+The [offline Apex proof](../evidence/2026-11-27-absorption-pagination.json) covers 148 complete
+wallet histories among 150 frozen cohort members, at zero additional provider cost.
+Two histories still have live cursors. Keep their incomplete status when selecting a pilot.
+The production fill-store state inspected on Nov 27 had only Nov 25 input segments.
+Compact the selected Nov 26 data to an isolated fill store before reconciling a wallet.
+The proof establishes provider pagination over the captured filters. Independent event
+matches and balance agreement remain requirements for wallet reconciliation.
+
+The proof, including wallet-level rows, is on Apex under
+`/var/backups/doppel-sealed-20261126/research/pagination-proof.ZN8b5q/proof`.

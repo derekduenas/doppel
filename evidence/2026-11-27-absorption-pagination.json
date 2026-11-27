@@ -1,0 +1,27 @@
+{
+  "source": "sealed_goldsky_pages",
+  "interval": [
+    1795632727,
+    1795719127
+  ],
+  "segments": {
+    "20261126/18.dtape.zst": {
+      "bytes": 47965150,
+      "sha256": "8d7b972b0e878c156f5a18cace50937cc078c7f31617e9c8da62b5ab555b70dd"
+    },
+    "20261126/19.dtape.zst": {
+      "bytes": 28021652,
+      "sha256": "56303bad125ba72d3c21b550c399173ecfe0d96bea2b7cb76b217af047eedc7f"
+    }
+  },
+  "cohort_sha256": "1775c0998506abf721e27ed3cb0043b5816b2dde587462034e55a4622a396b54",
+  "cohort_wallets": 150,
+  "queries": 150,
+  "complete": 148,
+  "missing": 0,
+  "incomplete": 2,
+  "pages": 704,
+  "rows": 619425,
+  "complete_rows": 569425,
+  "pagination_sha256": "dad73e8e145797eeff2fb971dd82abc7ff4a2e0dc7a4b1fbbbbc852b9cd078c0"
+}
