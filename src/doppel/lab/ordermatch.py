@@ -6,13 +6,26 @@ from ``matchOrders`` calldata, hash-verified). Only maker rows are matched; rows
 ``order_id`` are merged (fills summed per tx). Screen as in the E37 probe: ``created_ms`` inside
 [--from, --to) and 0 <= age_s < 600 at the first fill.
 
+``--orders`` is a JSONL sample (in file order) or the cohort parquet directory.
+Managed tapes use committed flush parts and require verified rows. Legacy exports without
+verification flags can be read standalone. If the source contains any verification flags,
+only rows marked true count.
+Directory rows are read oldest fill first, so "first fill" does not depend on the
+order the parts were written in. A cohort run verifies the cohort's own fills only, so other
+makers in the same txs are ``verified == False`` and are left out: ``other_known`` then counts
+only other COHORT wallets, ``identity_precision_upper`` is NOT MEASURED (it reads near 1.0 or
+null) and ``others_pooled`` holds cohort wallets only. Maker rows created outside [--from, --to) are dropped while reading and
+counted in rows (``rows_out_of_range``), not in orders.
+
 WHAT IS IDENTIFIED (from data) AND WHAT IS ASSUMED
 
 1. Placement. An order (token, side, limit, size, created_ms) is "matched" to a level increase at
    (token, limit, side) whose delta equals its size (|delta - size| <= max(size_tol,
    size_tol_rel * size)) with venue time in created_ms + [lo_ms, hi_ms]. One-to-one: candidate
    (order, event) pairs are taken smallest |dt| first and each event serves one order. This is
-   evidence, not proof: someone else may have posted that size then. So the same test is run
+   evidence, not proof: someone else may have posted that size then. Each matched row records
+   how many size and timestamp candidates exist at its level up to its first located fill.
+   The same test is run
    with every created_ms shifted by +60 s (placebo). Rates are over "observable" orders: the
    asset's book state is known (``intlbook`` spans) across BOTH the real and the placebo window,
    so the two rates share a denominator. (E37 used orders with any level event at their price and
@@ -77,14 +90,17 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import orjson
+import pyarrow.parquet as pq
 
 from .flow import _ts
 from .intlbook import IntlBook, LevelEvent, Print, px, replay
+from .ordertape import STATE_DIR, committed_parts
 
 Key = tuple[str, float, str]  # asset, price, side
 MAX_AGE_S = 600.0
@@ -138,37 +154,83 @@ def filled_shares(row: dict) -> float:
     return fa / 1e6 / row["limit"]
 
 
+PARQUET_COLS = ("tx", "block_ts", "role", "order_id", "maker", "token_id", "side", "size", "limit",
+                "maker_amount", "taker_amount", "fill_amount", "created_ms", "age_s", "verified")
+
+
+def _jsonl_rows(path: Path):
+    with open(path, "rb") as fh:
+        for line in fh:
+            if line.strip():
+                yield orjson.loads(line)
+
+
+def _parquet_rows(path: Path, t_from: int, t_to: int, active: dict[str, set[str]],
+                  stats: Counter) -> list[dict]:
+    """Maker rows of an ordertape directory created in [t_from, t_to), oldest fill first. Only
+    ``verified == True`` rows count (when the column exists); every counted row, whatever its role
+    or time, adds its token to ``active``. One part is in memory at a time."""
+    keep: list[dict] = []
+    managed = (path / STATE_DIR).is_dir()
+    schemas = {p: pq.read_schema(p).names for p in committed_parts(path, allow_legacy=True)}
+    flagged = any("verified" in names for names in schemas.values())
+    for p, names in schemas.items():
+        if managed and "verified" not in names:
+            raise ValueError(f"committed order tape part lacks verification flags: {p}")
+        for r in pq.read_table(p, columns=[c for c in PARQUET_COLS if c in names]).to_pylist():
+            if flagged and r.get("verified") is not True:
+                stats["rows_not_verified"] += 1
+                continue
+            active[r["maker"].lower()].add(r["token_id"])
+            if r["role"] != "maker":
+                continue
+            c = r["created_ms"]
+            if c is None or not t_from * 1000 <= c < t_to * 1000:
+                stats["rows_out_of_range"] += 1
+                continue
+            keep.append(r)
+    keep.sort(key=lambda r: (r["block_ts"], r["tx"]))
+    return keep
+
+
 def load_orders(path: Path, t_from: int, t_to: int) -> tuple[list[Order], dict[str, set[str]], Counter]:
-    """Screened maker orders (one per order_id), every maker's tokens (any role), counts."""
+    """Screened maker orders (one per order_id), every maker's tokens (any role), counts.
+    ``path`` is a JSONL file or an ordertape parquet directory (see the module docstring)."""
     orders: dict[str, Order] = {}
     active: dict[str, set[str]] = defaultdict(set)
     stats: Counter = Counter()
     skip: set[str] = set()
-    with open(path, "rb") as fh:
-        for line in fh:
-            if not line.strip():
+    path = Path(path)
+    if path.is_dir():
+        rows = _parquet_rows(path, t_from, t_to, active, stats)
+        flagged = False  # parquet rows already screened, including non-makers in active
+    else:
+        flagged = any("verified" in r for r in _jsonl_rows(path))
+        rows = _jsonl_rows(path)
+    for r in rows:
+        if flagged and r.get("verified") is not True:
+            stats["rows_not_verified"] += 1
+            continue
+        active[r["maker"].lower()].add(r["token_id"])
+        if r.get("role") != "maker":
+            continue
+        oid = r["order_id"]
+        if oid in skip:
+            continue
+        o = orders.get(oid)
+        if o is None:  # screen on the first row seen
+            age = r.get("age_s")
+            why = ("no_limit" if not r.get("limit") else
+                   "out_of_range" if not t_from * 1000 <= r["created_ms"] < t_to * 1000 else
+                   "bad_age" if age is None or not 0 <= age < MAX_AGE_S else None)
+            if why:
+                stats[f"screened:{why}"] += 1
+                skip.add(oid)
                 continue
-            r = orjson.loads(line)
-            active[r["maker"].lower()].add(r["token_id"])
-            if r.get("role") != "maker":
-                continue
-            oid = r["order_id"]
-            if oid in skip:
-                continue
-            o = orders.get(oid)
-            if o is None:  # screen on the first row seen
-                age = r.get("age_s")
-                why = ("no_limit" if not r.get("limit") else
-                       "out_of_range" if not t_from * 1000 <= r["created_ms"] < t_to * 1000 else
-                       "bad_age" if age is None or not 0 <= age < MAX_AGE_S else None)
-                if why:
-                    stats[f"screened:{why}"] += 1
-                    skip.add(oid)
-                    continue
-                o = orders[oid] = Order(oid, r["maker"].lower(), r["token_id"], r["side"],
-                                        px(r["limit"]), float(r["size"]), int(r["created_ms"]))
-            sh, _ = o.fills.get(r["tx"], (0.0, None))
-            o.fills[r["tx"]] = (sh + filled_shares(r), r.get("block_ts"))
+            o = orders[oid] = Order(oid, r["maker"].lower(), r["token_id"], r["side"],
+                                    px(r["limit"]), float(r["size"]), int(r["created_ms"]))
+        sh, _ = o.fills.get(r["tx"], (0.0, None))
+        o.fills[r["tx"]] = (sh + filled_shares(r), r.get("block_ts"))
     stats["maker_orders"] = len(orders)
     return sorted(orders.values(), key=lambda o: (o.created_ms, o.order_id)), dict(active), stats
 
@@ -276,6 +338,16 @@ def observable(o: Order, tape: LevelTape, p: Params, shift_ms: int = 0) -> bool:
     return tape.known_over(o.token, t + p.lo_ms, t + p.hi_ms)
 
 
+def placement_candidate_count(events: list[LevelEvent], created_ms: int, size: float, p: Params,
+                              first_fill_ms: int | None) -> int:
+    """Count plausible book increases before applying one-to-one assignment."""
+    lo = created_ms + p.lo_ms
+    hi = created_ms + p.hi_ms
+    if first_fill_ms is not None:
+        hi = min(hi, first_fill_ms)
+    return sum(lo <= e.venue_ms <= hi and p.near(e.delta, size) for e in events)
+
+
 # ---------------------------------------------------------------- follow-forward
 def follow(tape: LevelTape, key: Key, i0: int, r: float, start_ms: int,
            claimed: set[tuple[Key, int]], p: Params) -> dict:
@@ -335,6 +407,8 @@ def classify(o: Order, key: Key, i0: int, tape: LevelTape, claimed: set[tuple[Ke
            "price": o.price, "size": o.size, "created_ms": o.created_ms,
            "placed_venue_ms": place.venue_ms, "placed_tw_ns": place.tw_ns, "placed_src": place.src,
            "sign_to_book_ms": place.venue_ms - o.created_ms,
+           "placement_candidates": placement_candidate_count(
+               tape.events[key], o.created_ms, o.size, p, min(located, default=None)),
            "filled": round(o.filled, 6), "remainder": round(r, 6), "n_fills": len(o.fills),
            "fills_located": len(located), "print_price_ok": n_price_ok, "print_size_ok": n_size_ok,
            "fills_at": fills_at}
@@ -370,8 +444,11 @@ def fingerprint(sizes: list[float]) -> list[float]:
 
 def attribute(wallet: str, sizes: list[float], orders: list[Order],
               matches: dict[str, tuple[Key, int]], active: set[str], tape: LevelTape,
-              claimed: set[tuple[Key, int]], p: Params) -> tuple[dict, list[dict]]:
-    """Fingerprint-size bid increases split into own / other_known / candidate / control."""
+              claimed: set[tuple[Key, int]], p: Params,
+              sink: Callable[[dict], object] | None = None) -> tuple[dict, list[dict]]:
+    """Fingerprint-size bid increases split into own / other_known / candidate / control.
+    With ``sink`` each candidate row is handed to it and not kept (the returned list is empty):
+    a quote-flickering wallet has ~10^5 candidates per hour."""
     active = active | {tape.mate[t] for t in active if t in tape.mate}
     known: dict[bool, Counter] = {True: Counter(), False: Counter()}  # own? -> BUY-view (asset, price, ms)
     for o in orders:
@@ -385,6 +462,9 @@ def attribute(wallet: str, sizes: list[float], orders: list[Order],
         if o.maker == wallet and o.order_id not in matches and s is not None:
             per[s]["own_unmatched"] += 1
     rows: list[dict] = []
+    emit = sink or rows.append
+    outcomes: Counter = Counter()
+    lives: list[int] = []  # rest_max_ms of the candidates with a known end
     for key in sorted(k for k in tape.events if k[2] == "BUY"):
         for i, e in enumerate(tape.events[key]):
             s = next((z for z in sizes if p.near(e.delta, z)), None)
@@ -404,13 +484,16 @@ def attribute(wallet: str, sizes: list[float], orders: list[Order],
                 per[s]["candidates"] += 1
                 res = follow(tape, key, i, e.delta, e.venue_ms, claimed, p)
                 hi = res["end_ms"]
-                rows.append({"attribution": "fingerprint_candidate", "wallet": wallet,
-                             "token_id": key[0], "price": key[1], "side_view": "BUY",
-                             "venue_ms": e.venue_ms, "tw_ns": e.tw_ns, "size": round(e.delta, 6),
-                             "fp_size": s} | res | {
-                                 "rest_min_ms": (hi - e.venue_ms) if res["outcome"] == "cancelled" else 0,
-                                 "rest_max_ms": None if hi is None else hi - e.venue_ms,
-                                 "rest_known": res["outcome"] == "cancelled"})
+                outcomes[f"{res['outcome']}:{res['reason']}"] += 1
+                if res["outcome"] == "cancelled":
+                    lives.append(hi - e.venue_ms)
+                emit({"attribution": "fingerprint_candidate", "wallet": wallet,
+                      "token_id": key[0], "price": key[1], "side_view": "BUY",
+                      "venue_ms": e.venue_ms, "tw_ns": e.tw_ns, "size": round(e.delta, 6),
+                      "fp_size": s} | res | {
+                          "rest_min_ms": (hi - e.venue_ms) if res["outcome"] == "cancelled" else 0,
+                          "rest_max_ms": None if hi is None else hi - e.venue_ms,
+                          "rest_known": res["outcome"] == "cancelled"})
     h_act = tape.hours(active)
     h_ctl = tape.hours(set(tape.spans) - active)
 
@@ -432,8 +515,8 @@ def attribute(wallet: str, sizes: list[float], orders: list[Order],
     doc = {"sizes": sizes, "active_tokens": len(active), "active_token_hours": _r(h_act),
            "control_token_hours": _r(h_ctl), "total": line(total),
            "per_size": {str(s): line(c) for s, c in per.items()},
-           "candidate_outcomes": dict(Counter(f"{r['outcome']}:{r['reason']}" for r in rows)),
-           "candidate_rest_ms_cancelled": _q([r["rest_max_ms"] for r in rows if r["rest_known"]]),
+           "candidate_outcomes": dict(outcomes),
+           "candidate_rest_ms_cancelled": _q(lives),
            "note": "candidates are NOT identified as the wallet's; read net_estimate against "
                    "expected_by_chance and identity_precision_upper (see module docstring)"}
     return doc, rows
@@ -485,18 +568,29 @@ def summarize(name: str, orders: list[Order], matches: dict, placebo: dict, rows
 
 
 def run(root: Path, orders_path: Path, t_from: int, t_to: int, wallets: list[str] | None = None,
-        p: Params = Params(), streams: list[str] | None = None, min_orders: int = 30
-        ) -> tuple[dict, list[dict], list[dict]]:
-    """Returns (doc, per-order rows, fingerprint-candidate rows)."""
+        p: Params = Params(), streams: list[str] | None = None, min_orders: int = 30, *,
+        min_fp_orders: int = 0, focus: bool = False,
+        quote_sink: Callable[[dict], object] | None = None) -> tuple[dict, list[dict], list[dict]]:
+    """Returns (doc, per-order rows, fingerprint-candidate rows).
+
+    Memory controls for a cohort run (defaults keep the tool's behaviour):
+    ``min_fp_orders``: a chosen wallet with fewer maker orders in the range gets no fingerprint,
+    and ``attribute`` is not run for it (a fingerprint from a handful of orders is noise).
+    ``focus``: full level events are kept only for the markets of the CHOSEN wallets' tokens
+    (other makers' orders are still loaded, so placements stay one-to-one and their matches in
+    those markets still count as ``other_known``); ``others_pooled`` is then partial.
+    ``quote_sink``: candidate rows go to it one at a time and the returned list is empty."""
     orders, active, stats = load_orders(orders_path, t_from, t_to)
     by_maker: dict[str, list[Order]] = defaultdict(list)
     for o in orders:
         by_maker[o.maker].append(o)
     chosen = ([w.lower() for w in wallets] if wallets else
               sorted(w for w, os_ in by_maker.items() if len(os_) >= min_orders))
-    fps = {w: fingerprint([o.size for o in by_maker.get(w, [])]) for w in chosen}
+    fps = {w: fingerprint([o.size for o in by_maker.get(w, [])])
+           if len(by_maker.get(w, [])) >= min_fp_orders else [] for w in chosen}
     streams = streams or sorted(d.name for d in Path(root).iterdir() if d.name.startswith("clob_"))
-    tape = build_tape(root, streams, t_from, t_to, {t for ts in active.values() for t in ts},
+    tape = build_tape(root, streams, t_from, t_to,
+                      {t for w, ts in active.items() if not focus or w in chosen for t in ts},
                       sorted({s for f in fps.values() for s in f}), p)
     matches = match_placements(orders, tape, p)
     placebo = match_placements(orders, tape, p, p.placebo_ms)
@@ -513,7 +607,8 @@ def run(root: Path, orders_path: Path, t_from: int, t_to: int, wallets: list[str
         d = summarize(w, by_maker.get(w, []), matches, placebo, rows, tape, p)
         d["fingerprint"] = None
         if fps[w]:
-            d["fingerprint"], q = attribute(w, fps[w], orders, matches, active.get(w, set()), tape, claimed, p)
+            d["fingerprint"], q = attribute(w, fps[w], orders, matches, active.get(w, set()), tape, claimed, p,
+                                            quote_sink)
             quotes += q
         doc["wallets"][w] = d
     rest = [o for o in orders if o.maker not in chosen]
@@ -557,7 +652,9 @@ def card(doc: dict) -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="doppel-ordermatch")
     ap.add_argument("--data", type=Path, required=True, help="tape root")
-    ap.add_argument("--orders", type=Path, required=True, help="doppel-ordertape JSONL")
+    ap.add_argument("--orders", type=Path, required=True,
+                    help="doppel-ordertape output: JSONL sample, or the cohort parquet directory "
+                         "(verified rows only)")
     ap.add_argument("--wallet", nargs="+", action="extend", help="maker address(es) (default: makers "
                     "with >= --min-orders orders)")
     ap.add_argument("--from", dest="t_from", type=_ts, required=True, help="unix s or ISO UTC")

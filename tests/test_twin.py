@@ -657,3 +657,32 @@ def test_exclusion_gates_for_inferred_volume():
                        ({"inferred_share": 0.45}, "unprinted_volume_high")):
         wt.stats = base | extra
         assert exclusion(_maker(), wt, _ref()) == why, extra
+
+
+def test_commercial_uses_evaluated_windows_not_the_schedule():
+    """Astra audit 2026-11-26: 10 windows earning $1 total, $2/day of operating cost, used to report a
+    +$26.80/day lower bound by scaling to all 288 scheduled 5m windows."""
+    from doppel.twin.verdict import commercial
+    g = _maker()
+    day = 1_800_000_000 // 86400 * 86400
+    ev = [{"end": day + 600 + i * 300, "net_usd": 0.10} for i in range(10)]
+    c = commercial(g, ev, pw_ci_low=9.4, pc=1.0, op_cost_usd_month=60.0)
+    assert c["windows_per_day_scheduled"] == 288 and c["windows_per_day_evaluated"] == 10
+    assert c["realised_net_usd_per_day_after_ops"] == -1.0
+    assert c["net_usd_per_day_lower_bound_after_ops"] < 0 and c["clears_hurdle"] is False
+
+
+def test_commercial_counts_excluded_days_and_half_open_midnight_window():
+    g = _maker()
+    day = 1_800_000_000 // 86400 * 86400
+    rows = run_windows(g, _synthetic(2, "flat"))
+    for i, row in enumerate(rows):
+        start = day + 86400 - (2 - i) * 300
+        row.update(start=start, end=start + 300, net_c=150.0, net_usd=1.5)
+    rows.append({"start": day + 86400, "end": day + 86400 + 300, "eligible": False,
+                 "source": "none", "excluded": "no_ws_coverage"})
+    c = verdict(g, rows, n_boot=20, op_cost_usd_month=60.0)["commercial"]
+    assert c["days"] == 2 and c["windows_per_day_evaluated"] == 1
+    assert c["realised_net_usd_per_day_after_ops"] == -0.5
+    assert c["net_usd_per_day_lower_bound_after_ops"] == -0.5
+    assert not c["clears_hurdle"]

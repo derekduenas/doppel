@@ -2,6 +2,8 @@
 
 Read `docs/BLUEPRINT.md`, `docs/ROADMAP.md`, `docs/GENOME.md` and `evidence/2026-11-25-probes/FINDINGS.md` before changing anything.
 
+Read [the recovery handoff](docs/CLAUDE-HANDOFF.md) before resuming replay work.
+
 ## How to work (Karpathy guidelines, adopted 2026-11-26)
 1. Think before coding: state assumptions; if a request has two readings, say so; push back when a simpler approach exists.
 2. Simplicity first: the minimum code that solves the problem. No speculative features, abstractions or configurability.

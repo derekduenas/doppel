@@ -1,0 +1,173 @@
+{
+  "checked_at_utc": "2026-11-26T22:34:37+00:00",
+  "evaluator_commit": "2688f00a6ff79dec880300d46d804af678f275a5",
+  "archive": "/var/backups/doppel-sealed-20261126/tape",
+  "check": "verify_hours on H1 BTC 5m inputs, one closed UTC hour at a time, without executing a strategy. Historical prefix comparisons use the hot stream manifest.",
+  "date": "2026-11-26",
+  "hours": [
+    {
+      "utc_hour": 0,
+      "verify_hours": "failed",
+      "error": "snapshot differs from hourly receipt: ref_brti_raw/20261126/00.dtape.zst",
+      "receipt_bytes": 81836,
+      "archived_segment_bytes": 108632,
+      "receipt_crc_ok": true,
+      "prefix_sha256": "c34e246ca7b61ea44d408929b60704717b20f9d7685d1fe16fda88545ab2967f",
+      "prior_manifest_entry_same_size": true,
+      "prefix_matches_prior_manifest": true
+    },
+    {
+      "utc_hour": 1,
+      "verify_hours": "failed",
+      "error": "snapshot differs from hourly receipt: ref_brti_raw/20261126/01.dtape.zst",
+      "receipt_bytes": 83853,
+      "archived_segment_bytes": 110746,
+      "receipt_crc_ok": true,
+      "prefix_sha256": "a1846133d79f54d1d532b84783f464722dcdb3d0b5e40dca2e7290b77e62038a",
+      "prior_manifest_entry_same_size": true,
+      "prefix_matches_prior_manifest": true
+    },
+    {
+      "utc_hour": 2,
+      "verify_hours": "failed",
+      "error": "snapshot differs from hourly receipt: ref_brti_raw/20261126/02.dtape.zst",
+      "receipt_bytes": 87567,
+      "archived_segment_bytes": 114195,
+      "receipt_crc_ok": true,
+      "prefix_sha256": "9a19a9efd527111835fc10f329ef6680328c6a8079ac67408097f3759431e855",
+      "prior_manifest_entry_same_size": false,
+      "prefix_matches_prior_manifest": false
+    },
+    {
+      "utc_hour": 3,
+      "verify_hours": "failed",
+      "error": "snapshot differs from hourly receipt: ref_brti_raw/20261126/03.dtape.zst",
+      "receipt_bytes": 94147,
+      "archived_segment_bytes": 121173,
+      "receipt_crc_ok": true,
+      "prefix_sha256": "032016df49c13788be79e7ca010c960935475a5408f2d73e226d3806ecc6ae88",
+      "prior_manifest_entry_same_size": false,
+      "prefix_matches_prior_manifest": false
+    },
+    {
+      "utc_hour": 4,
+      "verify_hours": "failed",
+      "error": "snapshot differs from hourly receipt: ref_brti_raw/20261126/04.dtape.zst",
+      "receipt_bytes": 91145,
+      "archived_segment_bytes": 117986,
+      "receipt_crc_ok": true,
+      "prefix_sha256": "8f33104f424f6b78e48d863c8b9416fb31ee25446ecdb03a4af76ad29fb0c8af",
+      "prior_manifest_entry_same_size": false,
+      "prefix_matches_prior_manifest": false
+    },
+    {
+      "utc_hour": 5,
+      "verify_hours": "failed",
+      "error": "snapshot differs from hourly receipt: ref_brti_raw/20261126/05.dtape.zst",
+      "receipt_bytes": 98740,
+      "archived_segment_bytes": 125673,
+      "receipt_crc_ok": true,
+      "prefix_sha256": "b484abb7ae30cc8592e32bbabd82a56587259086441b2d863d2b0c07d755d0f5",
+      "prior_manifest_entry_same_size": false,
+      "prefix_matches_prior_manifest": false
+    },
+    {
+      "utc_hour": 6,
+      "verify_hours": "failed",
+      "error": "snapshot differs from hourly receipt: ref_brti_raw/20261126/06.dtape.zst",
+      "receipt_bytes": 94824,
+      "archived_segment_bytes": 121854,
+      "receipt_crc_ok": true,
+      "prefix_sha256": "f75075672912a47af9fdc032055d70f0b0d04467dd99e20a57648fa29b9a5489",
+      "prior_manifest_entry_same_size": false,
+      "prefix_matches_prior_manifest": false
+    },
+    {
+      "utc_hour": 7,
+      "verify_hours": "passed"
+    },
+    {
+      "utc_hour": 8,
+      "verify_hours": "passed"
+    },
+    {
+      "utc_hour": 9,
+      "verify_hours": "passed"
+    },
+    {
+      "utc_hour": 10,
+      "verify_hours": "passed"
+    },
+    {
+      "utc_hour": 11,
+      "verify_hours": "passed"
+    },
+    {
+      "utc_hour": 12,
+      "verify_hours": "failed",
+      "error": "snapshot differs from hourly receipt: ref_brti_raw/20261126/12.dtape.zst",
+      "receipt_bytes": 98026,
+      "archived_segment_bytes": 124767,
+      "receipt_crc_ok": true,
+      "prefix_sha256": "72c3f411065570216dc9a0886ce099c3069021536752a99fa2c2aec58e8d2f68",
+      "prior_manifest_entry_same_size": false,
+      "prefix_matches_prior_manifest": false
+    },
+    {
+      "utc_hour": 13,
+      "verify_hours": "failed",
+      "error": "snapshot differs from hourly receipt: ref_brti_raw/20261126/13.dtape.zst",
+      "receipt_bytes": 108146,
+      "archived_segment_bytes": 134883,
+      "receipt_crc_ok": true,
+      "prefix_sha256": "8c3da667009e82eff84a30f1ff97a9c3d478817d4aba49890a91d6cb6eeb22bb",
+      "prior_manifest_entry_same_size": false,
+      "prefix_matches_prior_manifest": false
+    },
+    {
+      "utc_hour": 14,
+      "verify_hours": "failed",
+      "error": "snapshot differs from hourly receipt: ref_brti_raw/20261126/14.dtape.zst",
+      "receipt_bytes": 99830,
+      "archived_segment_bytes": 126363,
+      "receipt_crc_ok": true,
+      "prefix_sha256": "b9aeff0c8e2ef27bb15ff0519b078c0ace40588815662c31edb6584576329250",
+      "prior_manifest_entry_same_size": false,
+      "prefix_matches_prior_manifest": false
+    },
+    {
+      "utc_hour": 15,
+      "verify_hours": "failed",
+      "error": "snapshot differs from hourly receipt: ref_brti_raw/20261126/15.dtape.zst",
+      "receipt_bytes": 100654,
+      "archived_segment_bytes": 127040,
+      "receipt_crc_ok": true,
+      "prefix_sha256": "5289338211dab32f300b3b4a641831851e55d73f0b042968f0e5125f0780b5af",
+      "prior_manifest_entry_same_size": false,
+      "prefix_matches_prior_manifest": false
+    },
+    {
+      "utc_hour": 16,
+      "verify_hours": "failed",
+      "error": "snapshot differs from hourly receipt: ref_brti_raw/20261126/16.dtape.zst",
+      "receipt_bytes": 103815,
+      "archived_segment_bytes": 130680,
+      "receipt_crc_ok": true,
+      "prefix_sha256": "3e29a7f4716daf0358414bfeea3f0ffc8b75e033b887ca2c998797e29189ee27",
+      "prior_manifest_entry_same_size": false,
+      "prefix_matches_prior_manifest": false
+    },
+    {
+      "utc_hour": 17,
+      "verify_hours": "passed"
+    },
+    {
+      "utc_hour": 18,
+      "verify_hours": "passed"
+    },
+    {
+      "utc_hour": 19,
+      "verify_hours": "passed"
+    }
+  ]
+}

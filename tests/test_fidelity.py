@@ -439,6 +439,32 @@ def test_size_gates_catch_a_clone_with_the_right_fills_and_the_wrong_position(tm
     assert by["fills.precision_shares_scaled"] == "fail" and doc["verdict"]["decision"] == "FAIL"
 
 
+def test_a_clone_that_loses_what_the_wallet_earns_does_not_pass():
+    """Audit case: 40 windows, zero fees, equal gross volume. The wallet buys 10 Up at 0.495 and
+    earns +$2 in total; the clone buys the same 10 a cent higher at the same moments and LOSES $2.
+    Every fill matches and the per-window P&L correlation is exactly 1, but the P&L level has the
+    opposite sign: the level-ratio row (-1, allowed 0.5..2) must keep it from passing."""
+    wins, wallet, clone, prints = {}, {}, {}, {}
+    for i in range(40):
+        s = 1000 + 300 * i
+        key = ("btc", "5m", s)
+        wins[key] = (s, s + 300, i % 2)
+        wallet[key] = [Fill(s + 50.0, 1, 0.495, 10.0, "maker")]
+        clone[key] = [Fill(s + 50.1, 1, 0.505, 10.0, "maker")]
+        prints[key] = [(s + 150.0 + 10 * j, 0.5, "sell") for j in range(6)]
+    doc = F.evaluate(clone, wallet, wins, C0, OK_GATES, others=prints)
+    sc = {k: v["value"] for k, v in doc["scores"].items()}
+    assert sum(F.pnl_usd(wallet[k], o, C0) for k, (_, _, o) in wins.items()) == pytest.approx(2.0)
+    assert sum(F.pnl_usd(clone[k], o, C0) for k, (_, _, o) in wins.items()) == pytest.approx(-2.0)
+    assert doc["clone_shares"] == doc["wallet_shares"] == 400.0 and sc["pnl.corr"] == pytest.approx(1.0)
+    assert sc["fills.recall_count"] == sc["fills.precision_count"] == 1.0
+    assert sc["pnl.level_ratio_scaled"] == pytest.approx(-1.0)
+    by = {c["score"]: c["result"] for c in doc["verdict"]["checks"]}
+    assert by["pnl.level_ratio_scaled"] != "pass" and all(r == "pass" for n, r in by.items()
+                                                          if n != "pnl.level_ratio_scaled")
+    assert doc["verdict"]["decision"] != "PASS" and "pnl.level_ratio_scaled" in doc["verdict"]["binding"]
+
+
 def test_pseudo_wallet_keeps_count_direction_and_size_on_other_peoples_prints():
     wallet = [Fill(10.0, 1, 0.40, 5.0, "maker"), Fill(11.0, 1, 0.41, 6.0, "maker"), Fill(12.0, -1, 0.6, 7.0, "taker"),
               Fill(13.0, 1, 0.42, 8.0, "maker", timed=False)]
@@ -880,5 +906,5 @@ def test_the_pm_us_twin_code_hash_does_not_cover_the_intl_adapter():   # S8
     from doppel.twin import cli
     twin_dir = Path(cli.__file__).parent
     assert not (twin_dir / "intl.py").exists()
-    assert sorted(p.name for p in twin_dir.glob("*.py")) == ["__init__.py", "cli.py", "engine.py", "features.py",
+    assert sorted(p.name for p in twin_dir.glob("*.py")) == ["__init__.py", "cli.py", "engine.py", "evaluate.py", "features.py",
                                                              "flowfeat.py", "tape.py", "verdict.py"]

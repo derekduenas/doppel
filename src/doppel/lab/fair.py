@@ -182,6 +182,33 @@ def fair_up_raw(raw: np.ndarray, t0: int, ptb: float, d: int, end: int, lag: int
     return phi(diff / math.sqrt(var))
 
 
+BRTI_DELAY_S = 2   # same default as the twin (SimConfig.brti_delay_s, E29)
+
+
+def to_arrays_rcv(series: dict[int, tuple[float, float]]):
+    """(t0, values, receive times) arrays from ``brti_import.load_raw_rcv``; NaN where missing."""
+    t0, t1 = min(series), max(series)
+    a = np.full(t1 - t0 + 1, np.nan)
+    r = np.full(t1 - t0 + 1, np.nan)
+    for t, (v, rc) in series.items():
+        a[t - t0], r[t - t0] = v, rc
+    return t0, a, r
+
+
+def fair_up_asof(raw: np.ndarray, rcv: np.ndarray, t0: int, ptb: float, d: float, end: int, lag: int = 0,
+                 vol_window: int = 300, delay_s: int = BRTI_DELAY_S) -> float | None:
+    """fair-v1 as a trader could compute it at time ``d`` (unix s): only BRTI seconds received by
+    ``d`` count, evaluated at second floor(d) - delay_s, exactly as the twin does. ``fair_up_raw``
+    alone ignores receive time and must not be used for anything decided at a point in time."""
+    de = int(math.floor(d)) - delay_s
+    lo_i = min(end - 60 - lag, de - vol_window) - t0
+    hi_i = de - t0
+    if lo_i < 0 or hi_i >= len(raw):
+        return None
+    seg = np.where(rcv[lo_i:hi_i + 1] <= d, raw[lo_i:hi_i + 1], np.nan)
+    return fair_up_raw(seg, t0 + lo_i, ptb, de, end, lag, vol_window)
+
+
 def alignment(raw: dict[int, float], series: dict[int, float], lags=range(-3, 4)) -> dict:
     """Mean |rolling60(raw) shifted by lag - published series| for each lag (cents)."""
     out = {}

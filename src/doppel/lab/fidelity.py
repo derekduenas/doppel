@@ -106,6 +106,7 @@ from .intlbook import px
 from .intltwin import Footprint, IntlWindow, Key, Resting, run_intl, windows_from_tokens
 from .ledger import TokenMap
 from .ordermatch import filled_shares
+from .ordertape import committed_parts
 
 TOL_PX = 0.01
 TOL_S = 2.0
@@ -175,7 +176,7 @@ class Wallet:
 def code_sha256() -> str:
     """sha256 over the code a fidelity verdict depends on."""
     lab = Path(__file__).resolve().parent
-    files = [lab / n for n in ("fidelity.py", "intltwin.py", "intlbook.py", "ordermatch.py")]
+    files = [lab / n for n in ("fidelity.py", "intltwin.py", "intlbook.py", "ordermatch.py", "ordertape.py")]
     if (lab / "research_manifest.py").is_file():
         files.append(lab / "research_manifest.py")
     files += sorted((lab.parent / "twin").glob("*.py"))
@@ -194,12 +195,12 @@ def order_tape_sha256(path: Path) -> str:
     if not path.is_dir():
         return sha256(path)
     parts = {p.relative_to(path).as_posix(): sha256(p)
-             for p in sorted(path.glob("day=*/part-*.parquet"))}
+             for p in committed_parts(path, allow_legacy=True)}
     return hashlib.sha256(orjson.dumps(parts, option=orjson.OPT_SORT_KEYS)).hexdigest()
 
 
 def _order_tape_snapshot(path: Path) -> list[tuple[Path, int, int, int]]:
-    parts = sorted(path.glob("day=*/part-*.parquet")) if path.is_dir() else [path]
+    parts = committed_parts(path, allow_legacy=True) if path.is_dir() else [path]
     snapshot = []
     for part in parts:
         stat = part.stat()
@@ -233,7 +234,7 @@ def load_rows(path: Path, wallet: str) -> list[dict]:
     rows of those txs price its taker fills). Parquet directory or JSONL."""
     rows: list[dict] = []
     if path.is_dir():
-        for p in sorted(path.glob("day=*/part-*.parquet")):   # a tx never spans two parts
+        for p in committed_parts(path, allow_legacy=True):   # a tx never spans two parts
             part = pq.read_table(p).to_pylist()
             txs = {r["tx"] for r in part if r["maker"].lower() == wallet}
             rows += [r for r in part if r["tx"] in txs]

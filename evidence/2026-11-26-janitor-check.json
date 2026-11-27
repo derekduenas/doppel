@@ -1,0 +1,21 @@
+{
+  "utc_day": "20261126",
+  "host": "Apex",
+  "live_read_only_observation": {
+    "stream": "pmus_ws_5m",
+    "old_find_regex_returned_days": [],
+    "confirmed_closed_day": "20261125",
+    "df_free_rounded": "23G",
+    "df_free_bytes": 24546226176,
+    "installed_unit_order": ["tape-rust", "tape"]
+  },
+  "disposable_test_run": {
+    "path": "/tmp/doppel-release-audit.3s7AhEvN/janitor",
+    "linux_passed": 2,
+    "linux_failed": 0,
+    "junit_xml_sha256": "ea452f671a50965066314b2d10f147b937b30a5957a817cf19d2aa143b9fdfc6",
+    "wrapper_sha256": "d9eb2a9aaa72db4fc8b30f76a9597e81f991b718739f82cc0ae3129ddc3f7f1c",
+    "implementation_sha256": "051dfc32ff002dcb558671c9913f49e48abefc1df1a55e7b1ec78ae75d50dbd4",
+    "test_sha256": "9209dcfc40c8dafe29444bdf49b47b42b1d2eb22e5bfe7895916aa5def870607"
+  }
+}

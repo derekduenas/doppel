@@ -58,6 +58,19 @@ def orow(o: Order, role="maker"):
     return out
 
 
+def test_jsonl_excludes_explicitly_unverified_rows(tmp_path):
+    base = orow(order("legacy", "101", "BUY", 0.5, 20, 1000, fills={"t": (5, T0 + 2)}))[0]
+    path = tmp_path / "sample.jsonl"
+    variants = [base, base | {"order_id": "good", "verified": True},
+                base | {"order_id": "other", "verified": False}, base | {"order_id": "unknown", "verified": None}]
+    path.write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in variants))
+    orders, _, stats = load_orders(path, T0, T0 + 3)
+    assert {o.order_id for o in orders} == {"good"}
+    assert stats["rows_not_verified"] == 3
+    path.write_bytes(orjson.dumps(base) + b"\n")
+    assert [o.order_id for o in load_orders(path, T0, T0 + 3)[0]] == ["legacy"]
+
+
 # ---------------------------------------------------------------- reconstruction
 def test_reconstruction_snapshot_diff_and_reset():
     b = IntlBook()

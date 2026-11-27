@@ -1,0 +1,9 @@
+[Unit]
+Description=DOPPEL reconstruction every 6 hours (NOT INSTALLED; see the service file)
+
+[Timer]
+OnCalendar=*-*-* 00/6:35
+Persistent=true
+
+[Install]
+WantedBy=timers.target
