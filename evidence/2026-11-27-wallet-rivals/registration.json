@@ -1,0 +1,58 @@
+{
+  "schema": "wallet-rival-registration/1",
+  "upstream": "d3203e9e66244f139b8e1d65659fff8e3ff572c0",
+  "asset": "btc",
+  "outcome": "Down",
+  "market_s": 300,
+  "grid_s": 10,
+  "depth_max_age_s": 3,
+  "queue_at_most_shares": 1600,
+  "proposed_shares": 60,
+  "rivals": [
+    "touch",
+    "queue_at_most"
+  ],
+  "baseline": "never_bid",
+  "min_scored_cells_per_market": 20,
+  "min_disagreement_cells_per_market": 8,
+  "min_informative_markets": 8,
+  "mean_disagreement_advantage_min": 0.2,
+  "mean_accuracy_min": 0.8,
+  "advantage_over_never_min": 0.1,
+  "two_sided_sign_p_max": 0.01,
+  "splits": {
+    "development": {
+      "scope": "controlled",
+      "start": 1735689600,
+      "end": 1735691400,
+      "subjects": [
+        "sim-a",
+        "sim-b",
+        "sim-c"
+      ],
+      "public_seed": 41731,
+      "hidden_seed": 61031
+    },
+    "controlled_holdout": {
+      "scope": "controlled",
+      "start": 1735776000,
+      "end": 1735779600,
+      "subjects": [
+        "sim-a",
+        "sim-b",
+        "sim-c"
+      ],
+      "public_seed": 41747,
+      "hidden_seed": 61043
+    },
+    "real_holdout": {
+      "scope": "real",
+      "start": 1795647600,
+      "end": 1795651200,
+      "subjects": [
+        "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c",
+        "0x28cc505fb60501dbb2199a9662ba175919af904f"
+      ]
+    }
+  }
+}
