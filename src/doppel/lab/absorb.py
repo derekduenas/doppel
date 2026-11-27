@@ -693,8 +693,13 @@ def main(argv: list[str] | None = None, transport: Callable = http_transport) ->
     chain = Chain(pool, a.out / "_chain" / "rpc-cache.jsonl", routes)
     try:
         head = int(chain.get("eth_blockNumber", []), 16) if a.from_block is None or a.to_block is None else 0
-        b0 = a.from_block if a.from_block is not None else chain.block_at(a.t_from, head)
-        b1 = a.to_block if a.to_block is not None else chain.block_at(a.t_to, head) - 1
+        b0, b1 = a.from_block, a.to_block
+        if b0 is None:
+            assert a.t_from is not None  # CLI enforces exactly one bound
+            b0 = chain.block_at(a.t_from, head)
+        if b1 is None:
+            assert a.t_to is not None
+            b1 = chain.block_at(a.t_to, head) - 1
         if b0 < 1 or b1 < b0:
             ap.error("empty block interval or unavailable opening block")
         # When --to-block is inclusive, require pagination coverage of its final UTC second.
