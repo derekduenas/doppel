@@ -188,6 +188,26 @@ scaled → full), cross-genome netting, orthogonality limit (ρ < 0.30), uncerta
 Kelly from the simulator's posterior, Rust policy evaluator. Not adopted: offshore venues whose terms
 exclude US persons (Binance, Bybit, OKX, Deribit); US-lawful perps feeds are being added instead.
 
+### 9.1 The goal is the wallet's edge, not a perfect copy (Neon, second review)
+
+A genome does not need to reproduce 100% of a wallet's behaviour. The part public data cannot explain
+is a mix of (a) private state (hedges elsewhere, bankroll limits, restarts, manual action), which must
+never be fitted; (b) closed-loop logic (inventory skew, cancel/replace timing, toxicity vetoes), which is
+worth recovering; and (c) the wallet's own mistakes, which should be dropped, not copied. Adopted:
+1. **Disagreement P&L audit** in fidelity: net P&L of agreed trades, wallet-only trades and clone-only
+   trades, each with a CI. Wallet-only ≈ 0 means the edge is already captured; stop chasing match rate.
+2. **Probability of backtest overfitting** (CSCV, PBO < 0.15) next to the deflated Sharpe, with every
+   simulator or forge variant counted as a trial.
+3. **Three sealed partitions** per wallet: extraction, search, and a vault touched once by the final
+   survivors; a vault failure discards the run.
+4. **Stress suite** (after the Dec 1 freeze lifts, since it touches the twin): latency jitter, shared
+   liquidity with the source wallet and rivals, adverse fill skew, and basis/volatility shocks near
+   expiry; variants are ranked by their worst case, not their clean-tape result.
+
+Deferred until a genome passes paper: residual-policy optimisation with a KL anchor to the wallet's
+behaviour, and quality-diversity search across volatility × liquidity × time-to-close regimes (both
+multiply the number of variants tried, so they need the overfitting controls above in place first).
+
 ## 8. Decisions needed from the owner
 
 1. Opening-price rule for H1–H4 (bind before Nov 29 00:00 UTC for H1, or keep the old rule).
