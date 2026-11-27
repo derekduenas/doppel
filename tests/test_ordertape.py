@@ -171,6 +171,26 @@ def test_missing_and_failed_txs_are_retried_by_the_next_run(tmp_path):
     assert ot.load_done(tmp_path)[0] == {"0x00", "0x03"}
 
 
+def test_a_missing_part_refetches_only_its_transactions(tmp_path):
+    todo = [(TX, BLOCK_TS, BLOCK), ("0x0b", BLOCK_TS + 86400, BLOCK)]
+    ot.run(todo, _pool(_chain())[0], tmp_path)
+    parts = sorted(tmp_path.glob("day=*/*.parquet"))
+    assert len(parts) == 2
+    parts[1].unlink()
+    assert ot.has_missing_parts(tmp_path)
+
+    calls = []
+    kept = ot.run(todo[:1], _pool(_chain(calls))[0], tmp_path)
+    assert kept["txs_already_done"] == 1 and not calls
+    assert parts[0].is_file() and not ot.has_missing_parts(tmp_path)
+
+    result = ot.run(todo, _pool(_chain(calls))[0], tmp_path)
+    assert [c[2] for c in calls] == ["0x0b"]
+    assert (result["txs_already_done"], result["txs_decoded"]) == (1, 1)
+    rows = _rows(tmp_path)
+    assert len(rows) == 6 and len({(r["tx"], r["order_id"]) for r in rows}) == 6
+
+
 def test_backoff_and_benching():
     calls = []
     pool, c = _pool(_chain(fail=lambda u, m, p: calls.append((u, c.t)) or ("http_429" if u == A else None)),
@@ -235,6 +255,30 @@ def test_verification_against_the_fill_store(tmp_path):
     assert by[(TX, OID)] is True and by[("0x0b", OID)] is True and by[("0x0c", OID)] is False
     assert by[("0x0d", OID)] is None  # no reference: unknown, not false
     assert sum(x is True for x in by.values()) == 2 and (s["orders"], s["txs_decoded"]) == (12, 4)
+
+
+def test_cached_verification_refreshes_against_current_claims_without_rpc(tmp_path):
+    todo = [(TX, BLOCK_TS, BLOCK), ("0x0b", BLOCK_TS, BLOCK)]
+    second = decode_match(FX["input"], FX["to"])[1]
+    claim = (second["maker"], second["order_id"])
+    ot.run(todo, _pool(_chain())[0], tmp_path,
+           expected=lambda txs: {tx: {(W0, OID)} for tx in txs})
+    assert {(r["tx"], r["order_id"]) for r in _rows(tmp_path) if r["verified"]} == {
+        (TX, OID), ("0x0b", OID)}
+
+    calls = []
+    result = ot.run(todo[:1], _pool(_chain(calls))[0], tmp_path,
+                    expected=lambda txs: {tx: {claim, (WB, OID)} for tx in txs})
+    assert not calls
+    assert (result["txs_reverified"], result["txs_decoded"], result["orders"]) == (1, 0, 0)
+    assert result["verify"]["per_wallet"][WB]["fills_matched"] == 0
+    assert result["verify"]["per_wallet"][claim[0]]["fills_matched"] == 1
+    assert {(r["tx"], r["order_id"]) for r in _rows(tmp_path) if r["verified"]} == {
+        (TX, claim[1]), ("0x0b", OID)}
+
+    result = ot.run(todo[:1], _pool(_chain(calls))[0], tmp_path, expected=lambda txs: {})
+    assert not calls and result["verify"]["fills_expected"] == 0
+    assert all(r["verified"] is None for r in _rows(tmp_path) if r["tx"] == TX)
 
 
 def test_timestamp_flags(tmp_path):

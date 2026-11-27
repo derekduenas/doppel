@@ -197,14 +197,20 @@ def _shares(c: Counter, top: int | None = None) -> dict:
 
 
 # ---------------------------------------------------------------- input
-def load_rows(path: Path, wallets: set[str] | None = None) -> tuple[list[dict], bool]:
+def load_rows(path: Path, wallets: set[str] | None = None,
+              block_range: tuple[int, int] | None = None) -> tuple[list[dict], bool]:
     """(rows of the wallets (all makers when None), whether the input has a ``verified`` column)."""
     rows: list[dict] = []
+    def keep(row: dict) -> bool:
+        return (wallets is None or row["maker"] in wallets) and (
+            block_range is None or isinstance(row.get("block_ts"), int)
+            and block_range[0] <= row["block_ts"] < block_range[1])
+
     if path.is_dir():
         for p in sorted(path.glob("day=*/part-*.parquet")):
             for r in pq.read_table(p).to_pylist():
                 r["maker"] = r["maker"].lower()
-                if wallets is None or r["maker"] in wallets:
+                if keep(r):
                     rows.append(r)
         return rows, True
     flagged = False
@@ -215,7 +221,7 @@ def load_rows(path: Path, wallets: set[str] | None = None) -> tuple[list[dict], 
             r = orjson.loads(line)
             r["maker"] = r["maker"].lower()
             flagged |= "verified" in r
-            if wallets is not None and r["maker"] not in wallets:
+            if not keep(r):
                 continue
             if "ts_flag" not in r:
                 r["ts_flag"] = ts_flag(r.get("created_ms"), r["block_ts"])
@@ -662,11 +668,12 @@ def cohort(docs: list[dict]) -> tuple[dict, str]:
 
 # ---------------------------------------------------------------- run
 def run(orders: Path, out: Path, ordermatch: Path | None = None, dossiers: Path | None = None,
-        wallets: list[str] | None = None, min_orders: int = T["min_n"]) -> dict:
+        wallets: list[str] | None = None, min_orders: int = T["min_n"], *,
+        block_range: tuple[int, int] | None = None) -> dict:
     """Write every ledger and the cohort table; returns the cohort document. Without ``wallets``:
     every maker with at least ``min_orders`` usable orders."""
     want = {w.lower() for w in wallets} if wallets else None
-    rows, has_verified = load_rows(orders, want)
+    rows, has_verified = load_rows(orders, want, block_range)
     by: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
         by[r["maker"]].append(r)
@@ -679,6 +686,8 @@ def run(orders: Path, out: Path, ordermatch: Path | None = None, dossiers: Path 
             continue
         dpath = dossiers / f"{wal}.json" if dossiers else None
         dos = orjson.loads(dpath.read_bytes()) if dpath and dpath.is_file() else None
+        if block_range is not None:
+            w["input"]["order_block_range"] = block_range
         doc = ledger(wal, w, fingerprint(w), om_doc.get(wal), dos, {
             "orders": str(orders), "ordermatch": str(ordermatch) if wal in om_doc else None,
             "dossier": str(dpath) if dos else None})

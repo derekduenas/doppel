@@ -86,6 +86,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -413,8 +414,11 @@ def fingerprint(sizes: list[float]) -> list[float]:
 
 def attribute(wallet: str, sizes: list[float], orders: list[Order],
               matches: dict[str, tuple[Key, int]], active: set[str], tape: LevelTape,
-              claimed: set[tuple[Key, int]], p: Params) -> tuple[dict, list[dict]]:
-    """Fingerprint-size bid increases split into own / other_known / candidate / control."""
+              claimed: set[tuple[Key, int]], p: Params,
+              sink: Callable[[dict], object] | None = None) -> tuple[dict, list[dict]]:
+    """Fingerprint-size bid increases split into own / other_known / candidate / control.
+    With ``sink`` each candidate row is handed to it and not kept (the returned list is empty):
+    a quote-flickering wallet has ~10^5 candidates per hour."""
     active = active | {tape.mate[t] for t in active if t in tape.mate}
     known: dict[bool, Counter] = {True: Counter(), False: Counter()}  # own? -> BUY-view (asset, price, ms)
     for o in orders:
@@ -428,6 +432,9 @@ def attribute(wallet: str, sizes: list[float], orders: list[Order],
         if o.maker == wallet and o.order_id not in matches and s is not None:
             per[s]["own_unmatched"] += 1
     rows: list[dict] = []
+    emit = sink or rows.append
+    outcomes: Counter = Counter()
+    lives: list[int] = []  # rest_max_ms of the candidates with a known end
     for key in sorted(k for k in tape.events if k[2] == "BUY"):
         for i, e in enumerate(tape.events[key]):
             s = next((z for z in sizes if p.near(e.delta, z)), None)
@@ -447,13 +454,16 @@ def attribute(wallet: str, sizes: list[float], orders: list[Order],
                 per[s]["candidates"] += 1
                 res = follow(tape, key, i, e.delta, e.venue_ms, claimed, p)
                 hi = res["end_ms"]
-                rows.append({"attribution": "fingerprint_candidate", "wallet": wallet,
-                             "token_id": key[0], "price": key[1], "side_view": "BUY",
-                             "venue_ms": e.venue_ms, "tw_ns": e.tw_ns, "size": round(e.delta, 6),
-                             "fp_size": s} | res | {
-                                 "rest_min_ms": (hi - e.venue_ms) if res["outcome"] == "cancelled" else 0,
-                                 "rest_max_ms": None if hi is None else hi - e.venue_ms,
-                                 "rest_known": res["outcome"] == "cancelled"})
+                outcomes[f"{res['outcome']}:{res['reason']}"] += 1
+                if res["outcome"] == "cancelled":
+                    lives.append(hi - e.venue_ms)
+                emit({"attribution": "fingerprint_candidate", "wallet": wallet,
+                      "token_id": key[0], "price": key[1], "side_view": "BUY",
+                      "venue_ms": e.venue_ms, "tw_ns": e.tw_ns, "size": round(e.delta, 6),
+                      "fp_size": s} | res | {
+                          "rest_min_ms": (hi - e.venue_ms) if res["outcome"] == "cancelled" else 0,
+                          "rest_max_ms": None if hi is None else hi - e.venue_ms,
+                          "rest_known": res["outcome"] == "cancelled"})
     h_act = tape.hours(active)
     h_ctl = tape.hours(set(tape.spans) - active)
 
@@ -475,8 +485,8 @@ def attribute(wallet: str, sizes: list[float], orders: list[Order],
     doc = {"sizes": sizes, "active_tokens": len(active), "active_token_hours": _r(h_act),
            "control_token_hours": _r(h_ctl), "total": line(total),
            "per_size": {str(s): line(c) for s, c in per.items()},
-           "candidate_outcomes": dict(Counter(f"{r['outcome']}:{r['reason']}" for r in rows)),
-           "candidate_rest_ms_cancelled": _q([r["rest_max_ms"] for r in rows if r["rest_known"]]),
+           "candidate_outcomes": dict(outcomes),
+           "candidate_rest_ms_cancelled": _q(lives),
            "note": "candidates are NOT identified as the wallet's; read net_estimate against "
                    "expected_by_chance and identity_precision_upper (see module docstring)"}
     return doc, rows
@@ -528,18 +538,29 @@ def summarize(name: str, orders: list[Order], matches: dict, placebo: dict, rows
 
 
 def run(root: Path, orders_path: Path, t_from: int, t_to: int, wallets: list[str] | None = None,
-        p: Params = Params(), streams: list[str] | None = None, min_orders: int = 30
-        ) -> tuple[dict, list[dict], list[dict]]:
-    """Returns (doc, per-order rows, fingerprint-candidate rows)."""
+        p: Params = Params(), streams: list[str] | None = None, min_orders: int = 30, *,
+        min_fp_orders: int = 0, focus: bool = False,
+        quote_sink: Callable[[dict], object] | None = None) -> tuple[dict, list[dict], list[dict]]:
+    """Returns (doc, per-order rows, fingerprint-candidate rows).
+
+    Memory controls for a cohort run (defaults keep the tool's behaviour):
+    ``min_fp_orders``: a chosen wallet with fewer maker orders in the range gets no fingerprint,
+    and ``attribute`` is not run for it (a fingerprint from a handful of orders is noise).
+    ``focus``: full level events are kept only for the markets of the CHOSEN wallets' tokens
+    (other makers' orders are still loaded, so placements stay one-to-one and their matches in
+    those markets still count as ``other_known``); ``others_pooled`` is then partial.
+    ``quote_sink``: candidate rows go to it one at a time and the returned list is empty."""
     orders, active, stats = load_orders(orders_path, t_from, t_to)
     by_maker: dict[str, list[Order]] = defaultdict(list)
     for o in orders:
         by_maker[o.maker].append(o)
     chosen = ([w.lower() for w in wallets] if wallets else
               sorted(w for w, os_ in by_maker.items() if len(os_) >= min_orders))
-    fps = {w: fingerprint([o.size for o in by_maker.get(w, [])]) for w in chosen}
+    fps = {w: fingerprint([o.size for o in by_maker.get(w, [])])
+           if len(by_maker.get(w, [])) >= min_fp_orders else [] for w in chosen}
     streams = streams or sorted(d.name for d in Path(root).iterdir() if d.name.startswith("clob_"))
-    tape = build_tape(root, streams, t_from, t_to, {t for ts in active.values() for t in ts},
+    tape = build_tape(root, streams, t_from, t_to,
+                      {t for w, ts in active.items() if not focus or w in chosen for t in ts},
                       sorted({s for f in fps.values() for s in f}), p)
     matches = match_placements(orders, tape, p)
     placebo = match_placements(orders, tape, p, p.placebo_ms)
@@ -556,7 +577,8 @@ def run(root: Path, orders_path: Path, t_from: int, t_to: int, wallets: list[str
         d = summarize(w, by_maker.get(w, []), matches, placebo, rows, tape, p)
         d["fingerprint"] = None
         if fps[w]:
-            d["fingerprint"], q = attribute(w, fps[w], orders, matches, active.get(w, set()), tape, claimed, p)
+            d["fingerprint"], q = attribute(w, fps[w], orders, matches, active.get(w, set()), tape, claimed, p,
+                                            quote_sink)
             quotes += q
         doc["wallets"][w] = d
     rest = [o for o in orders if o.maker not in chosen]

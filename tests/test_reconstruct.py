@@ -1,6 +1,7 @@
 """Reconstruction pipeline end to end on a synthetic tape, fill store and chain (no network)."""
 
 import hashlib
+from dataclasses import replace
 
 import orjson
 import pyarrow as pa
@@ -169,7 +170,7 @@ def test_end_to_end_all_four_steps(ran):
     ch = man["steps"]["ordermatch"]["chunks"][0]
     seg = next(iter(ch["inputs"]["tape"]))
     assert ch["inputs"]["tape"][seg] == hashlib.sha256((root / "tape" / seg).read_bytes()).hexdigest()
-    f = out / "chunks" / ch["chunk"] / "ordermatch" / "orders.jsonl"
+    f = out / ch["dir"] / "orders.jsonl"
     assert ch["outputs"]["orders.jsonl"] == {"sha256": hashlib.sha256(f.read_bytes()).hexdigest(),
                                              "bytes": f.stat().st_size, "rows": 34}
     wf = out / "wallets" / W1 / "orders.jsonl"
@@ -312,7 +313,7 @@ def test_a_thin_wallet_gets_no_fingerprint_and_reads_no_gate(ran):
     out = root / "lab" / "reconstruct" / "run1"
     ch = man["steps"]["ordermatch"]["chunks"][0]
     assert ch["counts"]["fingerprints_dropped"] == 1
-    cd = out / "chunks" / ch["chunk"] / "ordermatch"
+    cd = out / ch["dir"]
     raw = orjson.loads((cd / "ordermatch.json").read_bytes())["wallets"][W3]
     assert raw["fingerprint"] is None and "fewer than 30" in raw["fingerprint_dropped"]
     assert {orjson.loads(line)["wallet"] for line in open(cd / "quotes.jsonl", "rb")} == {W1}
@@ -371,3 +372,498 @@ def test_ordermatch_reads_the_parquet_directory(tmp_path):
     pq.write_table(pa.Table.from_pylist([{k: v for k, v in _prow(1, "x", False).items() if k != "verified"}]),
                    old / "part-000001.parquet")
     assert [o.order_id for o in ordermatch.load_orders(tmp_path / "old", T0, T0 + 3600)[0]] == ["x"]
+
+
+# ---------------------------------------------------------------- review regressions (2026-11-26)
+def _write_world(root, frames, fills, candidates):
+    w = SegmentWriter(root / "tape", "clob_btc_5m")
+    for i, (ms, m) in enumerate(sorted(frames, key=lambda f: f[0])):
+        w.append(orjson.dumps([m]).decode(), tw=(MS + ms) * 1_000_000)
+        if i % 100 == 99:
+            w.flush()  # small zstd frames, as the recorder writes them (one per second)
+    w.close()
+    g = SegmentWriter(root / "tape", "goldsky_activity")
+    g.append(orjson.dumps({"data": fills}).decode(), tw=T0 * 10**9,
+             meta={"job": "cohort-a", "status": 200, "rows": len(fills)})
+    g.close()
+    compact(root / "tape", root / "lab" / "fills")
+    (root / "cohort.json").write_bytes(orjson.dumps({"candidates": candidates, "controls": [], "sha256": "ab" * 32}))
+
+
+def world2(root, shared_tx=False, n_cand=1):
+    """W1: 32 orders in EACH hour and ``n_cand`` cancelled 50-share candidates in each hour.
+    shared_tx: W3 has a 100-share maker order in each of W1's hour-0 txs."""
+    frames, fills, chain = [], [], {}
+    k = 0
+
+    def an_order(wallet, ms, cents, extra=None):
+        nonlocal k
+        k += 1
+        tx = f"0x{k:064x}"
+        makers = [(wallet, static(1000 + k, wallet, "101", cents, 50, MS + ms), cents, 50)]
+        if extra:
+            makers.append((extra[0], static(5000 + k, extra[0], "101", extra[1], 100, MS + ms), extra[1], 100))
+        chain[tx] = (calldata(static(k, TAKER, "101", 99, 50, MS + ms), [m[1] for m in makers],
+                              [z * ct * 10**4 for _, _, ct, z in makers]), BLOCK + k)
+        for j, (w, st, ct, z) in enumerate(makers):
+            fills.append({"id": f"r{k}_{j}", "address": w, "event_type": "TRADE", "token_id": "101", "side": "BUY",
+                          "amount_shares": float(z), "amount_usdc": z * ct / 100, "fee": 0.0,
+                          "block_timestamp": T0 + (ms + 400) // 1000 + 1, "block_number": BLOCK + k,
+                          "order_type": "maker", "price": ct / 100, "order_id": "0x" + ot.order_hash(st, EX),
+                          "transaction_hash": tx})
+            frames.extend([pc(ms + 100, "101", "m1", ct / 100, z), trade(ms + 400, "101", "m1", ct / 100, z, tx),
+                           pc(ms + 400, "101", "m1", ct / 100, 0)])
+
+    for h in (0, 3_600_000):
+        for a, m in (("101", "m1"), ("102", "m1"), ("301", "m3")):
+            frames.append(book(h, a, m, [(0.02, 10)], [(0.98, 10)]))
+        for i in range(32):
+            an_order(W1, h + 1000 + 1000 * i, 10 + i, extra=(W3, 50 + i) if shared_tx and h == 0 else None)
+        for j in range(n_cand):
+            frames += [pc(h + 50_000 + 100 * j, "101", "m1", 0.05, 50), pc(h + 50_050 + 100 * j, "101", "m1", 0.05, 0)]
+        frames += [pc(h + 52_000, "301", "m3", 0.05, 50), pc(h + 52_300, "301", "m3", 0.05, 0)]
+        frames += [pc(h + 500_000, a, m, 0.01, 1) for a, m in (("101", "m1"), ("301", "m3"))]
+    _write_world(root, frames, fills, [W1, W3])
+    return chain
+
+
+def one(root, **kw) -> Cfg:
+    return cfg(root, **({"wallets": (W1,), "roles": {W1: "cand"}} | kw))
+
+
+def _replay(root, run_="run1"):
+    return orjson.loads((root / "lab" / "reconstruct" / run_ / "orderreplay" / "orderreplay.json").read_bytes())
+
+
+def _match(root, run_="run1"):
+    return orjson.loads((root / "lab" / "reconstruct" / run_ / "ordermatch" / "ordermatch.json").read_bytes())
+
+
+def test_m1_never_filled_counts_merge_over_two_chunks_with_candidates(tmp_path):
+    """Both chunks have a cancelled candidate: the merge used to raise TypeError on by_twin_source."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    run(one(a), Chain(world2(a)))
+    run(one(a), lambda *x: 1 / 0)  # and the resume does not crash either
+    run(one(b, chunk_s=7200), Chain(world2(b)))
+    for root, chunks in ((a, 2), (b, 1)):
+        rp = _replay(root)
+        assert len(rp["params"]["chunks"]) == chunks
+        for doc in (rp["cohort"], rp["wallets"][W1]):
+            nf = doc["never_filled_quotes_estimate"]
+            for m in orderreplay.MODES:
+                assert (nf[m]["n"], nf[m]["twin_filled"], nf[m]["quoted_shares"], nf[m]["by_twin_source"]) == (
+                    2, 0, 100.0, {})
+    assert (a / "lab" / "reconstruct" / "run1" / "manifest.json").exists()
+
+
+def test_m1_by_twin_source_survives_the_merge():
+    t = {m: {"n": 3, "twin_filled": 2, "quoted_shares": 150.0, "phantom_shares": 20.0, "src:trade": 2}
+         for m in orderreplay.MODES}
+    nf = orderreplay.nf_doc(reconstruct._sum_tallies([t, t, {}]))
+    assert nf is not None and nf["pessimistic"] == {
+        "n": 6, "twin_filled": 4, "phantom_fill_rate": 0.66667, "quoted_shares": 300.0, "phantom_shares": 40.0,
+        "by_twin_source": {"trade": 4}}
+    assert orderreplay.nf_doc(reconstruct._sum_tallies([{}])) is None
+
+
+def world3(root):
+    """32 W1 orders early in hour 0, and 5 placed late in hour 0 whose fill (print and block) is in hour 1."""
+    frames, fills, chain = [], [], {}
+    k = 0
+
+    def an_order(ms, cents, fill_delay=300):
+        nonlocal k
+        k += 1
+        tx = f"0x{k:064x}"
+        st = static(1000 + k, W1, "101", cents, 50, MS + ms)
+        chain[tx] = (calldata(static(k, TAKER, "101", 99, 50, MS + ms), [st], [50 * cents * 10**4]), BLOCK + k)
+        fills.append({"id": f"r{k}", "address": W1, "event_type": "TRADE", "token_id": "101", "side": "BUY",
+                      "amount_shares": 50.0, "amount_usdc": 50 * cents / 100, "fee": 0.0,
+                      "block_timestamp": T0 + (ms + 100 + fill_delay) // 1000 + 1, "block_number": BLOCK + k,
+                      "order_type": "maker", "price": cents / 100, "order_id": "0x" + ot.order_hash(st, EX),
+                      "transaction_hash": tx})
+        frames.extend([pc(ms + 100, "101", "m1", cents / 100, 50),
+                       trade(ms + 100 + fill_delay, "101", "m1", cents / 100, 50, tx),
+                       pc(ms + 100 + fill_delay, "101", "m1", cents / 100, 0)])
+
+    for h in (0, 3_600_000):
+        for a in ("101", "102"):
+            frames.append(book(h + (5 if h else 0), a, "m1", [(0.02, 10)], [(0.98, 10)]))
+    for i in range(32):
+        an_order(1000 + 1000 * i, 10 + i)
+    for i in range(5):
+        an_order(3_400_000 + 20_000 * i, 50 + i, fill_delay=400_000)
+    frames += [pc(3_599_990, "101", "m1", 0.01, 1), pc(3_600_000 + 500_000, "101", "m1", 0.01, 2)]
+    _write_world(root, frames, fills, [W1])
+    return chain
+
+
+def test_m2_an_order_filled_after_its_chunk_is_censored_not_a_twin_miss(tmp_path):
+    res = {}
+    for cs in (3600, 7200):
+        root = tmp_path / str(cs)
+        man = run(one(root, chunk_s=cs), Chain(world3(root)))
+        out = root / "lab" / "reconstruct" / "run1"
+        late = [orjson.loads(line) for line in open(out / "wallets" / W1 / "orderreplay.jsonl", "rb")][-5:]
+        d = _replay(root)["wallets"][W1]
+        res[cs] = ([r["cut"] for r in late], {m: (d["conditional_on_real_fill"][m]["n"],
+                                                  d["conditional_on_real_fill"][m]["ratio"],
+                                                  d["conditional_on_real_fill"][m]["missed"]) for m in orderreplay.MODES},
+                   man["wallets"][W1]["gates"]["orderreplay.bracket_violation_share"]["status"])
+    # two 1 h chunks: the 5 late orders are cut at the chunk end and stay out of the headline (was ratio 0.8649)
+    assert res[3600] == (["chunk_end"] * 5, dict.fromkeys(orderreplay.MODES, (32, 1.0, 0)), "pass")
+    assert res[7200] == ([None] * 5, dict.fromkeys(orderreplay.MODES, (37, 1.0, 0)), "pass")
+    unit = orjson.loads((tmp_path / "3600" / "lab" / "reconstruct" / "run1" / "manifest.json").read_bytes())[
+        "steps"]["orderreplay"]["chunks"][0]
+    assert unit["counts"]["cut_chunk_end"] == 5 and unit["counts"]["counts"]["cut_short"] == {"chunk_end": 5}
+
+
+def _cand_world(root, n):
+    """One hour: 32 W1 orders (a 50-share fingerprint) and ``n`` cancelled 50-share candidates."""
+    frames, fills, chain = [], [], {}
+    for i in range(32):
+        k, ms, cents = i + 1, 1000 + 1000 * i, 10 + i
+        tx, st = f"0x{k:064x}", static(1000 + k, W1, "101", cents, 50, MS + ms)
+        chain[tx] = (calldata(static(k, TAKER, "101", 99, 50, MS + ms), [st], [50 * cents * 10**4]), BLOCK + k)
+        fills.append({"id": f"r{k}", "address": W1, "event_type": "TRADE", "token_id": "101", "side": "BUY",
+                      "amount_shares": 50.0, "amount_usdc": 50 * cents / 100, "fee": 0.0,
+                      "block_timestamp": T0 + (ms + 400) // 1000 + 1, "block_number": BLOCK + k,
+                      "order_type": "maker", "price": cents / 100, "order_id": "0x" + ot.order_hash(st, EX),
+                      "transaction_hash": tx})
+        frames += [pc(ms + 100, "101", "m1", cents / 100, 50), trade(ms + 400, "101", "m1", cents / 100, 50, tx),
+                   pc(ms + 400, "101", "m1", cents / 100, 0)]
+    frames += [book(0, a, "m1", [(0.02, 10)], [(0.98, 10)]) for a in ("101", "102")]
+    for j in range(n):
+        frames += [pc(100_000 + 100 * j, "101", "m1", 0.05, 50), pc(100_050 + 100 * j, "101", "m1", 0.05, 0)]
+    frames.append(pc(3_000_000, "101", "m1", 0.01, 1))
+    _write_world(root, frames, fills, [W1])
+    return chain
+
+
+def test_m3_candidate_rows_are_not_held_in_memory(tmp_path):
+    """10x the candidates must cost far less than 10x candidate rows: per extra candidate the
+    traced peak of ordermatch + orderreplay grows by its two level events, not by a row dict
+    (~1.6 kB), a Spec with two QuoteSims (~3 kB) and a result row (~2 kB) as before."""
+    import tracemalloc
+
+    peak, rows = {}, {}
+    for n in (300, 3000):
+        root = tmp_path / str(n)
+        chain = Chain(_cand_world(root, n))
+        run(one(root, t_to=T0 + 3600, steps=("ordertape",)), chain)
+        tracemalloc.start()
+        man = run(one(root, t_to=T0 + 3600, steps=("ordermatch", "orderreplay")), chain)
+        peak[n] = tracemalloc.get_traced_memory()[1]
+        tracemalloc.stop()
+        unit = man["steps"]["ordermatch"]["chunks"][0]
+        rows[n] = unit["outputs"]["quotes.jsonl"]["rows"]
+        assert man["steps"]["orderreplay"]["chunks"][0]["peak_rss_mb"] > 0
+        nf = _replay(root)["wallets"][W1]["never_filled_quotes_estimate"]
+        assert nf["pessimistic"]["n"] == n and _match(root)["wallets"][W1]["fingerprint"]["total"]["candidates"] == n
+    assert rows == {300: 300, 3000: 3000}  # every candidate is on disk
+    # measured 2026-11-26: ~720 B (two LevelEvents and their index entries in ordermatch's tape; the
+    # replay's pending tuple is ~520 B and comes after). The old replay path alone was ~6,500 B.
+    per_candidate = (peak[3000] - peak[300]) / 2700
+    assert per_candidate < 1000, per_candidate
+
+
+def test_m3_reduced_candidates_give_the_same_numbers_as_candidate_rows(ran):
+    """orderreplay.run(reduce_quotes=True) against the tool's default path on the same unit."""
+    root, _, man = ran
+    u = man["steps"]["ordermatch"]["chunks"][0]
+    d = root / "lab" / "reconstruct" / "run1" / u["dir"]
+    full, rows = orderreplay.run(root / "tape", d, u["from"], u["to"])
+    red, rrows = orderreplay.run(root / "tape", d, u["from"], u["to"], reduce_quotes=True)
+    assert [r for r in rows if r["kind"] == "order"] == rrows and any(r["kind"] == "quote" for r in rows)
+    nf = full["never_filled_quotes_estimate"]
+    assert red["never_filled_quotes_estimate"] == nf and nf["pessimistic"]["n"] == 1
+    assert red["counts"]["placement_not_found"] == full["counts"]["placement_not_found"] == 0
+    assert red["conditional_on_real_fill"] == full["conditional_on_real_fill"]
+    assert red["never_filled_by_wallet"][W1]["pessimistic"]["n"] == 1
+
+
+def test_m3_wallet_batches_give_the_same_wallet_numbers(tmp_path):
+    """--wallet-batch 1: W1 and W3 run in separate ordermatch / orderreplay calls on the same tape."""
+    root = tmp_path
+    chain = Chain(world2(root, shared_tx=True))
+    both = {"wallets": (W1, W3), "roles": {W1: "cand", W3: "cand"}}
+    a = run(cfg(root, **both), chain)
+    b = run(cfg(root, out=root / "lab" / "reconstruct" / "b1", orders=root / "lab" / "reconstruct" / "run1" / "ordertape",
+                wallet_batch=1, steps=("ordermatch", "orderreplay", "profile"), **both), lambda *x: 1 / 0)
+    first = a["steps"]["ordermatch"]["chunks"][0]["chunk"]
+    assert [(u["chunk"] == first, u["batch"], u["status"]) for u in b["steps"]["ordermatch"]["chunks"]] == [
+        (True, "b00", "ran"), (True, "b01", "ran"), (False, "b00", "ran"), (False, "b01", "empty")]
+    ma, mb = _match(root)["wallets"], _match(root, "b1")["wallets"]
+    for w in (W1, W3):
+        for k in ("maker_orders", "observable", "matched", "placebo_matched", "outcomes", "rest_ms_known"):
+            assert ma[w][k] == mb[w][k], (w, k)
+        assert a["wallets"][w]["gates"] == b["wallets"][w]["gates"]
+    # other cohort wallets' orders are still loaded in a batch: W3's 100-share orders are known, not candidates
+    assert ma[W1]["fingerprint"]["total"] == mb[W1]["fingerprint"]["total"]
+    ra, rb = _replay(root)["wallets"][W1], _replay(root, "b1")["wallets"][W1]
+    assert ra["conditional_on_real_fill"] == rb["conditional_on_real_fill"]
+
+
+def test_m3_sub_hour_chunks_through_the_cli(ran):
+    root, _, _ = ran
+    out = root / "lab" / "reconstruct" / "m30"
+    rc = main(["--data", str(root / "tape"), "--lab", str(root / "lab"), "--cohort", str(root / "cohort.json"),
+               "--from", str(T0), "--to", str(T0 + 7200), "--chunk-minutes", "30", "--out", str(out),
+               "--orders", str(root / "lab" / "reconstruct" / "run1" / "ordertape"),
+               "--steps", "ordermatch,orderreplay,profile", "--size-tol-rel", "0.02"])
+    man = orjson.loads((out / "manifest.json").read_bytes())
+    assert rc == 0 and man["args"]["chunk_minutes"] == 30 and man["args"]["size_tol_rel"] == 0.02
+    assert [u["status"] for u in man["steps"]["ordermatch"]["chunks"]] == ["ran", "empty", "ran", "empty"]
+    om = orjson.loads((out / "ordermatch" / "ordermatch.json").read_bytes())
+    assert om["params"]["per_unit"]["size_tol_rel"] == 0.02 and om["wallets"][W1]["matched"] == 35
+
+
+def test_m3_memory_budget_stops_the_run_cleanly(tmp_path, monkeypatch):
+    root = tmp_path
+    chain = Chain(world2(root))
+    monkeypatch.setattr(reconstruct, "peak_rss_mb", lambda: 999.0)
+    man = run(one(root, mem_budget_mb=500), chain)
+    assert "999.0 MB" in man["stopped"] and "--mem-budget-mb 500" in man["stopped"]
+    assert [u["status"] for u in man["steps"]["ordermatch"]["chunks"]] == ["ran", "absent"]  # stopped after one unit
+    assert man["steps"]["ordermatch"]["chunks"][0]["peak_rss_mb"] == 999.0
+    assert man["steps"]["orderreplay"]["status"] == "absent" and man["steps"]["profile"]["status"] == "absent"
+    assert all("ordermatch:mem_budget_stop" in man["wallets"][W1]["untrusted"][s]
+               for s in ("ordermatch", "orderreplay", "profile"))
+    assert "RUN STOPPED" in (root / "lab" / "reconstruct" / "run1" / "report.md").read_text()
+    # resume under a budget that holds: the finished unit is kept, the rest runs
+    man = run(one(root, mem_budget_mb=5000), chain)
+    assert man["stopped"] is None
+    assert [u["status"] for u in man["steps"]["ordermatch"]["chunks"]] == ["skipped", "ran"]
+    assert man["wallets"][W1]["untrusted"] == {s: [] for s in reconstruct.STEPS}
+
+
+def test_s1_shared_tape_reverifies_cached_orders_and_recovers_a_missing_part(tmp_path):
+    root = tmp_path
+    chain = Chain(world2(root, shared_tx=True))
+    shared = root / "lab" / "orders_shared"
+    c = one(root, orders=shared, steps=("ordertape",), t_to=T0 + 3600, max_txs=1)
+    con = reconstruct._connect(c.store, "256MB", 1)[0]
+    try:
+        todo = ot.select_txs(con, [W1], c.t_from, c.t_to, c.max_txs)
+        ot.run(todo, ot.Pool(list(ot.DEFAULT_RPCS), chain), shared,
+               expected=lambda txs: ot.goldsky_ids(con, [W1], txs))
+    finally:
+        con.close()
+    cohort = replace(c, wallets=(W1, W3), roles={W1: "cand", W3: "cand"})
+    assert reconstruct.verified_shares(cohort)[W3]["share"] == 0.0
+    cache = {}
+    before = reconstruct.orders_digest(shared, cache)["sha256"]
+    man = run(c, chain)
+    assert chain.calls == 1
+    assert man["steps"]["ordertape"]["summary"]["txs_reverified"] == 1
+    after = reconstruct.orders_digest(shared, cache)["sha256"]
+    assert after != before and man["steps"]["ordertape"]["outputs"]["orders"]["sha256"] == after
+
+    man = run(cohort, chain)
+    g = man["wallets"][W3]["gates"]["ordertape.verified_share"]
+    assert (g["value"], g["n"], g["status"]) == (1.0, 1, "pass")
+    assert chain.calls == 1
+    assert man["wallets"][W1]["gates"]["ordertape.verified_share"]["status"] == "pass"
+
+    next(shared.glob("day=*/*.parquet")).unlink()
+    man = run(cohort, chain)
+    assert chain.calls == 2
+    assert man["steps"]["ordertape"]["complete"] is True
+    assert man["wallets"][W3]["gates"]["ordertape.verified_share"]["status"] == "pass"
+
+
+@pytest.mark.parametrize("budget", [10, 40])
+def test_s2_an_incomplete_order_tape_is_untrusted_and_said_so(tmp_path, budget):
+    root = tmp_path
+    man = run(one(root, chunk_s=7200, max_requests=budget), Chain(world2(root)))
+    s = man["steps"]["ordertape"]
+    assert s["complete"] is False and s["summary"]["stopped"] == "max_requests" and s["left"]["txs_not_attempted"] > 0
+    assert all("ordertape:incomplete" in v for v in man["wallets"][W1]["untrusted"].values())
+    assert man["wallets"][W1]["tape"] == {"fills_in_range": 64, "fills_expected": budget, "fills_matched": budget,
+                                          "share": 1.0, "coverage": round(budget / 64, 6)}
+    md = (root / "lab" / "reconstruct" / "run1" / "report.md").read_text()
+    assert "ORDER TAPE INCOMPLETE" in md and f"({budget} / 64)" in md
+    row = next(line for line in md.splitlines() if line.startswith(f"| {W1}"))
+    assert "UNTRUSTED" in row
+
+
+def test_s3_this_file_and_its_constants_are_in_every_key(tmp_path, monkeypatch):
+    root = tmp_path
+    chain = Chain(world2(root))
+    run(one(root, chunk_s=7200), chain)
+    assert _match(root)["wallets"][W1]["fingerprint"] is not None
+    real = reconstruct.code_sha
+    monkeypatch.setattr(reconstruct, "code_sha", lambda: real() | {"lab/reconstruct.py": "changed"})
+    man = run(one(root, chunk_s=7200), chain)
+    assert {s: man["steps"][s]["status"] for s in reconstruct.STEPS} == dict.fromkeys(reconstruct.STEPS, "ran")
+    monkeypatch.setattr(reconstruct, "code_sha", real)
+    monkeypatch.setattr(reconstruct, "MIN_FP_ORDERS", 1000)
+    man = run(one(root, chunk_s=7200), chain)
+    assert man["steps"]["ordermatch"]["status"] == "ran" and _match(root)["wallets"][W1]["fingerprint"] is None
+    assert {"twin/engine.py", "twin/features.py", "strategy/genome.py"} <= set(reconstruct.CODE["orderreplay"])
+    assert all("lab/reconstruct.py" in fs for fs in reconstruct.CODE.values())
+
+
+def test_s4_a_kill_in_the_second_chunk_resumes_there(tmp_path, monkeypatch):
+    root = tmp_path
+    chain = Chain(world2(root))
+    real, n, calls = ordermatch.run, [0], []
+
+    def die2(*a, **k):
+        n[0] += 1
+        if n[0] == 2:
+            raise KeyboardInterrupt
+        return real(*a, **k)
+
+    monkeypatch.setattr(ordermatch, "run", die2)
+    with pytest.raises(KeyboardInterrupt):
+        run(one(root, steps=("ordertape", "ordermatch")), chain)
+    monkeypatch.setattr(ordermatch, "run", lambda *a, **k: calls.append(a[2] - T0) or real(*a, **k))
+    man = run(one(root, steps=("ordertape", "ordermatch")), chain)  # the lock was released by the kill
+    assert calls == [3600] and [u["status"] for u in man["steps"]["ordermatch"]["chunks"]] == ["skipped", "ran"]
+
+
+def test_s4_a_half_written_merge_is_stale_then_heals(tmp_path, monkeypatch):
+    root = tmp_path
+    chain = Chain(world2(root))
+    real = reconstruct._partition
+
+    def half(files, *a):
+        real(files[:1], *a)  # only the first chunk's rows reach the wallet files, then the process dies
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(reconstruct, "_partition", half)
+    with pytest.raises(KeyboardInterrupt):
+        run(one(root, steps=("ordertape", "ordermatch")), chain)
+    monkeypatch.setattr(reconstruct, "_partition", real)
+    out = root / "lab" / "reconstruct" / "run1"
+    assert sum(1 for _ in open(out / "wallets" / W1 / "orders.jsonl")) == 32
+    assert not (out / "_state" / "ordermatch.json").exists()
+    man = run(one(root, steps=("orderreplay", "profile")), chain)
+    assert man["steps"]["ordermatch"]["stale"]  # chunk outputs without a merge
+    g = man["wallets"][W1]["gates"]["orderreplay.placement_not_found_share"]
+    assert (g["value"], g["status"]) == (-1.0, "fail")  # 64 replayed rows against 32 matched: not a pass
+    assert "ordermatch:stale" in man["wallets"][W1]["untrusted"]["orderreplay"]
+    assert "ordermatch:stale" in man["wallets"][W1]["untrusted"]["profile"]
+    man = run(one(root), chain)  # a full run redoes the ordermatch merge, and the replay merge that read it
+    assert man["steps"]["orderreplay"]["status"] == "ran" and not man["steps"]["orderreplay"]["stale"]
+    assert _replay(root)["wallets"][W1]["counts"]["placement_not_found"] == 0
+    assert man["wallets"][W1]["untrusted"] == {s: [] for s in reconstruct.STEPS}
+    assert not list(out.glob("wallets/*/*.tmp"))
+
+
+def test_s4_a_negative_share_fails_its_gate():
+    assert reconstruct.gate(GATES, "orderreplay.placement_not_found_share", -1.0, 32)["status"] == "fail"
+    assert reconstruct.gate(GATES, "orderreplay.placement_not_found_share", 0.0, 32)["status"] == "pass"
+
+
+def test_s5_s6_report_totals_and_identity_precision(tmp_path):
+    root = tmp_path
+    strict = GATES | {"ordermatch.match_rate": GATES["ordermatch.match_rate"] | {"min": 1.01}}
+    run(one(root, chunk_s=7200), Chain(world2(root)), strict)
+    out = root / "lab" / "reconstruct" / "run1"
+    md = (out / "report.md").read_text()
+    totals = {line.split(":")[0][2:]: line for line in md.splitlines() if line.startswith("- ")}
+    for k, step in (("match", "ordermatch"), ("twin", "orderreplay"), ("copyability", "profile")):
+        assert totals[k].endswith(f"(includes 1 wallets not trusted for {step})"), totals[k]
+    assert "includes" not in totals["wallets"]
+    # identity precision: null with the reason everywhere, and said in the report
+    assert "Identity precision of the footprint is NOT MEASURED" in md and "| sizes stable |" in md
+    fp = _match(root)["wallets"][W1]["fingerprint"]
+    assert fp["total"]["identity_precision_upper"] is None and "not measured" in fp["identity_precision_note"]
+    assert all(v["identity_precision_upper"] is None for v in fp["per_size"].values())
+    unit = orjson.loads(next(out.glob("chunks/*/*/ordermatch/ordermatch.json")).read_bytes())["wallets"][W1]
+    assert unit["fingerprint"]["total"]["identity_precision_upper"] is None
+    led = (out / "profile" / f"{W1}.ledger.json").read_text()
+    assert '"identity_precision_upper": null' in led and '"identity_precision_upper": 1' not in led
+    rep = orjson.loads((out / "report.json").read_bytes())
+    assert rep["cohort_totals_include_untrusted_wallets"]["match"] == 1
+    assert rep["wallets"][0]["footprint"]["identity_precision_upper"] is None
+
+
+def test_s7_a_second_run_on_the_same_directory_is_refused(tmp_path):
+    root = tmp_path
+    chain = Chain(world2(root))
+    c = one(root, chunk_s=7200)
+    with reconstruct._lock(c.out), pytest.raises(reconstruct.Locked):
+        run(c, chain)
+    with reconstruct._lock(c.orders):  # someone else is writing the order tape
+        with pytest.raises(reconstruct.Locked):
+            run(c, chain)
+    assert run(c, chain)["steps"]["ordertape"]["complete"]
+
+
+def test_s7_the_timer_queue_retries_a_range_before_new_ones(tmp_path):
+    state, seen = tmp_path / "_pending.json", []
+
+    def go(ok, used=30):
+        def f(a, b, left):
+            seen.append((a, b, left))
+            return {"stopped": None,
+                    "steps": {"ordertape": {"status": "ran", "complete": ok(a), "summary": {"requests": used}}}}
+        return f
+
+    reconstruct.run_pending(state, (0, 6), go(lambda a: False), 100)       # firing 1: range 0 does not finish
+    assert seen == [(0, 6, 100)] and [p["from"] for p in orjson.loads(state.read_bytes())["pending"]] == [0]
+    seen.clear()
+    reconstruct.run_pending(state, (6, 12), go(lambda a: True), 100)       # firing 2: the old range first, then the new
+    assert seen == [(0, 6, 100), (6, 12, 70)] and orjson.loads(state.read_bytes())["pending"] == []
+    seen.clear()
+    with pytest.raises(ZeroDivisionError):                                 # a crash keeps the range
+        reconstruct.run_pending(state, (24, 30), lambda a, b, left: 1 / 0, 100)
+    assert [p["from"] for p in orjson.loads(state.read_bytes())["pending"]] == [24]
+    for _ in range(reconstruct.MAX_TRIES):                                 # a range that never finishes is given up
+        reconstruct.run_pending(state, (24, 30), go(lambda a: False), 100)
+    st = orjson.loads(state.read_bytes())
+    assert st["pending"] == [] and [p["from"] for p in st["gave_up"]] == [24]
+
+
+@pytest.mark.parametrize("how", ["missing", "not_match_orders"])
+def test_audit_one_of_35_txs_decoded_is_never_complete(tmp_path, how):
+    """Audit 2026-11-26: 1 of 35 selected txs decoded was reported complete with 100% verified and
+    the retry was skipped. The node lacks 34 txs (or answers them with a call that is not
+    matchOrders): the tape is incomplete, every wallet says so, and the next run asks again."""
+    root = tmp_path
+    txs = _cand_world(root, 0)
+    for k in range(33, 36):  # 35 selected txs in all
+        txs[f"0x{k:064x}"] = (txs[f"0x{1:064x}"][0], BLOCK + k)
+    _extra = [{"id": f"x{k}", "address": W1, "event_type": "TRADE", "token_id": "101", "side": "BUY",
+               "amount_shares": 1.0, "amount_usdc": 0.5, "fee": 0.0, "block_timestamp": T0 + 100,
+               "block_number": BLOCK + k, "order_type": "maker", "price": 0.5, "order_id": "0x" + "ee" * 32,
+               "transaction_hash": f"0x{k:064x}"} for k in range(33, 36)]
+    g = SegmentWriter(root / "tape", "goldsky_activity")
+    g.append(orjson.dumps({"data": _extra}).decode(), tw=(T0 + 3600) * 10**9,
+             meta={"job": "cohort-a", "status": 200, "rows": 3})
+    g.close()
+    compact(root / "tape", root / "lab" / "fills")
+    good = Chain(txs)
+    asked: list[str] = []
+
+    def flaky(url, method, params):
+        asked.append(params[0])
+        if params[0] == f"0x{1:064x}":
+            return good(url, method, params)
+        return None if how == "missing" else {"input": "0xdeadbeef", "to": EX, "blockNumber": hex(BLOCK)}
+
+    c = one(root, t_to=T0 + 3600, steps=("ordertape",))
+    man = run(c, flaky)
+    s = man["steps"]["ordertape"]
+    assert (s["txs_selected"], s["txs_decoded_on_tape"], s["complete"]) == (35, 1, False)
+    assert s["left"]["txs_selected_not_decoded"] == 34
+    g1 = man["wallets"][W1]["gates"]["ordertape.verified_share"]
+    assert (g1["value"], g1["n"]) == (1.0, 1)  # the one decoded tx verifies, and that is not enough:
+    assert man["wallets"][W1]["untrusted"]["ordertape"] == ["ordertape:incomplete"]
+    assert man["wallets"][W1]["tape"]["coverage"] == round(1 / 35, 6)
+    md = (root / "lab" / "reconstruct" / "run1" / "report.md").read_text()
+    assert "ORDER TAPE INCOMPLETE** (1 of 35 selected txs decoded" in md
+    # the next run is not skipped
+    again: list[str] = []
+    man = run(c, lambda url, method, params: again.append(params[0]) or good(url, method, params))
+    if how == "missing":  # ordertape retries exactly the 34 txs it does not have
+        assert sorted(again) == sorted(set(txs) - {f"0x{1:064x}"}) and len(again) == 34
+        assert man["steps"]["ordertape"]["complete"] is True and man["steps"]["ordertape"]["left"] == {}
+        assert man["wallets"][W1]["untrusted"]["ordertape"] == ["ordertape.verified_share:fail"]  # 3 unknown ids
+    else:  # ordertape recorded them as done: it cannot refetch, so the tape stays incomplete, loudly
+        assert again == [] and man["steps"]["ordertape"]["status"] == "ran"
+        assert man["steps"]["ordertape"]["complete"] is False
+        assert man["steps"]["ordertape"]["left"] == {"txs_selected_not_decoded": 34}

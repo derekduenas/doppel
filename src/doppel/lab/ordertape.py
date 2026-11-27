@@ -29,9 +29,11 @@ any point costs at most one flush of requests and never duplicates rows. Txs tha
 ``failed`` or ``undecodable`` are not recorded and are tried again by the next run. There is no
 lock: do not run two jobs on one output directory.
 
-Each row carries ``verified`` (its hash is an ``order_id`` the fill store reports in that tx; null
+Each row carries ``verified`` (its maker and hash match a fill the store reports in that tx; null
 when the store has no fill with an order_id for the tx) and ``ts_flag`` (null when the stamp is
-plausible, else ``zero`` | ``seconds`` | ``after_block`` | ``old`` | ``overflow``).
+plausible, else ``zero`` | ``seconds`` | ``after_block`` | ``old`` | ``overflow``). For selected
+transactions the current store re-verifies cached rows without RPC. If a manifest part goes
+missing, only its decoded transactions become eligible for another fetch.
 """
 
 from __future__ import annotations
@@ -371,21 +373,48 @@ STATE_DIR = "_state"
 DONE = ("decoded", "not_match_orders")  # recorded; other statuses are retried by the next run
 
 
-def load_done(out: Path) -> tuple[set[str], int]:
-    """(finished txs, next flush number). Deletes parts and tmp files no manifest names: they are
-    what a crash left between writing a part and committing its manifest."""
-    done: set[str] = set()
+def _manifests(out: Path):
+    for path in sorted((out / STATE_DIR).glob("flush-*.json")):
+        yield int(path.stem.split("-")[1]), orjson.loads(path.read_bytes())
+
+
+def has_missing_parts(out: Path) -> bool:
+    return any(not (out / part).is_file() for _, rec in _manifests(out) for part in rec["parts"])
+
+
+def _load_flushes(out: Path) -> tuple[list[dict], int]:
+    """Keep commits for surviving parts and remove uncommitted parts left by a crash."""
+    flushes = []
     parts: set[str] = set()
     seq = 1
-    for m in sorted((out / STATE_DIR).glob("flush-*.json")):
-        rec = orjson.loads(m.read_bytes())
-        done.update(rec["txs"])
+    for number, rec in _manifests(out):
+        present = [part for part in rec["parts"] if (out / part).is_file()]
+        if len(present) != len(rec["parts"]):
+            surviving = {tx for part in present
+                         for tx in pq.ParquetFile(out / part).read(columns=["tx"])["tx"].to_pylist()}
+            rec = {"parts": present, "txs": {tx: status for tx, status in rec["txs"].items()
+                                            if status != "decoded" or tx in surviving}}
+            _commit(out, number, rec["parts"], rec["txs"])
+        flushes.append(rec)
         parts.update(rec["parts"])
-        seq = max(seq, int(m.stem.split("-")[1]) + 1)
+        seq = max(seq, number + 1)
     for p in [*out.glob("day=*/part-*"), *(out / STATE_DIR).glob("*.tmp")]:
         if p.relative_to(out).as_posix() not in parts:
             p.unlink()
-    return done, seq
+    return flushes, seq
+
+
+def load_done(out: Path) -> tuple[set[str], int]:
+    """Return the finished transactions and the next flush number."""
+    flushes, seq = _load_flushes(out)
+    return {tx for rec in flushes for tx in rec["txs"]}, seq
+
+
+def _write_part(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    pq.write_table(pa.Table.from_pylist(rows, schema=SCHEMA), tmp, compression="zstd")
+    os.replace(tmp, path)
 
 
 def _write_parts(out: Path, seq: int, rows: list[dict]) -> list[str]:
@@ -395,11 +424,7 @@ def _write_parts(out: Path, seq: int, rows: list[dict]) -> list[str]:
     parts = []
     for day, rs in sorted(by_day.items()):
         rel = f"day={day}/part-{seq:06d}.parquet"
-        p = out / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_name(p.name + ".tmp")
-        pq.write_table(pa.Table.from_pylist(rs, schema=SCHEMA), tmp, compression="zstd")
-        os.replace(tmp, p)
+        _write_part(out / rel, rs)
         parts.append(rel)
     return parts
 
@@ -413,22 +438,73 @@ def _commit(out: Path, seq: int, parts: list[str], txs: dict[str, str]) -> None:
 
 
 # ---------------------------------------------------------------- run
+def _verify(rows: list[dict], want: set[tuple[str, str]],
+            per_wallet: dict[str, list[int]]) -> tuple[bool, bool]:
+    """Update verification on one transaction. Return (flags changed, no claims matched)."""
+    got = {(row["maker"], row["order_id"]) for row in rows}
+    changed = False
+    for row in rows:
+        verified = (row["maker"], row["order_id"]) in want if want else None
+        changed |= row["verified"] != verified
+        row["verified"] = verified
+    for address, oid in want:
+        counts = per_wallet.setdefault(address, [0, 0])
+        counts[0] += 1
+        counts[1] += (address, oid) in got
+    return changed, bool(want and not want & got)
+
+
+def _reverify(out: Path, rec: dict, selected: set[str], expected: Callable,
+              per_wallet: dict[str, list[int]]) -> tuple[int, int]:
+    """Refresh selected rows in this flush, leaving other transactions untouched."""
+    txs = [tx for tx, status in rec["txs"].items() if tx in selected and status == "decoded"]
+    if not txs:
+        return 0, 0
+    claims = expected(txs)
+    wanted = set(txs)
+    no_match = 0
+    for part in rec["parts"]:
+        path = out / part
+        rows = pq.ParquetFile(path).read().to_pylist()
+        by_tx: dict[str, list[dict]] = {}
+        for row in rows:
+            if row["tx"] in wanted:
+                by_tx.setdefault(row["tx"], []).append(row)
+        changed = False
+        for tx, tx_rows in by_tx.items():
+            updated, unmatched = _verify(tx_rows, claims.get(tx, set()), per_wallet)
+            changed |= updated
+            no_match += unmatched
+        if changed:
+            _write_part(path, rows)
+    return len(txs), no_match
+
+
 def run(todo: list[tuple[str, int | None, int | None]], pool: Pool, out: Path, *,
         expected: Callable[[list[str]], dict[str, set[tuple[str, str]]]] | None = None,
         workers: int = 4, flush_txs: int = 500, max_age_s: float = MAX_AGE_S) -> dict:
-    """Fetch, verify and store every tx of ``todo`` not finished by an earlier run; returns the
-    summary. ``expected(txs)`` gives the fill store's {(address, order_id)} per tx. Counts cover
-    this run only. Verified share = of the store's (address, tx, order_id) fills in decoded txs,
-    the share with a decoded order of that id."""
+    """Fetch unfinished transactions and refresh verification for both new and cached rows.
+
+    ``expected(txs)`` supplies all current fill-store claims as {(address, order_id)} per tx.
+    Without it, cached flags are left alone. Verification counts include selected cached rows.
+    RPC, decoded-order, and timestamp-flag counts cover new fetches only.
+    """
     t0 = time.monotonic()
     out.mkdir(parents=True, exist_ok=True)
-    done, seq = load_done(out)
+    flushes, seq = _load_flushes(out)
+    done = {tx for rec in flushes for tx in rec["txs"]}
     todo = list({t[0]: t for t in todo}.values())
     work = [t for t in todo if t[0] not in done]
     n: Counter[str] = Counter()
     flags: Counter[str] = Counter()
     per_wallet: dict[str, list[int]] = {}  # address -> [fills with an order_id, of which decoded]
-    orders = no_match = 0
+    orders = no_match = reverified = 0
+    if expected is not None:
+        selected = {tx for tx, _, _ in todo}
+        for rec in flushes:
+            checked, unmatched = _reverify(out, rec, selected, expected, per_wallet)
+            reverified += checked
+            no_match += unmatched
     stopped = None
     blocks: dict[int, int] = {}
     with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -439,18 +515,11 @@ def run(todo: list[tuple[str, int | None, int | None]], pool: Pool, out: Path, *
             exp = expected([r["tx"] for r in dec]) if expected and dec else {}
             rows: list[dict] = []
             for r in dec:
-                want = exp.get(r["tx"]) or set()
-                ids = {oid for _, oid in want}
-                got = {o["order_id"] for o in r["rows"]}
+                _, unmatched = _verify(r["rows"], exp.get(r["tx"], set()), per_wallet)
+                no_match += unmatched
                 for o in r["rows"]:
-                    o["verified"] = o["order_id"] in ids if want else None
                     if o["ts_flag"]:
                         flags[o["ts_flag"]] += 1
-                for a, oid in want:
-                    c = per_wallet.setdefault(a, [0, 0])
-                    c[0] += 1
-                    c[1] += oid in got
-                no_match += bool(want) and not ids & got
                 rows += r["rows"]
             fin = {r["tx"]: r["status"] for r in res if r["status"] in DONE}
             if fin:
@@ -467,6 +536,7 @@ def run(todo: list[tuple[str, int | None, int | None]], pool: Pool, out: Path, *
     wall = time.monotonic() - t0
     return {
         "txs_selected": len(todo), "txs_already_done": len(todo) - len(work),
+        "txs_reverified": reverified,
         "txs_requested": attempted, "txs_decoded": n["decoded"],
         "txs_not_match_orders": n["not_match_orders"], "txs_undecodable": n["undecodable"],
         "txs_missing": n["missing"], "txs_failed": n["failed"],
@@ -527,7 +597,7 @@ def main(argv=None) -> int:
         pool = Pool(a.rpc or list(DEFAULT_RPCS), rate=a.rate, max_requests=a.max_requests)
         res = run(todo, pool, a.out, workers=a.workers, flush_txs=a.flush_txs,
                   max_age_s=a.max_age_days * 86400,
-                  expected=(lambda txs: goldsky_ids(con, wallets, txs)) if con is not None else None)
+                  expected=(lambda txs: goldsky_ids(con, None, txs)) if con is not None else None)
     finally:
         if con is not None:
             con.close()

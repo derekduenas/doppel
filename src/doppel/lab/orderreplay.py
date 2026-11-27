@@ -70,6 +70,10 @@ DEFINITIONS (per order and queue mode; shares)
 - Never-filled quotes (ESTIMATE): fingerprint candidates classified ``cancelled:exact_decrease``
   are replayed the same way; real = 0, so any twin fill is a phantom. The candidates are not
   identified as anyone's orders and "never filled" rests on ordermatch's cancel rule.
+  ``quotes.jsonl`` is read line by line into one small tuple per candidate; its quote object
+  exists only while it is live. With ``run(reduce_quotes=True)`` a finished candidate is reduced
+  to counts at once (total and per wallet, ``never_filled_by_wallet``) and no row is kept for
+  it: a quote-flickering wallet has ~10^5 candidates per hour.
 
 Analysis only: reads the future of the tape by design; nothing here is a decision input.
 """
@@ -80,8 +84,10 @@ import argparse
 import math
 import sys
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import orjson
@@ -157,18 +163,30 @@ class Spec:
     tx_seen: set[str] = field(default_factory=set)
     tx_routed: set[str] = field(default_factory=set)
     tx_delivered: set[str] = field(default_factory=set)  # routed AND handed to the live quote
+    wallet: str | None = None  # fingerprint candidates: whose list it is on
 
     @property
     def key(self) -> tuple:
         return (self.token, self.price, self.side, self.placed_ms, self.placed_tw)
 
 
-def load_specs(d: Path) -> tuple[list[Spec], Counter]:
-    """Orders (and fingerprint candidates, if ``quotes.jsonl`` is there) from an ordermatch dir."""
+QuoteKey = tuple[str, float, str, int, int]  # token, price, side, placement venue ms, receive ns
+
+
+def _lines(p: Path):
+    with open(p, "rb") as fh:
+        for line in fh:
+            if line.strip():
+                yield orjson.loads(line)
+
+
+def load_specs(d: Path) -> tuple[list[Spec], dict[QuoteKey, list[tuple]], Counter]:
+    """Orders from an ordermatch dir, and (if ``quotes.jsonl`` is there) its cancelled
+    fingerprint candidates as placement key -> [(size, end_ms, wallet)]."""
     specs: list[Spec] = []
+    quotes: dict[QuoteKey, list[tuple]] = defaultdict(list)
     stats: Counter = Counter()
-    for line in (d / "orders.jsonl").read_bytes().splitlines():
-        r = orjson.loads(line)
+    for r in _lines(d / "orders.jsonl"):
         stats["orders"] += 1
         if "fills_at" not in r:
             raise SystemExit("orders.jsonl has no 'fills_at' (written by an older doppel-ordermatch): "
@@ -181,16 +199,14 @@ def load_specs(d: Path) -> tuple[list[Spec], Counter]:
                           f"{r['outcome']}:{r['reason']}", float(r["filled"]), r["fills_at"]))
     qp = d / "quotes.jsonl"
     if qp.exists():
-        for line in qp.read_bytes().splitlines():
-            r = orjson.loads(line)
+        for r in _lines(qp):
             stats["quotes"] += 1
             if (r["outcome"], r["reason"]) != ("cancelled", "exact_decrease"):
                 stats["quotes_not_cancelled_skipped"] += 1
                 continue
-            specs.append(Spec("quote", f"{r['token_id']}:{r['price']}:{r['venue_ms']}:{r['tw_ns']}",
-                              r["token_id"], "BUY", px(r["price"]), float(r["size"]), r["venue_ms"],
-                              r["tw_ns"], r["end_ms"], "cancelled:exact_decrease", 0.0))
-    return specs, stats
+            quotes[(r["token_id"], px(r["price"]), "BUY", r["venue_ms"], r["tw_ns"])].append(
+                (float(r["size"]), r["end_ms"], r.get("wallet")))
+    return specs, quotes, stats
 
 
 def to_book(levels: dict[tuple[float, str], float], t: int) -> Book:
@@ -200,8 +216,11 @@ def to_book(levels: dict[tuple[float, str], float], t: int) -> Book:
 
 
 def replay_stream(root: Path, stream: str, t_from: int, t_to: int, pending: dict[tuple, list[Spec]],
-                  wanted: dict[tuple[str, str], list[Spec]], stats: Counter) -> None:
-    """Drive the quotes placed on this stream. Mutates the specs (``sims``, ``queue0``, ...)."""
+                  wanted: dict[tuple[str, str], list[Spec]], stats: Counter,
+                  quotes: dict[QuoteKey, list[tuple]], done: Callable[[Spec], object]) -> None:
+    """Drive the quotes placed on this stream. Mutates the specs (``sims``, ``queue0``, ...).
+    A fingerprint candidate becomes a Spec at its placement event and is handed to ``done`` when
+    its replay is over (cancelled at its end, cut by a reset, or the stream ended)."""
     book = IntlBook()
     clock = 0
     active: dict[str, list[Spec]] = defaultdict(list)  # quote's own token -> live specs
@@ -219,6 +238,8 @@ def replay_stream(root: Path, stream: str, t_from: int, t_to: int, pending: dict
             if s.end_ms is not None and ms > s.end_ms:
                 for sim in s.sims.values():
                     sim.cancel(clock)
+                if s.kind == "quote":
+                    done(s)
             else:
                 keep.append(s)
         if keep:
@@ -233,6 +254,8 @@ def replay_stream(root: Path, stream: str, t_from: int, t_to: int, pending: dict
             for specs in active.values():
                 for s in specs:
                     s.cut = "reset"
+                    if s.kind == "quote":
+                        done(s)
             active.clear()
         if not evs:
             continue
@@ -244,10 +267,20 @@ def replay_stream(root: Path, stream: str, t_from: int, t_to: int, pending: dict
             if not isinstance(e, LevelEvent):
                 continue
             changed[e.asset] = max(changed.get(e.asset, 0), e.venue_ms)
-            cands = pending.get((e.asset, e.price, e.side, e.venue_ms, e.tw_ns))
+            key = (e.asset, e.price, e.side, e.venue_ms, e.tw_ns)
+            cands = pending.get(key)
+            qc = quotes.get(key)
+            s = None
             if cands and e.delta > 0:
                 s = min(cands, key=lambda c, d=e.delta: abs(c.size - d))
                 cands.remove(s)
+            elif qc and e.delta > 0:
+                size, end, wallet = qc.pop(min(range(len(qc)), key=lambda i, d=e.delta, q=qc: abs(q[i][0] - d)))
+                if not qc:
+                    del quotes[key]
+                s = Spec("quote", f"{e.asset}:{e.price}:{e.venue_ms}:{e.tw_ns}", e.asset, "BUY", e.price,
+                         size, e.venue_ms, e.tw_ns, end, "cancelled:exact_decrease", 0.0, wallet=wallet)
+            if s is not None:
                 s.market, s.queue0 = e.market or e.asset, e.old_size
                 s.sims = {m: QuoteSim(SIDE[s.side], s.price, s.size, clock, q)
                           for m, q in zip(MODES, (e.old_size, 0.0))}
@@ -298,6 +331,8 @@ def replay_stream(root: Path, stream: str, t_from: int, t_to: int, pending: dict
         for s in specs:
             if s.end_ms is None:  # followed to the end of the tape: its real end is not known
                 s.cut = "tape_end"
+            if s.kind == "quote":
+                done(s)
 
 
 # ---------------------------------------------------------------- results
@@ -437,10 +472,52 @@ def summarize(rows: list[dict], stats: Counter) -> dict:
     return doc
 
 
-def run(root: Path, match_dir: Path, t_from: int, t_to: int,
-        streams: list[str] | None = None) -> tuple[dict, list[dict]]:
-    """Returns (summary doc, per-quote rows: orders first, then fingerprint candidates)."""
-    specs, stats = load_specs(match_dir)
+NF_NOTE = ("ESTIMATE: fingerprint candidates ordermatch classified cancelled:exact_decrease; not "
+           "identified orders, and 'never filled' rests on ordermatch's cancel rule")
+
+
+def nf_add(tally: dict[str, Any], s: Spec) -> None:
+    """Add one finished candidate to per-mode counts (flat: n, twin_filled, quoted_shares,
+    phantom_shares, book_cross_fills, ``src:<twin sources>``), so tallies add up with ``+``."""
+    for m, sim in s.sims.items():
+        c = tally[m]
+        tw = sum(q for _, q, _ in sim.got)
+        c["n"] += 1
+        c["twin_filled"] += tw > 0
+        c["quoted_shares"] += s.size
+        c["phantom_shares"] += tw
+        c["book_cross_fills"] += sum(via == "book_cross" for _, _, via in sim.got)
+        if sim.got:
+            c["src:" + "+".join(sorted({via for _, _, via in sim.got}))] += 1
+
+
+def nf_doc(tally: dict[str, Any]) -> dict | None:
+    """Per-mode counts -> the shape of ``never_filled_quotes_estimate``; None without candidates."""
+    if not all(tally.get(m, {}).get("n") for m in MODES):
+        return None
+    return {m: {"n": (t := tally[m])["n"], "twin_filled": t.get("twin_filled", 0),
+                "phantom_fill_rate": _r(t.get("twin_filled", 0) / t["n"], 5),
+                "quoted_shares": _r(t.get("quoted_shares", 0)), "phantom_shares": _r(t.get("phantom_shares", 0)),
+                "by_twin_source": {k[4:]: v for k, v in t.items() if k.startswith("src:")}}
+            for m in MODES} | {"note": NF_NOTE}
+
+
+def run(root: Path, match_dir: Path, t_from: int, t_to: int, streams: list[str] | None = None,
+        reduce_quotes: bool = False) -> tuple[dict, list[dict]]:
+    """Returns (summary doc, per-quote rows: orders first, then fingerprint candidates). With
+    ``reduce_quotes`` candidates are counted and dropped as they finish: no candidate rows, and
+    the doc carries ``never_filled_by_wallet`` (flat counts per wallet and mode)."""
+    specs, quotes, stats = load_specs(match_dir)
+    kept: list[Spec] = []
+    tally: dict[str, dict[str, Any]] = defaultdict(lambda: {m: Counter() for m in MODES})
+
+    def done(s: Spec) -> None:
+        if reduce_quotes:
+            nf_add(tally[s.wallet or ""], s)
+            nf_add(tally["*"], s)
+        else:
+            kept.append(s)
+
     pending: dict[tuple, list[Spec]] = defaultdict(list)
     wanted: dict[tuple[str, str], list[Spec]] = defaultdict(list)
     for s in specs:
@@ -449,11 +526,17 @@ def run(root: Path, match_dir: Path, t_from: int, t_to: int,
             wanted[(tx, s.token)].append(s)
     streams = streams or sorted(d.name for d in Path(root).iterdir() if d.name.startswith("clob_"))
     for st in streams:
-        replay_stream(root, st, t_from, t_to, pending, wanted, stats)
-    stats["placement_not_found"] = sum(not s.sims for s in specs)
-    rows = [result(s) for s in specs if s.sims]
+        replay_stream(root, st, t_from, t_to, pending, wanted, stats, quotes, done)
+    stats["placement_not_found"] = sum(not s.sims for s in specs) + sum(len(v) for v in quotes.values())
+    rows = [result(s) for s in specs if s.sims] + [result(s) for s in kept]
     doc = {"params": {"from": t_from, "to": t_to, "streams": streams, "tol_shares": TOL,
                       "n_boot": N_BOOT}} | summarize(rows, stats)
+    if reduce_quotes:
+        total = tally.pop("*", {})
+        doc["counts"]["candidate_book_cross_fills"] = total["pessimistic"]["book_cross_fills"] if total else 0
+        if nf := nf_doc(total):
+            doc["never_filled_quotes_estimate"] = nf
+        doc["never_filled_by_wallet"] = {w: {m: dict(c) for m, c in t.items()} for w, t in sorted(tally.items())}
     return doc, rows
 
 
