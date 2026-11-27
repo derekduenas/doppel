@@ -1,5 +1,15 @@
 # Claude Code handoff
 
+## Latest wallet walkthrough · Layer 2
+
+Open `/Users/derekduenas/doppel-wallet-inspection-20261127` on
+`review/wallet-inspection-20261127` at `5ef9086`. The real candidate produced 59 sole
+uncontested book additions versus 60 in the shifted comparison across 1,650 day orders.
+The control produced 241 versus 25 across 537. Neither short-window run qualified for a
+strategy draft. Layer 3 starts with strictly prior information at the first 60-share fill
+and two competing posting-time hypotheses. Check Apex storage headroom before capturing
+new data. [Layer 2 report and reproducible receipts](https://github.com/derekduenas/doppel/blob/5ef90866a4e4d6231a46a01e065645693f92e396/docs/WALLET-INSPECTION.md)
+
 ## Latest wallet walkthrough · Layer 1
 
 Continue in `/Users/derekduenas/doppel-wallet-absorption-20261127` on
