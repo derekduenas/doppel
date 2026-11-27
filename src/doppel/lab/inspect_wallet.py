@@ -302,7 +302,7 @@ def run(specs, data, stream, out, layer1_summary):
     study = orjson.loads(binding)
     if study.get("schema") != "wallet-absorption-study-summary/1":
         raise ValueError("unrecognized Layer 1 study summary")
-    owners = [subject(*paths, study) for paths in specs]
+    owners = [subject(ledger, store, orders, study) for ledger, store, orders in specs]
     start, end = owners[0].span
     if len({o.wallet for o in owners}) != len(owners) or any(o.span != (start, end) for o in owners):
         raise ValueError("use distinct wallets with identical Layer 1 UTC bounds")
