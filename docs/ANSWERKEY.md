@@ -151,7 +151,9 @@ Each cell falls in one category:
 | `missed` | there is a true rule and the tool said UNKNOWN |
 | `not_scored` | the cell has no defined answer |
 
-For (e) and (f), a fidelity INCONCLUSIVE counts as correctly_unknown. Each fidelity cell records
+For (e) and (f), an explicit negative rule-fit result with no draft can count as correctly
+unknown. An indeterminate explanation, missing tool output or gated fidelity run supplies
+no successful negative control. Each fidelity cell records
 `by_gate`, which marks an INCONCLUSIVE caused by a data gate. One hour has fewer than 30 window
 starts, so every fidelity run on one hour is INCONCLUSIVE by gate. "The decoy never PASSes" only
 means something on a holdout of at least 30 window starts.
@@ -159,9 +161,16 @@ means something on a holdout of at least 30 window starts.
 The two headline rates:
 - `recovery_accuracy` = correct ÷ cells with a true value (correct, wrong, wrongly_confident,
   missed).
-- `false_confidence_rate` = wrongly_confident ÷ cells where the tool made a confident claim.
+- `false_confidence_rate` = wrongly_confident ÷ scored cells with a substantive confident
+  answer or a checkable interval or bound. A bound that excludes truth counts as a confident
+  error even when the point estimate passes its tolerance.
 
-`ci_coverage` is the share of cells whose reported CI contains the truth.
+`ci_coverage` records empirical coverage of the reported limits, including one-sided timing
+bounds. Re-running `doppel-answerkey` needs a fresh output directory. Before simulating any
+subject, the CLI verifies resolved pairs against actual quoted tokens in both periods. The
+training matcher and fitter see only fills published before the split. The full-span matcher
+is retained for diagnostics and holdout replay. The [exam specification](../evidence/2026-11-27-answerkey-inputs/EXAM.md)
+gives the reserved seeds and subject parameters.
 
 `hidden_and_decoy` reports, for (e) and (f), whether rulefit emitted a draft genome, the fidelity
 verdict, and whether the result was a confident-but-wrong rule. A genome emitted without a PASS is
