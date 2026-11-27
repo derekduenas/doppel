@@ -41,6 +41,12 @@ revision marked `diagnostic_only` is available for integrity checks and blocks a
 New CLI registrations pin the evaluator before the window opens. Earlier registrations lack this
 pin and report that fact in their result metadata. Imported JSON and manual p-values are nonbinding.
 
+Evaluation protocols are named (`published-opening` v1, `received-raw-opening` v1; see
+`docs/decisions/2026-11-27-opening-price-protocol.md`). `doppel-genome bind-protocol --family F
+--protocol NAME [--execute]` appends a `protocol` record binding one to a family or genome before
+its window closes; a bound genome is then evaluated only under that exact protocol (name, version,
+parameter digest, code hash). Unbound genomes are marked `protocol_unbound` in their evidence.
+
 ## What a genome cannot express yet (v2 schema work)
 
 Hedge legs on another venue (S5, S6), side selection by condition (quote one side when flow is

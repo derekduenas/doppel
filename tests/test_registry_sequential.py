@@ -201,8 +201,9 @@ def test_cli_monitor(tmp_path, capsys, monkeypatch):
     assert "EARLY_PASS" in out and "not recorded" in out and reg.path.read_bytes() == before
     assert cli(["monitor", "--root", str(root), "--genome", str(gpath), "--results", str(res), "--record"]) == 2
     assert reg.path.read_bytes() == before
-    def replay(data, lab, registration, through):
+    def replay(data, lab, registration, through, binding=None, protocol_name=None):
         assert data == tmp_path and through == END and registration["genome_id"] == ids[0]
+        assert binding is None and protocol_name is None            # unbound genome, default protocol
         return _results(ids[0], 25.0)["windows"], {"code_sha256": "ab"*32, "range": [START, END],
                                                      "input_sha256": "cd"*32}
     monkeypatch.setattr("doppel.twin.evaluate.replay_snapshot", replay)

@@ -7,6 +7,7 @@
                            (or --results TWIN_OUT.json / --p 0.012 for a nonbinding result)
     doppel-genome ledger   --family F [--alpha 0.05] [--json]
     doppel-genome monitor  --genome ID|PREFIX|G.json --data FROZEN_TAPE [--lab FROZEN_LAB] [--record]
+    doppel-genome bind-protocol --family F|--id GENOME_ID --protocol NAME [--execute]
     doppel-genome verify
 
 ``monitor`` prints anytime-valid e-values and the early KILL/PASS decision (``sequential.py``,
@@ -103,7 +104,8 @@ def cmd_result(a: argparse.Namespace) -> int:
             w = registration["eval_window"]
             if time.time() < w["end_s"]:
                 raise RegistryError(f"evaluation window closes {w['end']}")
-            v = evaluate(a.data, a.lab, registration)
+            v = evaluate(a.data, a.lab, registration, binding=reg.protocol_binding(a.id),
+                         protocol_name=a.protocol)
             rng = (w["start_s"], w["end_s"])
         elif a.results:
             doc = orjson.loads(a.results.read_bytes())
@@ -172,7 +174,8 @@ def cmd_monitor(a: argparse.Namespace) -> int:
                 raise RegistryError("genome is not registered")
             # Receipts cover closed wall-clock hours, including the hour of the final window.
             through = min(int(registration["eval_window"]["end_s"]), int(time.time()) // 3600 * 3600)
-            windows, evidence = replay_snapshot(a.data, a.lab, registration, through=through)
+            windows, evidence = replay_snapshot(a.data, a.lab, registration, through=through,
+                                                binding=reg.protocol_binding(gid), protocol_name=a.protocol)
             doc = {"genome": {"id": gid}, "windows": windows, "range": evidence["range"],
                    "twin": {"code_sha256": evidence["code_sha256"], "diagnostic": False}}
             src = {"evaluation": evidence}
@@ -208,6 +211,34 @@ def cmd_monitor(a: argparse.Namespace) -> int:
     else:
         print("not recorded (pass --record to append)")
     print("statistical only: the commercial hurdle (A6) and owner authorization are separate")
+    return 0
+
+
+def cmd_bind_protocol(a: argparse.Namespace) -> int:
+    from ..twin.evaluate import protocol_binding
+    reg = Registry(a.root)
+    try:
+        binding = protocol_binding(a.protocol)
+        plan = reg.plan_protocol_binding(binding, family=a.family, genome_id=a.id)
+    except (OSError, ValueError) as e:
+        print(f"REFUSED {e}", file=sys.stderr)
+        return 2
+    if "hash" in plan:
+        print(f"already bound (seq {plan['seq']}): nothing to append")
+        return 0
+    print(f"will append to {reg.path} after head {reg.head()} (line {len(reg.lines())}); "
+          "tw, seq, prev and hash are set at append time:")
+    print(orjson.dumps(plan, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS).decode())
+    if not a.execute:
+        print("not written: pass --execute to append")
+        return 0
+    try:
+        rec = reg.bind_protocol(binding, family=a.family, genome_id=a.id)
+    except (OSError, ValueError) as e:
+        print(f"REFUSED {e}", file=sys.stderr)
+        return 2
+    print(f"appended seq={rec['seq']} head {reg.head()}")
+    print(orjson.dumps(rec, option=orjson.OPT_SORT_KEYS).decode())
     return 0
 
 
@@ -263,6 +294,8 @@ def main(argv: list[str] | None = None) -> int:
     source.add_argument("--p", type=float, help="manual one-sided p (nonbinding)")
     s.add_argument("--lab", type=Path, help="snapshot of the token map for intl-flow genomes")
     s.add_argument("--verdict", default=None, help="extra verdict fields as JSON")
+    s.add_argument("--protocol", default=None,
+                   help="evaluation protocol for --data (default: the bound one, else published-opening)")
     s.add_argument("--root", type=Path, default=Path("."))
     s.set_defaults(fn=cmd_result)
     lg = sub.add_parser("ledger", help="family false-discovery ledger (Holm)")
@@ -279,6 +312,8 @@ def main(argv: list[str] | None = None) -> int:
     mo.add_argument("--lab", type=Path, help="frozen token map directory for intl-flow genomes")
     mo.add_argument("--alpha", type=float, default=0.05)
     mo.add_argument("--record", action="store_true", help="append the interim/early event to the registry")
+    mo.add_argument("--protocol", default=None,
+                    help="evaluation protocol for --data (default: the bound one, else published-opening)")
     mo.add_argument("--json", action="store_true")
     mo.add_argument("--root", type=Path, default=Path("."))
     mo.set_defaults(fn=cmd_monitor)
@@ -288,6 +323,14 @@ def main(argv: list[str] | None = None) -> int:
     dn.add_argument("--migrate", metavar="REASON", default=None,
                     help="re-derive ALL stored hashes after a reviewed semantics change; logs old->new")
     dn.set_defaults(fn=cmd_dna)
+    bp = sub.add_parser("bind-protocol", help="bind a named evaluation protocol (dry run without --execute)")
+    target = bp.add_mutually_exclusive_group(required=True)
+    target.add_argument("--family")
+    target.add_argument("--id", help="one registered genome id")
+    bp.add_argument("--protocol", required=True, help="e.g. received-raw-opening or published-opening")
+    bp.add_argument("--execute", action="store_true", help="append the record (default: print it only)")
+    bp.add_argument("--root", type=Path, default=Path("."))
+    bp.set_defaults(fn=cmd_bind_protocol)
     v = sub.add_parser("verify", help="re-check the hash chain")
     v.add_argument("--root", type=Path, default=Path("."))
     v.set_defaults(fn=cmd_verify)

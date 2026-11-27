@@ -10,6 +10,12 @@ Reference data:
   priceToBeat = A(S-1) after its first retained receipt. Revisions become eligible at receipt.
   Final historical A(S-1) and A(E-1) are available for retrospective settlement labels.
 
+Opening rules (``FeatureConfig.opening``, docs/decisions/2026-11-27-opening-price-protocol.md):
+- ``published``: the opening is the published A(S-1) once its row is received (the rule above).
+- ``received_raw``: the opening is also computable from raw BRTI: mean of the 60 raw seconds
+  [S-60-lag, S-1-lag], known at d iff every one of them was received by d (``computed_opening``).
+  Whichever source is known first is used for the whole window (tie: published).
+
 fair_up is fair-v1 (``lab.fair.fair_up_raw``) with the genome's ``vol_window_s`` and the measured
 alignment lag (E19: 0). Assets other than BTC have no raw index, hence no fair and no BRTI features:
 those features are NaN, NaN never satisfies a condition, and the engine never quotes without fair.
@@ -57,6 +63,50 @@ class WindowRef:
             return None, self.ptb
         i = bisect_right(self.ptb_history, receive_ns, key=lambda x: x[0])
         return self.ptb_history[i - 1] if i else (None, None)
+
+    def published_first_s(self) -> float:
+        """When a usable published opening was first received (unix s): -inf for a static reference,
+        +inf if none was. A conflicting revision (value None) is not usable."""
+        if self.ptb_history is None:
+            return -math.inf if self.ptb is not None else math.inf
+        return next((tw / NS for tw, v in self.ptb_history if v is not None), math.inf)
+
+    def computed_opening(self, lag: int = 0) -> tuple[float | None, float | None]:
+        """(A(S-1) computed from raw BRTI, receive time of its last-received second); see
+        ``computed_opening``."""
+        if self.raw is None or self.rcv is None:
+            return None, None
+        return computed_opening(self.raw, self.rcv, self.raw_t0, self.start, lag)
+
+    def opening_known(self, d: int, rule: str = "published", lag: int = 0) -> tuple[str | None, float | None]:
+        """(source, opening) known at decision second d under ``rule``; (None, None) before."""
+        if rule == "published":
+            _, value = self.opening_at(d * NS)
+            return ("published" if value is not None else None), value
+        if rule != "received_raw":
+            raise ValueError(f"unknown opening rule {rule!r}")
+        value, known_s = self.computed_opening(lag)
+        tc = known_s if value is not None and known_s is not None else math.inf
+        tp = self.published_first_s()
+        if min(tc, tp) > d:
+            return None, None
+        if tp <= tc:     # the published row came first (or at the same instant): legacy for this window
+            _, pub = self.opening_at(d * NS)
+            return ("published" if pub is not None else None), pub
+        return "computed", value
+
+    def opening_summary(self, lag: int = 0, rule: str = "published") -> dict:
+        """Per-window record of both opening sources (for parity and receipt-time reports) and the
+        source ``rule`` used once one was known (None: neither ever was)."""
+        value, known_s = self.computed_opening(lag)
+        tp = self.published_first_s()
+        tc = known_s if value is not None and known_s is not None else math.inf
+        if rule == "received_raw" and tc < tp:
+            source = "computed"
+        else:
+            source = "published" if tp < math.inf else None
+        return {"rule": rule, "source": source, "computed": value, "computed_known_s": known_s,
+                "published_first_s": tp if math.isfinite(tp) else None}
 
     @property
     def outcome(self) -> int | None:
@@ -152,6 +202,44 @@ class RefStore:
         return ref
 
 
+# ---------------------------------------------------------------------------- opening
+OPENING_SECONDS = 60
+
+
+def computed_opening(raw: np.ndarray, rcv: np.ndarray, t0: int, start: int,
+                     lag: int = 0) -> tuple[float | None, float | None]:
+    """A(S-1) from raw BRTI as PM US defines it (E18/E19: mean of raw[t-59..t] at lag 0), with the
+    time it became known: the latest receive stamp of the 60 seconds [S-60-lag, S-1-lag]. Same
+    arithmetic as ``refprice.settlement_value`` (ascending Python sum / 60.0). (None, None) if any
+    second is missing, conflicting (NaN) or has no receive stamp."""
+    lo, hi = start - OPENING_SECONDS - lag, start - 1 - lag
+    if lo < t0 or hi - t0 >= len(raw):
+        return None, None
+    xs: list[float] = []
+    known = -math.inf
+    for s in range(lo, hi + 1):
+        v, r = float(raw[s - t0]), float(rcv[s - t0])
+        if not (math.isfinite(v) and math.isfinite(r)):
+            return None, None
+        xs.append(v)
+        known = max(known, r)
+    return sum(xs) / 60.0, known
+
+
+def opening_parity(pairs, tol_usd: float, min_share: float) -> dict:
+    """Agreement of computed vs published openings over (computed, published) pairs; a pair with
+    either side missing is counted but not compared."""
+    diffs = sorted(abs(c - p) for c, p in pairs if c is not None and p is not None)
+    n = len(diffs)
+    within = sum(1 for x in diffs if x <= tol_usd + 1e-9)
+    share = within / n if n else None
+    return {"windows": len(pairs), "compared": n, "tol_usd": tol_usd, "min_share": min_share,
+            "within_tol": within, "share_within_tol": share,
+            "max_abs_usd": diffs[-1] if n else None,
+            "p99_abs_usd": float(np.percentile(diffs, 99)) if n else None,
+            "pass": share is not None and share >= min_share}
+
+
 # ---------------------------------------------------------------------------- features
 def projected_settlement(raw: np.ndarray, t0: int, d: int, end: int, lag: int = 0) -> float | None:
     """fair-v1's projection of the settlement average at second d: known prints of the final 60
@@ -180,6 +268,7 @@ def placebo_u(start: int, d: int) -> float:
 class FeatureConfig:
     brti_delay_s: int = 1
     fair_lag_s: int = 0
+    opening: str = "published"          # "published" | "received_raw" (see module docstring)
 
 
 class Features:
@@ -210,9 +299,12 @@ class Features:
         i = s - r.raw_t0
         return float(raw[i]) if 0 <= i < len(raw) else NAN
 
+    def opening(self, d: int) -> float | None:
+        return self.ref.opening_known(d, self.cfg.opening, self.cfg.fair_lag_s)[1]
+
     def fair(self, d: int) -> float:
         r = self.ref
-        _, opening = r.opening_at(d * NS)
+        opening = self.opening(d)
         if r.raw is None or opening is None:
             return NAN
         de = d - self.cfg.brti_delay_s
@@ -238,7 +330,7 @@ class Features:
         now = self.brti_at(de, known)
         for k, name in ((1, "brti_move_1s"), (5, "brti_move_5s"), (30, "brti_move_30s")):
             x[name] = now - self.brti_at(de - k, known)
-        _, opening = r.opening_at(d * NS)
+        opening = self.opening(d)
         if known is not None and opening is not None:
             proj = projected_settlement(known, r.raw_t0, de, r.end, self.cfg.fair_lag_s)
             if proj is not None:
