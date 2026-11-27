@@ -10,7 +10,8 @@
     "real-repeat/labels.json": "0cd67a0fd80fd30b82a35bf19c39a60f9710756d3a1264f23db32bca0e7216e2",
     "real-repeat/label-source.json": "9a81d9f3c8bb93b0c092a5fc9661c7cc6ac58db86c299bbae24cb03d889f0988",
     "real-repeat/scores.json": "964bcf4e9c8cd20cd0e2b3810565a0300d013b183e8e7f71300bde6ebe9bd4cf",
-    "release.SRNTxF/verification.json": "d3f184b0736c485754050c7c437faecefd0d070b7e8b768c0d8ee672f30635f9"
+    "release.SRNTxF/verification.json": "d3f184b0736c485754050c7c437faecefd0d070b7e8b768c0d8ee672f30635f9",
+    "release.SRNTxF/consumer.json": "8cc1d487166c785d3db1d0df881ef3f39cf916083fc7b4501fa143b7e6258f1f"
   },
   "public_repeated_byte_identically": true,
   "independent_score_and_source_checks_passed": true,
@@ -18,6 +19,11 @@
   "eligible_books": 267,
   "scheduled_cells": 360,
   "eligible_owner_action_labels_per_wallet": 0,
+  "ordinary_rulefit_consumer": {
+    "input": "Layer 3 first-15-minute walkthrough",
+    "candidate": {"eligible_orders": 0, "exit_code": 1, "status": "not_emitted", "research_hypothesis": false},
+    "control": {"eligible_orders": 7, "exit_code": 1, "status": "not_emitted", "research_hypothesis": false}
+  },
   "storage_bytes_available": {
     "hot_tape": 6059872256,
     "root_archive": 26405154816

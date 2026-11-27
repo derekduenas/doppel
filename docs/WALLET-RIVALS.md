@@ -62,11 +62,15 @@ The historical comparison spans 12 consecutive BTC five-minute markets on Nov 25
 
 Missing books excluded 93 of 360 scheduled cutoffs. The rules disagreed on 62 scored execution cells for each wallet. Only two markets for each wallet cleared both per-market coverage minima. In those markets both wallets had zero qualifying positives. The always-silent baseline scored 100%, the queue rule 55.1% and the touch rule 0%, averaged across those two markets. Both markets favored the queue rule over touch, with an exact two-sided sign-test p-value of 0.5. The control's three positives were outside those markets. The study leaves both posting strategies unidentified.
 
+The candidate had zero reconciled fills in the 12 market contracts. The control had 56 fills whose block timestamps fell within those markets and 38 distinct signed maker orders associated with those contracts across the reconciled day. Sixteen maker orders were Down buys, and 14 had a located first execution. The three positives are the subset of cutoffs with a located first execution at the displayed bid in the subsequent ten seconds. This hour mainly supplies coverage and abstention evidence for the candidate.
+
 ## Changes to the normal fitter
 
 The fitter previously scored training-only coefficients then exported a full-period refit. The candidate's executable price, side, size, age, scope and risk parameters now use inputs available within completed training windows. The fitter checks the same candidate on held-out observations, using the runtime quote and risk logic and training-side median prices as the price baseline. Scheduled market starts fix the split independently of wallet activity. Market windows that cross a boundary and training rows whose confirming receipts arrive after their boundary are excluded. Native execution matching and inventory now account for receipt-time token pairing, venue-to-block consistency and conflicting executions.
 
 Historical order matching still uses later orders when resolving competition and lacks a contemporaneous receipt for signed order terms. This leaves real retrospective placement diagnostics without independent training provenance. A real hypothesis that clears the other gates can appear in the report with exact draft bytes and their digest for prospective testing. It remains unvalidated. The controlled path can emit drafts for the answer key.
+
+The ordinary rulefit CLI also ran on the two wallets using Layer 3's sealed first-15-minute inputs. The candidate contributed zero eligible placement rows and the control seven. Both wrote abstention reports and left the genome and research hypothesis absent. The capped Apex job completed with a 433.7 MiB memory peak and no swap. [Run receipt and retained report hashes](../evidence/2026-11-27-wallet-rivals/real-run.json)
 
 ## Apex reproduction and next gate
 
@@ -80,6 +84,8 @@ The prior materialization benchmark estimated about 10 GB per complete six-polic
 before downstream outputs. Apex's free space is also needed for ongoing capture. Before
 opening the reserved seeds, size scratch against the current recorder reserve and reuse sealed
 public evidence for the paired old-tool comparison. [Capacity estimate](RULE-TWIN-REVIEW-20261127.md)
+The six reserved CLOB segment files were still present on Apex and their manifest hashes
+matched the previously verified preflight records at the Layer 4 handoff.
 
 To repeat the independent score verification against the retained files, run from the review
 checkout on Apex.
