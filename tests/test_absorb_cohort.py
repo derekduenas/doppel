@@ -193,6 +193,25 @@ def test_runner_table_names_causes_and_never_refetches_completed_wallets(world, 
     assert ac.main(_args(world, out), transport=net) == 0
     assert len(net.calls) == n
     assert _wallet(out, W2)["status"] == "reconciled"
+    lines = (out / "done.jsonl").read_bytes().count(b"\n")
+    # A compaction (store state) or a token-map change recomputes every wallet, again from cache.
+    for path in (world["tmp"] / "store" / "state.json", world["tokens"]):
+        with path.open("ab") as fh:
+            fh.write(b"\n")
+        assert ac.main(_args(world, out), transport=net) == 0
+        assert len(net.calls) == n
+        lines, before = (out / "done.jsonl").read_bytes().count(b"\n"), lines
+        assert lines == before + 2
+
+
+def test_refusal_text_on_another_method_is_an_ordinary_error():
+    def transport(url, method, params):
+        raise RpcError(refusal_kind({"message": "exceeded: limited to 100 blocks range per request"}))
+    pool = Pool(["a"], transport, rate=1e9, attempts=2, sleep=lambda _: None, backoff_s=0)
+    with pytest.raises(RpcError) as e:
+        pool.call("eth_call", [])
+    assert e.value.kind == "rpc_error" and pool.eps[0].refused == set() and pool.eps[0].max_span is None
+    assert refusal_kind({"message": "rate limited to 10 requests per second"}) == "rpc_error"
 
 
 def test_budget_stop_resumes_to_the_same_ledger(world, tmp_path):
@@ -245,6 +264,16 @@ def test_census_filter_keeps_reconciled_wallets_and_recomputes_aggregates(world,
     assert split["complete_set_buy_shares"] == 10 and split["directional_buy_shares"] == 10
     assert split["complete_set_share_of_buys"] == 0.5
     assert orjson.loads(src.read_bytes()) == census  # input untouched
+    # A wallet file the current table does not list as done (stale after a budget stop) is ignored.
+    doc = orjson.loads((out / "cohort.json").read_bytes())
+    for row in doc["rows"]:
+        row["state"] = "pending" if row["wallet"] == W else row["state"]
+    (out / "cohort.json").write_bytes(orjson.dumps(doc))
+    dst2 = tmp_path / "census-stale.json"
+    assert ac.census_main(["--census", str(src), "--absorb", str(out), "--out", str(dst2)]) == 0
+    assert orjson.loads(dst2.read_bytes())["wallets"] == {}
+    src.write_bytes(orjson.dumps({**census, "cohort_sha256": "00" * 32}))
+    assert ac.census_main(["--census", str(src), "--absorb", str(out), "--out", str(tmp_path / "x.json")]) == 2
 
 
 # ---------------------------------------------------------------- planner
@@ -264,3 +293,10 @@ def test_plan_makes_no_request_and_prices_the_fixed_end_repull(world, tmp_path, 
     assert cmd[cmd.index("--end") + 1] == str(1000 + 2 * 101)
     assert p["goldsky_days_exact"] is True
     assert not (out / "run.json").exists()
+    # A pre-binding terminal record covers the window but is not usable: re-attest, zero rows.
+    legacy = {**_pages(W2, 0, 5000, [])[W2, 0, 5000], "trade_binding": None}
+    with world["pages"].open("ab") as fh:
+        fh.write(orjson.dumps(legacy) + b"\n")
+    assert ac.main(_args(world, out, "--plan"), transport=no_network) == 0
+    g = orjson.loads(capsys.readouterr().out)["goldsky"]
+    assert (g["covered"], g["needs_reattestation"], g["missing"], g["rows_est"]) == (1, 1, 0, 0)

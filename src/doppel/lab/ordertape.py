@@ -160,10 +160,11 @@ class EndpointsDown(Exception):
 # token"; drpc's free plan limits eth_getLogs to 100-block spans. They re-route, never bench.
 ARCHIVE_REFUSED, SPAN_REFUSED = "archive_unsupported", "log_range_limit"
 REFUSALS = (ARCHIVE_REFUSED, SPAN_REFUSED)
+STATE_METHODS = ("eth_call", "eth_getCode", "eth_getBalance", "eth_getStorageAt")  # archive refusals apply
 _ARCHIVE_RE = re.compile(r"archive|missing trie node|historical state|state (is )?not available|pruned")
 _SPAN_RE = re.compile(r"block range|range (is )?too (large|wide|big)|ranges? over|exceed\w* .*(range|blocks|results)"
                       r"|too many (blocks|results|logs)|more than \d+ (blocks|results|logs)"
-                      r"|limited to \d+|max(imum)? (block )?range|\d+ blocks? range|range limit")
+                      r"|limited to \d+ blocks?|max(imum)? (block )?range|\d+ blocks? range|range limit")
 
 
 def refusal_kind(error: object) -> str:
@@ -304,6 +305,9 @@ class Pool:
                 res = self.transport(e.url, method, params)
             except Exception as x:  # anything from the transport is that endpoint's failure
                 last = x if isinstance(x, RpcError) else RpcError(type(x).__name__)
+                if (last.kind == SPAN_REFUSED and method != "eth_getLogs"
+                        or last.kind == ARCHIVE_REFUSED and method not in STATE_METHODS):
+                    last = RpcError("rpc_error")  # a refusal text on another method is just an error
                 with self._lock:
                     e.errors[last.kind] += 1
                     if last.kind == SPAN_REFUSED and span is not None:

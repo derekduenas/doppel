@@ -8,9 +8,10 @@ Run state lives in ``--out DIR``:
   data at a time and a retried wallet repeats no request it already made.
 - ``wallet-<addr>.json``: the final ledger of a completed wallet; ``wallet-<addr>.attempt.json``:
   the last transport-incomplete attempt.
-- ``done.jsonl``: one line per completed wallet with its cohort row and the hash of the Goldsky
-  pagination records it was absorbed against. A completed wallet is never fetched again unless
-  those records change (a later Goldsky re-pull); it is then recomputed from its cache.
+- ``done.jsonl``: one line per completed wallet with its cohort row and a hash of its inputs: its
+  Goldsky pagination records, the fill-store state, the token map and the order-tape parts. A
+  completed wallet is never fetched again; when an input changes (a re-pull, a compaction, a
+  larger token map) it is recomputed from its RPC cache.
 - ``cohort.tsv`` / ``cohort.json``: the cohort table, rewritten after every wallet batch.
 - ``.lock``: held with ``flock`` for the whole run; a second concurrent run exits 4.
 
@@ -72,10 +73,26 @@ def load_cohort(path: Path) -> tuple[str, list[tuple[str, str]]]:
     return doc["sha256"], members
 
 
-def goldsky_key(pages: dict, wallet: str, times: tuple[int, int]) -> str:
-    """Hash of the wallet's pagination records overlapping the window (what absorb read)."""
+def _file_sha(path: Path | None) -> str | None:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path is not None and path.exists() else None
+
+
+def inputs_digest(store: Path, tokens: Path | None, orders: Path | None) -> str:
+    """Digest of the local inputs every wallet's ledger depends on: the fill-store state (changes
+    on every compaction), the token map and the committed order-tape parts."""
+    parts = []
+    if orders is not None and orders.exists():
+        from .ordertape import committed_parts
+        parts = [[p.name, p.stat().st_size] for p in committed_parts(orders)]
+    doc = {"store_state": _file_sha(Path(store) / "state.json"), "tokens": _file_sha(tokens), "orders": parts}
+    return hashlib.sha256(orjson.dumps(doc, option=orjson.OPT_SORT_KEYS)).hexdigest()
+
+
+def input_key(pages: dict, wallet: str, times: tuple[int, int], shared: str) -> str:
+    """Hash of the wallet's pagination records overlapping the window and the shared inputs.
+    A completed wallet whose key changes is recomputed (from its RPC cache)."""
     recs = [pages[k] for k in sorted(pages) if k[0] == wallet and k[1] < times[1] and k[2] > times[0]]
-    return hashlib.sha256(orjson.dumps(recs, option=orjson.OPT_SORT_KEYS)).hexdigest()
+    return hashlib.sha256(orjson.dumps([recs, shared], option=orjson.OPT_SORT_KEYS)).hexdigest()
 
 
 def load_done(path: Path) -> dict[str, dict]:
@@ -190,7 +207,8 @@ def _run_locked(a: argparse.Namespace, transport: Callable) -> int:
     pairs = load_pairs(a.tokens)
     done_path = a.out / "done.jsonl"
     done = load_done(done_path)
-    done = {w: d for w, d in done.items() if d["goldsky_key"] == goldsky_key(pages, w, times)}
+    shared = inputs_digest(a.store, a.tokens, a.orders)
+    done = {w: d for w, d in done.items() if d.get("input_key") == input_key(pages, w, times, shared)}
     todo = [(role, w) for role, w in members if w not in done]
     seeds = _headers(window_chain)
     pending: dict[str, str] = {}
@@ -212,7 +230,7 @@ def _run_locked(a: argparse.Namespace, transport: Callable) -> int:
                     stopped = pending[w]
             else:
                 atomic_write(a.out / f"wallet-{w}.json", orjson.dumps(r, option=orjson.OPT_INDENT_2))
-                rec = {"wallet": w, "goldsky_key": goldsky_key(pages, w, times), "row": cohort_row(r),
+                rec = {"wallet": w, "input_key": input_key(pages, w, times, shared), "row": cohort_row(r),
                        "signers": r["identity"]["signers"]}
                 _append(done_path, rec)
                 done[w] = rec
@@ -261,15 +279,21 @@ def plan(a: argparse.Namespace) -> dict:
     wallets = [w for _, w in members]
     fills = store_fill_counts(a.store, wallets, t0, t1)
     per_wallet_fixed = LOG_QUERIES * math.ceil(blocks / a.chunk_blocks) + STATE_CALLS + 1  # + eth_getCode
-    todo = [w for w in wallets if not (w in done and done[w]["goldsky_key"] == goldsky_key(pages, w, (t0, t1)))]
+    shared = inputs_digest(a.store, a.tokens, a.orders)
+    todo = [w for w in wallets
+            if not (w in done and done[w].get("input_key") == input_key(pages, w, (t0, t1), shared))]
     fixed = per_wallet_fixed * len(todo)
     todo_fills = sum(fills.get(w, 0) for w in todo)
     receipts = [math.ceil(todo_fills * k) for k in RECEIPTS_PER_FILL]
     window = 0 if run_doc else HEAD_SEARCH_MAX
-    # Goldsky: a terminal record covering the window costs nothing. Otherwise estimate from the
-    # wallet's own row density in its longest terminal record, else its stored fills.
-    gs = {"covered": 0, "missing": 0, "unknown_density": 0, "rows_est": 0, "command_pulls": 0,
-          "command_rows_est": 0}
+    # Goldsky: a terminal, trade-bound record covering the window costs nothing. A covering record
+    # without a trade binding (pre-binding captures) costs no rows but needs re-attestation from its
+    # sealed pages (goldsky_proof): absorb rejects it, and doppel-goldsky cohort skips an exact key
+    # that is already terminal, bound or not. Otherwise estimate from the wallet's row density in
+    # its longest terminal record, else its stored fills.
+    gs = {"covered": 0, "needs_reattestation": 0, "missing": 0, "unknown_density": 0, "rows_est": 0,
+          "command_pulls": 0, "command_rows_est": 0}
+    bound = {k: r for k, r in pages.items() if isinstance(r.get("trade_binding"), dict)}
     from .absorb import goldsky_complete
     for w in wallets:
         terminal = [r for (addr, s, e), r in pages.items() if addr == w and terminal_page(r) and e > s]
@@ -280,8 +304,10 @@ def plan(a: argparse.Namespace) -> dict:
             gs["unknown_density"] += 1
             est = a.max_rows_per_wallet
         est = min(est, a.max_rows_per_wallet)
-        if goldsky_complete(pages, w, t0, t1):
+        if goldsky_complete(bound, w, t0, t1):
             gs["covered"] += 1
+        elif goldsky_complete(pages, w, t0, t1):
+            gs["needs_reattestation"] += 1
         else:
             gs["missing"] += 1
             gs["rows_est"] += est
@@ -317,14 +343,17 @@ def absorbed_census(census: dict, absorb_dir: Path) -> dict:
     The census aggregates are recomputed over the survivors (never carried over). The split is in
     shares, summed over the wallet's paired markets: ``completing`` buys close a complete set,
     ``directional`` buys open one-sided exposure (``absorb._pairing``)."""
-    run_doc = orjson.loads((absorb_dir / "run.json").read_bytes()) if (absorb_dir / "run.json").exists() else {}
+    run_doc = orjson.loads((absorb_dir / "run.json").read_bytes())
+    if census.get("cohort_sha256") != run_doc["cohort_sha256"]:
+        raise ValueError("the census and the absorption run are for different cohorts")
+    table = orjson.loads((absorb_dir / "cohort.json").read_bytes())
+    current = {row["wallet"] for row in table["rows"] if row["state"] == "done"}  # not stale files
     kept, excluded = {}, Counter()
     for w, rec in census["wallets"].items():
-        path = absorb_dir / f"wallet-{w}.json"
-        if not path.exists():
+        if w not in current:
             excluded["no_absorption"] += 1
             continue
-        r = orjson.loads(path.read_bytes())
+        r = orjson.loads((absorb_dir / f"wallet-{w}.json").read_bytes())
         if r.get("not_reconciled") is not False:
             excluded["not_reconciled"] += 1
             continue
@@ -370,7 +399,11 @@ def census_main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     if a.out.exists() or a.out.resolve() == a.census.resolve():
         ap.error("--out must be a new file")
-    res = absorbed_census(orjson.loads(a.census.read_bytes()), a.absorb)
+    try:
+        res = absorbed_census(orjson.loads(a.census.read_bytes()), a.absorb)
+    except (OSError, KeyError, ValueError) as e:
+        print(f"cannot filter the census: {e}", file=sys.stderr)
+        return 2
     a.out.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(a.out, orjson.dumps(res, option=orjson.OPT_INDENT_2))
     print(orjson.dumps(res["absorption_filter"]).decode())
