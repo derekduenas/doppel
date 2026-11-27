@@ -48,6 +48,7 @@ doppel-tape-compare = "doppel.tape.compare:main"
 doppel-structural = "doppel.lab.structural:main"
 doppel-bridge = "doppel.lab.bridge:main"
 doppel-desk = "doppel.desk.cli:main"
+doppel-absorb = "doppel.lab.absorb:main"
 
 [dependency-groups]
 dev = [

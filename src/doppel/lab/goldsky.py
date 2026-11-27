@@ -8,6 +8,13 @@ and is never billed. The cap is a second, independent guard.
 
 Raw pages are written to the tape (stream ``goldsky_activity``) exactly as received, with the
 request URL (minus the key) and both clocks.
+
+Pagination state (``goldsky_activity/pagination.jsonl``, one line per page and per stop): for each
+(address, start_time, end_time) it records pages and rows received, the cursor of the next page
+(``cursor``), the stop reason (``done`` | ``budget`` | ``error``; null while running) and
+``complete``, true only when the source returned a page with no ``next_cursor``. A pull with the
+same address and interval resumes from the recorded cursor and skips an interval already complete.
+A resume needs the same interval: give ``cohort`` an explicit ``--end``.
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ DEFAULT_CAP_ROWS = 7_000_000
 STARTER_CREDIT_ROWS = 10_000_000  # $100 at the recorded $10 per million rows
 PAGE = 1000
 RPS = 4.0  # Starter limit is 5 req/s per project
+PAGES = "pagination.jsonl"
 
 
 class BudgetExceeded(RuntimeError):
@@ -133,23 +141,65 @@ def activity_writer(root: Path):
             writer.close()
 
 
+def _interval(params: dict) -> tuple[str, int, int]:
+    return (str(params.get("address") or "").lower(), int(params["start_time"]),
+            int(params["end_time"]))
+
+
+def pagination_state(path: Path) -> dict[tuple[str, int, int], dict]:
+    """Latest pagination record per (address, start_time, end_time); address "" = all activity."""
+    out: dict[tuple[str, int, int], dict] = {}
+    if Path(path).exists():
+        for line in Path(path).read_bytes().splitlines():
+            if line.strip():
+                rec = orjson.loads(line)
+                out[(rec["address"], rec["start_time"], rec["end_time"])] = rec
+    return out
+
+
+def _record(path: Path | None, key: tuple[str, int, int], job: str, pages: int, rows: int,
+            cursor: str | None, stop: str | None) -> None:
+    if path is None:
+        return
+    rec = {"tw": time.time_ns(), "address": key[0], "start_time": key[1], "end_time": key[2],
+           "job": job, "pages": pages, "rows": rows, "cursor": cursor, "stop": stop,
+           "complete": stop == "done"}
+    with Path(path).open("ab") as fh:
+        fh.write(orjson.dumps(rec) + b"\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
 async def pull(job: str, params: dict, key: str, ledger: Ledger, writer: SegmentWriter,
-               max_rows: int, session: aiohttp.ClientSession | None = None) -> int:
+               max_rows: int, session: aiohttp.ClientSession | None = None,
+               pages: Path | None = None) -> int:
     """Return the number of rows fetched for a bounded query."""
-    rows, _ = await _pull_pages(job, params, key, ledger, writer, max_rows, session)
+    rows, _ = await _pull_pages(job, params, key, ledger, writer, max_rows, session, pages)
     return rows
 
 
 async def _pull_pages(job: str, params: dict, key: str, ledger: Ledger, writer: SegmentWriter,
-                      max_rows: int, session: aiohttp.ClientSession | None = None) -> tuple[int, bool]:
-    """Return fetched rows and whether the last response advertised another page."""
+                      max_rows: int, session: aiohttp.ClientSession | None = None,
+                      pages: Path | None = None) -> tuple[int, bool]:
+    """Return rows fetched by this call and whether pages remain unread. With ``pages`` (a
+    pagination.jsonl), progress is recorded after every page and the pull resumes from the last
+    recorded cursor of the same (address, start_time, end_time)."""
+    ikey = _interval(params)
+    prev = pagination_state(pages).get(ikey) if pages is not None else None
+    if prev and prev["complete"]:
+        return 0, False
+    n_pages, n_rows = (prev["pages"], prev["rows"]) if prev else (0, 0)
+    cursor = prev["cursor"] if prev else None
+    if max_rows <= 0:  # nothing may be read: the interval stays incomplete
+        _record(pages, ikey, job, n_pages, n_rows, cursor, "budget")
+        return 0, True
     own = session is None
     if own:
         session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=SSL_CTX),
                                         timeout=aiohttp.ClientTimeout(total=60),
                                         headers={"user-agent": UA})
     got = 0
-    cursor = None
+    stop: str | None = None
     try:
         while got < max_rows:
             limit = min(PAGE, max_rows - got)
@@ -182,16 +232,31 @@ async def _pull_pages(job: str, params: dict, key: str, ledger: Ledger, writer: 
                 raise ValueError(f"Goldsky returned {rows} rows for a limit of {limit}")
             writer.append(body, meta={"job": job, "url": url, "status": status, "rows": rows,
                                       "sent_tw": sent_w, "sent_tm": sent_m})
+            writer.flush()
             got += rows
-            cursor = doc.get("next_cursor")
-            if not cursor or rows == 0 or got >= max_rows:
+            n_pages += 1
+            n_rows += rows
+            cursor = doc.get("next_cursor") or None
+            # done only when the source reports no further page; an empty page that still
+            # advertises a cursor is an error, not the end
+            stop = "done" if not cursor else "error" if rows == 0 else None
+            if stop or got >= max_rows:
                 break
+            _record(pages, ikey, job, n_pages, n_rows, cursor, None)
             await asyncio.sleep(1.0 / RPS)
+        stop = stop or "budget"
+    except BudgetExceeded:
+        stop = "budget"
+        raise
+    except BaseException:  # HTTP error, bad page, network: the cursor stays where it was
+        stop = "error"
+        raise
     finally:
         writer.flush()
+        _record(pages, ikey, job, n_pages, n_rows, cursor, stop)
         if own:
             await session.close()
-    return got, bool(cursor)
+    return got, stop != "done"
 
 
 def _nonnegative_int(value: str) -> int:
@@ -243,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("Feeds time windows are limited to 7 days")
     with activity_writer(a.data) as writer:
         n = asyncio.run(pull(a.job, {"start_time": a.start, "end_time": a.end}, key, ledger,
-                             writer, a.max_rows))
+                             writer, a.max_rows, pages=a.data / "goldsky_activity" / PAGES))
     print(orjson.dumps({"job": a.job, "rows": n, **ledger.summary()}).decode())
     return 0
 
@@ -278,7 +343,8 @@ def _cohort(a, ledger: Ledger, key: str) -> int:
             job = f"cohort-{tag}-{role}-{w}-{start}"
             params = {"address": w, "start_time": start, "end_time": end}
             n, truncated = asyncio.run(_pull_pages(job, params, key, ledger, writer,
-                                                  min(a.max_rows_per_wallet, room)))
+                                                  min(a.max_rows_per_wallet, room),
+                                                  pages=a.data / "goldsky_activity" / PAGES))
             spent += n
             print(orjson.dumps({"wallet": w, "role": role, "rows": n,
                                 "truncated": truncated}).decode(), flush=True)
