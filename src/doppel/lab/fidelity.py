@@ -65,6 +65,23 @@ assets / horizons that share a start move together)
 - k = wallet gross shares / clone gross shares over the eligible windows.
 - A score with an empty denominator or zero variance is null, and null never supports PASS.
 
+GHOST TEST (reported, never gates PASS): ``ghost.pnl_per_window`` = the clone's mean net P&L (USD,
+same fee model) over the comparable windows where the clone traded and the wallet had no in-window
+fill (a pre-open position alone is not trading), with the same start-time bootstrap CI;
+``ghost.windows`` counts them. A whole CI below 0 adds the top-level warning ``ghost_negative``:
+where the clone acts on its own it loses, so what it earns elsewhere comes from coinciding with
+this one wallet (overfitting to it), not from a structural edge of the rule. A CI around or above
+0 is consistent with a structural rule; few ghost windows (a faithful clone) leave it uninformative.
+
+DISAGREEMENT P&L AUDIT (``disagreement``, informational, never PASS or FAIL by itself): three buckets
+of comparable windows, each mean USD per window with the start-time bootstrap CI: ``agreed`` (both
+traded; clone and wallet P&L), ``wallet_only`` (the wallet's P&L under the genome's fee model where
+the clone did not trade), ``clone_only`` (the ghost). Hints, by whole-CI side: wallet-only CI
+containing 0 or below 0 -> ``clone_captures_wallet_edge`` (stop chasing match rate); clone-only CI
+above 0 -> ``structural_edge_beyond_wallet``; wallet-only above 0 and clone-only below 0 ->
+``missing_rule``. A bucket without a CI (fewer than 2 start times) gives no hint.
+See docs/PROMOTION.md.
+
 NULL BASELINE (same window, same market): a pseudo-wallet made of OTHER participants' prints.
 In each window every timed wallet fill is given the time and price of a random print of the same
 window that is not in a tx of the wallet and whose side fits (a maker fill that bought Up needs a
@@ -548,6 +565,70 @@ def score(records: dict[Key, dict], k: float, n_boot: int = N_BOOT, seed: int = 
     return out
 
 
+def _bucket(records: dict[Key, dict], flag: str, cols: tuple[str, ...], n_boot: int, seed: int) -> dict:
+    """Mean of each P&L column (USD per window) over the windows with ``records[flag]``, with a 95%
+    CI from resampling distinct START TIMES, as ``score`` does; null CI with fewer than 2 starts."""
+    by_start: dict[int, np.ndarray] = {}
+    for key, r in records.items():
+        if r[flag]:
+            row = np.array([r[c] for c in cols] + [1.0])
+            by_start[key[2]] = by_start[key[2]] + row if key[2] in by_start else row
+    A = np.array(list(by_start.values())) if by_start else np.zeros((0, len(cols) + 1))
+    n = int(A[:, -1].sum())
+    out: dict = {"windows": n, "starts": len(A)}
+    S = None
+    if n and n_boot and len(A) >= 2:
+        rng = np.random.default_rng(seed + 2)
+        S = A[rng.integers(0, len(A), (n_boot, len(A)))].sum(1)
+    for i, c in enumerate(cols):
+        m: dict = {"value": _num(A[:, i].sum() / n) if n else None, "ci95": None}
+        if S is not None:
+            lo, hi = np.quantile(S[:, i] / S[:, -1], (0.025, 0.975))
+            m["ci95"] = [_num(lo), _num(hi)]
+        out[c] = m
+    return out
+
+
+def _side(m: dict) -> int | None:
+    """+1 whole CI above 0, -1 whole CI below 0, 0 CI contains 0, None without a CI."""
+    ci = m["ci95"]
+    if ci is None or None in ci:
+        return None
+    return 1 if ci[0] > 0 else -1 if ci[1] < 0 else 0
+
+
+def ghost(records: dict[Key, dict], n_boot: int = N_BOOT, seed: int = 0) -> dict:
+    """The clone's net P&L (USD) per window where it traded and the wallet did not (no in-window
+    wallet fill; a pre-open position alone does not count as trading)."""
+    b = _bucket(records, "c_only", ("g_x",), n_boot, seed)
+    return {"windows": b["windows"], "starts": b["starts"], "pnl_per_window": b["g_x"],
+            "negative": _side(b["g_x"]) == -1}
+
+
+def disagreement(records: dict[Key, dict], n_boot: int = N_BOOT, seed: int = 0) -> dict:
+    """Disagreement P&L audit over the comparable windows, three buckets (USD per window, the genome's
+    fee model for both sides): agreed (both traded: clone and wallet P&L), wallet_only (the wallet's
+    P&L where the clone stood aside), clone_only (the ghost). Hints are informational only."""
+    ag = _bucket(records, "both", ("g_x", "g_y"), n_boot, seed)
+    wo = _bucket(records, "w_only", ("g_y",), n_boot, seed)
+    co = ghost(records, n_boot, seed)
+    w, c = _side(wo["g_y"]), _side(co["pnl_per_window"])
+    hints = []
+    if w in (0, -1):
+        hints.append("clone_captures_wallet_edge: the wallet earns nothing where the clone stands aside; "
+                     "stop chasing match rate")
+    if c == 1:
+        hints.append("structural_edge_beyond_wallet: the clone earns on its own trades")
+    if w == 1 and c == -1:
+        hints.append("missing_rule: the wallet earns where the clone stands aside and the clone loses on its "
+                     "own; a rule is missing")
+    return {"agreed": {"windows": ag["windows"], "starts": ag["starts"], "clone_pnl_per_window": ag["g_x"],
+                       "wallet_pnl_per_window": ag["g_y"]},
+            "wallet_only": {"windows": wo["windows"], "starts": wo["starts"], "pnl_per_window": wo["g_y"]},
+            "clone_only": co, "hints": hints,
+            "note": "informational: never PASS or FAIL by itself"}
+
+
 def pseudo_wallet(wallet: list[Fill], prints: list[tuple], rng: np.random.Generator) -> list[Fill]:
     """The wallet's timed fills re-timed and re-priced onto other participants' prints of the same
     window. ``prints``: (unix s, Up price, aggressor). A maker fill that bought Up needs a print
@@ -649,11 +730,14 @@ def evaluate(clone: dict[Key, list[Fill]], wallet: dict[Key, list[Fill]], window
     g["wallet_fills"] = int(n_w)
     g["located_share"] = _num(need / n_w) if n_w else None
     g["match_lag_s"] = _num(np.median(lags)) if lags else None
+    dis = disagreement(comp, n_boot, seed)
+    gh = dis["clone_only"]
     return {"windows": {"eligible": len(windows), "comparable": len(comp),
                         "neither_traded": len(windows) - len(comp)},
             "scale_k": _num(k), "clone_shares": _num(v_c), "wallet_shares": _num(v_w),
             "gates_measured": g, "scores": scores, "null": null, "null_draws": n_done,
-            "verdict": decide(scores, null, g), "records": records}
+            "verdict": decide(scores, null, g), "ghost": gh, "disagreement": dis,
+            "warnings": ["ghost_negative"] if gh["negative"] else [], "records": records}
 
 
 # ---------------------------------------------------------------- run
@@ -795,7 +879,15 @@ def card(doc: dict) -> str:
          f"shares: clone {doc['clone_shares']} wallet {doc['wallet_shares']} (k = {doc['scale_k']}); wallet "
          f"rows {c.get('wallet_rows')}; wallet shares {c.get('wallet_shares')}",
          f"footprint: {doc.get('footprint')}",
-         f"gates measured: {doc['gates_measured']}", f"adapter: {doc.get('adapter')}", "",
+         f"gates measured: {doc['gates_measured']}", f"adapter: {doc.get('adapter')}",
+         f"ghost (clone-only windows, does not gate): {doc['ghost']['windows']} windows, net "
+         f"{doc['ghost']['pnl_per_window']['value']} USD/window CI {doc['ghost']['pnl_per_window']['ci95']}"
+         f" | warnings {doc['warnings'] or 'none'}",
+         f"disagreement audit (informational): agreed {doc['disagreement']['agreed']['windows']} windows "
+         f"clone {doc['disagreement']['agreed']['clone_pnl_per_window']} wallet "
+         f"{doc['disagreement']['agreed']['wallet_pnl_per_window']}; wallet-only "
+         f"{doc['disagreement']['wallet_only']['windows']} windows {doc['disagreement']['wallet_only']['pnl_per_window']}"
+         f"; hints {doc['disagreement']['hints'] or 'none'}", "",
          f"{'score':<32}{'value':>10}  {'CI95':<24}{'null mean':>11}{'null max':>11}"]
     null = doc["null"] or {}
     for name, m in doc["scores"].items():
