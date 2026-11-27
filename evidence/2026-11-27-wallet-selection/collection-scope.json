@@ -1,0 +1,11 @@
+{
+  "candidates": [
+    "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c"
+  ],
+  "controls": [
+    "0x28cc505fb60501dbb2199a9662ba175919af904f"
+  ],
+  "schema": "wallet-selection-collection-scope/1",
+  "sha256": "1884ce63df4729e7a592caa806e33ecd53c056f07b05f944f1f9c5f8363527b4",
+  "source_plan_sha256": "e235c99d177583e3c44156992cdd89985fc9c281e6b09fb335386ecb01d691d6"
+}

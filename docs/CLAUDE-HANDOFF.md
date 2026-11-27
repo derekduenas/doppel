@@ -1,5 +1,15 @@
 # Claude Code handoff
 
+## Wallet-by-wallet audit · Layer 0
+
+Resume on `review/wallet-selection-20261127` in
+`/Users/derekduenas/doppel-wallet-selection-20261127`. The [wallet selection audit](WALLET-SELECTION.md)
+records the intake fixes, decision rules, status of both real wallets, and the fixed weekly
+collection boundaries. The primary wallet ranks 52 in cohort v1 and has one qualifying
+control. The earlier rank-2 pilot has no control within the registered activity bound.
+The [registration receipt](../evidence/2026-11-27-wallet-selection/registration.json) was
+mirrored before the study opened. The first evidence checkpoint is December 4 at 03:30 UTC.
+
 ## November 27 rule-twin pickup
 
 Open `/Users/derekduenas/doppel-rule-twin-readiness` on
