@@ -127,6 +127,7 @@ def test_sealed_h1_genome_quotes_once_the_60_seconds_are_received():
         res = WindowSim(g, wt, ref, SimConfig(opening=rule)).run()
         quoted[rule] = res["maker"]["quoted_qty"]
         assert res["opening"]["computed"] == ref.ptb and res["opening"]["published_first_s"] == S + 311
+        assert res["opening"]["source"] == {"published": "published", "received_raw": "computed"}[rule]
     assert quoted["published"] == 0
     assert quoted["received_raw"] > 0
     f = Features(g, _ref(raw, rcv), SimConfig(opening="received_raw").feature_config())
@@ -258,7 +259,7 @@ def test_mismatched_protocol_is_refused_by_evaluator_and_registry(tmp_path):
     with pytest.raises(RegistryError, match="not produced by it"):
         reg.record_result(gid, verdict, rng)
     ok = reg.record_result(gid, {**verdict, "evaluation": evaluate.protocol(evaluate.RECEIVED_RAW_OPENING)}, rng)
-    assert ok["binding"]
+    assert ok["binding"] and ok["protocol_unbound"] is False
     assert reg.verify() == []
 
 
@@ -365,26 +366,57 @@ def test_verify_detects_protocol_tampering(tmp_path):
     assert any("bound to an evaluation protocol twice" in e for e in reg.verify())
 
 
-def test_bind_on_a_copy_of_the_real_registry_leaves_sealed_lines_untouched(tmp_path, capsys):
+def test_bind_on_a_copy_of_the_sealed_registry_lines_leaves_them_untouched(tmp_path):
+    """The 21 sealed lines (seq 0-20) as committed; later lines (e.g. the owner's own bind) excluded."""
     from doppel.strategy import dna
     (tmp_path / "registry").mkdir()
-    for name in ("genomes.jsonl", "expression.json"):
-        shutil.copy(REPO / "registry" / name, tmp_path / "registry" / name)
-    before = (tmp_path / "registry/genomes.jsonl").read_bytes()
-    reg = Registry(tmp_path, now=Clock(NOW))
-    assert reg.verify() == []
-    opts = ["bind-protocol", "--root", str(tmp_path), "--family", "h1-maker-v1",
-            "--protocol", "received-raw-opening"]
-    assert genome_cli(opts) == 0                                  # dry run
-    out = capsys.readouterr().out
-    assert "not written" in out and "received-raw-opening" in out
-    assert (tmp_path / "registry/genomes.jsonl").read_bytes() == before
+    sealed = (REPO / "registry/genomes.jsonl").read_bytes().splitlines(keepends=True)[:21]
+    before = b"".join(sealed)
+    (tmp_path / "registry/genomes.jsonl").write_bytes(before)
+    shutil.copy(REPO / "registry/expression.json", tmp_path / "registry/expression.json")
+    assert Registry(tmp_path, now=Clock(NOW)).verify() == []
+    raw = evaluate.protocol_binding(evaluate.RECEIVED_RAW_OPENING)
     with pytest.raises(RegistryError, match="closed"):
-        Registry(tmp_path, now=Clock(CLOSE)).plan_protocol_binding(
-            evaluate.protocol_binding(evaluate.RECEIVED_RAW_OPENING), family="h1-maker-v1")
-    monkey = Registry(tmp_path, now=Clock(NOW))
-    rec = monkey.bind_protocol(evaluate.protocol_binding(evaluate.RECEIVED_RAW_OPENING), family="h1-maker-v1")
+        Registry(tmp_path, now=Clock(CLOSE)).plan_protocol_binding(raw, family="h1-maker-v1")
+    reg = Registry(tmp_path, now=Clock(NOW))
+    plan = reg.plan_protocol_binding(raw, family="h1-maker-v1")
+    assert (tmp_path / "registry/genomes.jsonl").read_bytes() == before and "hash" not in plan
+    rec = reg.bind_protocol(raw, family="h1-maker-v1")
     after = (tmp_path / "registry/genomes.jsonl").read_bytes()
-    assert after.startswith(before) and after.count(b"\n") == before.count(b"\n") + 1
+    assert after.startswith(before) and after.count(b"\n") == 22 and rec["seq"] == 21
+    assert {k: rec[k] for k in plan} == plan
     assert len(rec["genome_ids"]) == 6 and rec["closes_s"] == CLOSE
-    assert monkey.verify() == [] and dna.check(tmp_path) == []
+    assert reg.verify() == [] and dna.check(tmp_path) == []
+
+
+def test_cli_bind_protocol_prints_and_needs_execute(tmp_path, capsys):
+    root = tmp_path / "root"
+    reg = Registry(root, now=Clock(0), code={"sha": "c0ffee", "dirty": False})
+    reg.register(_g(), "fam", "hyp", (10, 4_000_000_000))       # closes in 2096: wall clock is fine
+    before = reg.path.read_bytes()
+    opts = ["bind-protocol", "--root", str(root), "--family", "fam", "--protocol", "received-raw-opening"]
+    assert genome_cli(opts) == 0
+    out = capsys.readouterr().out
+    assert "not written: pass --execute" in out and '"name": "received-raw-opening"' in out
+    assert reg.path.read_bytes() == before
+    assert genome_cli([*opts[:-1], "nonexistent"]) == 2
+    assert genome_cli([*opts, "--execute"]) == 0
+    assert "appended seq=1" in capsys.readouterr().out
+    assert reg.records()[-1]["kind"] == "protocol" and reg.verify() == []
+    assert genome_cli([*opts, "--execute"]) == 0 and "already bound" in capsys.readouterr().out
+    assert len(reg.lines()) == 2
+
+
+def test_bind_refused_once_a_genome_has_evaluation_events(tmp_path):
+    clock = Clock()
+    reg = _registry(tmp_path, clock)
+    gid = _g(1.0).id
+    clock.t = CLOSE + 1
+    rng = (reg.registration(gid)["eval_window"]["start_s"], reg.registration(gid)["eval_window"]["end_s"])
+    rec = reg.record_result(gid, {"p_value": 0.5, "p_source": "manual"}, rng)
+    assert rec["protocol_unbound"] is True
+    clock.t = NOW
+    with pytest.raises(RegistryError, match="already evaluated"):
+        reg.plan_protocol_binding(evaluate.protocol_binding(evaluate.RECEIVED_RAW_OPENING), genome_id=gid)
+
+

@@ -45,7 +45,7 @@ def parity(root: Path, asset: str, t_from: int, t_to: int) -> dict:
         first = {"computed": 0, "published": 0, "tie": 0, "neither": 0}
         for start in range(-(-t_from // length) * length, t_to, length):
             ref = store.window_ref(asset, start, start + length, 0)
-            o = ref.opening_summary()
+            o = ref.opening_summary(rule="received_raw")
             pairs.append((o["computed"], ref.ptb))
             tc = o["computed_known_s"] if o["computed"] is not None else None
             tp = o["published_first_s"]

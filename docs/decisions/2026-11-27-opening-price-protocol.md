@@ -40,7 +40,8 @@ $0.0025 against the published series). So the opening is A(S-1) = mean(raw[S-60.
     later revisions.
   - If computed comes first, its value is used for the rest of the window, even after the published
     row arrives.
-  - Each window row records `opening: {computed, computed_known_s, published_first_s}`.
+  - Each window row records `opening: {rule, source, computed, computed_known_s, published_first_s}`.
+    `source` is the source the run's rule used once one was known.
 - **Before the opening is known**, the opening is unknown: fair and `dist_to_open_usd` are NaN, and
   a fair-quoting maker does not quote.
 - **Settlement labels are unchanged.** `ptb`, `settle` and `outcome` keep using the final published
@@ -91,6 +92,13 @@ within $0.01 on at least 99% of windows.
   - It is accepted only before the earliest covered evaluation window closes (H1: 2026-11-29T00:00Z).
   - A genome is bound at most once. Re-binding the same target to the same protocol is a no-op;
     anything else is refused.
+  - A genome that already has a result or monitoring event cannot be bound. Do not
+    `monitor --record` H1–H4 before binding them.
+  - Genomes registered in a family after its bind are not covered. `register` still pins
+    `published-opening` as `evaluation_protocol`, so a new registration cannot later be bound to
+    `received-raw-opening`.
+  - Only BTC has raw BRTI. A non-BTC genome cannot pass the parity gate, so it cannot get a binding
+    result under `received-raw-opening`.
 - **What `verify` checks:**
   - the parameter digest recomputes;
   - the covered genomes were registered earlier;
@@ -102,7 +110,8 @@ within $0.01 on at least 99% of windows.
     hash differ;
   - `record_result` and `record_monitor` refuse evidence from any other protocol.
 - **Unbound genomes** keep today's behaviour (default `published-opening`, or `--protocol`). Their
-  evidence carries `protocol_unbound: true`.
+  evidence carries `protocol_unbound: true`, and the registry stamps `protocol_unbound` on every
+  new `result` and monitoring record from the chain itself.
 - **The bind pins the code hash.** After binding, any change to the hashed evaluator files (the twin
   package, `genome.py`, `registry.py`, `sequential.py`, `fair.py`, `refprice.py`, `brti_import.py`,
   …) makes the evaluator refuse that family, and there is no re-bind. Bind from the exact commit
@@ -111,7 +120,7 @@ within $0.01 on at least 99% of windows.
 ## What changes for H1–H4
 
 - Under `received-raw-opening`, H1–H4 can quote from the first decision after raw second S-1 is
-  received (about 0.65 s after S at the E29 p50), instead of after the published row (p50 311 s).
+  received (second S-1 arrives about 0.35 s before S at the E29 p50 receipt lag of 0.65 s), instead of after the published row (p50 311 s).
   `test_sealed_h1_genome_quotes_once_the_60_seconds_are_received` replays the sealed H1 genome
   (`h1-maker-h1-guard30`) with the published row at S+311 s:
   - 0 contracts quoted under `published-opening`;

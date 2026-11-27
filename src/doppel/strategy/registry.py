@@ -303,6 +303,7 @@ class Registry:
                         and r.get("binding"))
             return {"kind": "result", "tw": int(now * 1e9), "genome_id": genome_id,
                     "family": reg["family"], "binding": (not nonbinding) and prior == 0,
+                    "protocol_unbound": bound is None,
                     "data_range": list(data_range) if data_range else None, "verdict": vd}
         return self._append(build)
 
@@ -344,6 +345,11 @@ class Registry:
         if taken:
             raise RegistryError(f"already bound to an evaluation protocol: {', '.join(g[:12] for g in taken)} "
                                 "(a binding is never replaced)")
+        evaluated = sorted({r["genome_id"][:12] for r in recs
+                            if r["kind"] in ("result", *SEQ_KINDS) and r["genome_id"] in ids})
+        if evaluated:
+            raise RegistryError(f"already evaluated under an unbound protocol: {', '.join(evaluated)} "
+                                "(bind before any result or monitoring event)")
         now = self._now()
         closes = min(r["eval_window"]["end_s"] for r in regs)
         if now >= closes:
@@ -429,7 +435,7 @@ class Registry:
             kind = {"EARLY_PASS": "early_pass", "EARLY_KILL": "early_kill"}.get(m["decision"], "interim")
             prior_early = any(r["kind"] != "interim" for r in mine)
             return {"kind": kind, "tw": int(now * 1e9), "genome_id": genome_id, "family": m["family"],
-                    "binding": kind != "interim" and not prior_early,
+                    "binding": kind != "interim" and not prior_early, "protocol_unbound": bound is None,
                     "eval_window": m["eval_window"], "window_closed": m["window_closed"], "as_of": m["as_of"], "as_of_s": m["as_of_s"], "params": m["params"], "stats": m["stats"],
                     "family_holm": m["family_holm"], "decision": m["decision"], "reason": m["reason"],
                     "source": m["source"], "note": STATISTICAL_ONLY}

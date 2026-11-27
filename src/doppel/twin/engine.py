@@ -599,7 +599,7 @@ class WindowSim:
         mfill = sum(q.filled for q in self.quotes)
         live_s = sum(((q.dead_ns or self.E_ns) - (q.live_ns or 0)) / NS for q in self.quotes)
         return {
-            **window_head(wt, ref, self.cfg.fair_lag_s), "eligible": True, "excluded": None, "stood_down": self.stood_down,
+            **window_head(wt, ref, self.cfg.fair_lag_s, self.cfg.opening), "eligible": True, "excluded": None, "stood_down": self.stood_down,
             "decisions": self.decisions, "n_fills": len(self.fills), "contracts": round(contracts, 6),
             "contracts_taker": round(sum(f["qty"] for f in self.fills if f["role"] == "taker"), 6),
             "contracts_maker": round(sum(f["qty"] for f in self.fills if f["role"] == "maker"), 6),
@@ -618,10 +618,10 @@ class WindowSim:
         }
 
 
-def window_head(wt: WindowTape, ref: WindowRef, lag: int = 0) -> dict:
+def window_head(wt: WindowTape, ref: WindowRef, lag: int = 0, rule: str = "published") -> dict:
     return {"slug": wt.slug, "asset": wt.asset, "horizon": wt.horizon, "start": wt.start, "end": wt.end,
             "source": wt.source, "stream": wt.stream, "tape": wt.stats, "ptb": ref.ptb,
-            "settle": ref.settle, "outcome": ref.outcome, "opening": ref.opening_summary(lag)}
+            "settle": ref.settle, "outcome": ref.outcome, "opening": ref.opening_summary(lag, rule)}
 
 
 MIN_TRADE_COVERAGE = 0.9   # maker windows need >= 90% of the venue's traded volume seen as prints
@@ -678,7 +678,7 @@ def run_windows(g: Genome, items: Iterable[tuple[WindowTape, WindowRef]], cfg: S
             out.append({**res, "eligible": False, "excluded": why})
             continue
         if why is not None:
-            out.append({**window_head(wt, ref, cfg.fair_lag_s), "eligible": False, "excluded": why})
+            out.append({**window_head(wt, ref, cfg.fair_lag_s, cfg.opening), "eligible": False, "excluded": why})
             continue
         day = wt.start // 86400
         settled = [(e, n) for e, n in settled if (e - 1) // 86400 >= day]

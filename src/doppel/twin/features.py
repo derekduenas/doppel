@@ -95,11 +95,17 @@ class WindowRef:
             return ("published" if pub is not None else None), pub
         return "computed", value
 
-    def opening_summary(self, lag: int = 0) -> dict:
-        """Per-window record of both opening sources (for parity and receipt-time reports)."""
+    def opening_summary(self, lag: int = 0, rule: str = "published") -> dict:
+        """Per-window record of both opening sources (for parity and receipt-time reports) and the
+        source ``rule`` used once one was known (None: neither ever was)."""
         value, known_s = self.computed_opening(lag)
         tp = self.published_first_s()
-        return {"computed": value, "computed_known_s": known_s,
+        tc = known_s if value is not None and known_s is not None else math.inf
+        if rule == "received_raw" and tc < tp:
+            source = "computed"
+        else:
+            source = "published" if tp < math.inf else None
+        return {"rule": rule, "source": source, "computed": value, "computed_known_s": known_s,
                 "published_first_s": tp if math.isfinite(tp) else None}
 
     @property
