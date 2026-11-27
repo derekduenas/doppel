@@ -113,7 +113,60 @@ reference table already answers the acceptance questions. See Limits.
 
 ## Validation harness
 
-RESULTS_PLACEHOLDER
+`validate` draws scripted subjects from each family's prior, runs them through answerkey's `Sim` and
+`write_public`, and reads each subject's footprint back from its `public/` files, as for a real
+wallet. Inference runs against a reference table built on the pristine tape. The harness also
+draws hidden-signal subjects: answerkey policy (f), accuracy U(0.65, 0.9).
+
+Scoring:
+- **coverage**: the share of true parameters inside the true family's 90% interval or set.
+- **false confidence**: a true value outside an interval flagged IDENTIFIED.
+- **family selection**: the explained best family equals the true family.
+- `--loo` adds simulation-based calibration: held-out table rows serve as pseudo-subjects.
+
+All numbers below are from one **synthetic** tape (`tests/test_answerkey.synth`, 60 min, 3 Hz,
+seed 2026, 12 windows of 5m BTC), measured on macOS on 2026-11-27. The reference table holds
+6 families × 120 draws, with `--seed 4242`.
+
+| run | subjects | coverage (95% CI) | IDENTIFIED cells / wrong | family selection | hidden signal | decoys | table LOO coverage (95% CI) / wrong |
+|---|---|---|---|---|---|---|---|
+| development, seed 4242, first code | 28 | 0.877 of 57 | 10 / 2 | 12/16 | 4/4 not explained | 8/8 not explained | 0.863 of 139 / 3 of 22 |
+| development, seed 4242, after the two fixes below | 28 | 0.865 of 52 (0.75–0.93) | 10 / 2 | 11/16 | 4/4 not explained | 8/8 not explained | 0.890 of 127 / 1 of 16 |
+| **fresh, seed 9091** (subjects first drawn after the fixes) | 28 | **0.833 of 66 (0.73–0.90)** | **11 / 1** | **14/16 (0.64–0.97)** | **4/4 not explained** | **8/8 not explained** | **0.918 of 134 (0.86–0.95) / 0 of 18** |
+
+The first run exposed two defects, both fixed before the fresh run:
+- A simulation with no fills is missing every statistic. It scored 3 sd per statistic and so sat
+  "nearer" than real but dissimilar simulations. Finite differences are now capped at 3 sd.
+- A subject with zero fills was "explained". It is now refused: there is no footprint.
+
+**Against the plan's acceptance (section 4, condition 2):**
+- *Coverage at the stated rate*: the table calibration meets it (0.92). The answer-key subjects come
+  in a little under (0.83), but the 95% CI includes 0.9.
+- *Zero confident-wrong*: **not met**. One of 11 IDENTIFIED cells was wrong on the fresh run, and 2
+  of 10 on the development run. All three were the midpoint offset `h_c` or the complete-set band
+  `band_c`, with the truth 0.1–0.5 c or a few cents outside a narrow interval. MidMaker's floor/ceil
+  rounding puts `h_c` on 0.5 c plateaus, and k = 12 particles give coarse interval ends.
+- *Hidden-signal subject "not explained"*: met, 8 of 8 across both runs. Random and decoy subjects
+  were never explained either.
+
+**What the footprint pins down on this tape:**
+- *IDENTIFIED or PARTIAL in most subjects*: the midpoint offset `h_c`, the size or size set, the
+  complete-set margin `m_c`, and often the participation band.
+- *Almost always UNIDENTIFIED*: the re-post timer, the move trigger, the cancel age `max_age_s`
+  and the ladder levels.
+- *fair_maker* (70–130 fills an hour) leaves nearly everything UNIDENTIFIED. Its inert `move_c` is
+  UNIDENTIFIED in every fair subject, as it should be. In the unit test, an inert `dummy` parameter
+  is UNIDENTIFIED.
+- *Recovery scores* run 0.07–0.58. The most is recovered for touch ladders and complete sets, whose
+  P&L is driven by size and the band, and the least for fair makers.
+
+**Runtime and memory** (4 cores, `--workers 4`):
+- Table: 720 simulations of the 60-min tape in 1,845 s, a median of 8.5 s per candidate-hour.
+- 28 subjects (simulate, publish, replay, infer) took 260–300 s in one process.
+- Peak RSS: 198–216 MB for the main process and 156 MB for a worker. A candidate holds one window
+  of orders: finished windows are folded into slim rows (tested).
+- Real BTC books are denser than the synthetic one, so measure `sim_s` and `peak_rss_mb` on Apex
+  before sizing `--n` and `--workers` under the 1.5 GB limit.
 
 ## Limits
 
@@ -137,3 +190,17 @@ RESULTS_PLACEHOLDER
   attributed, and noise inflates small shares.
 - **A taker family with a rule is missing.** answerkey's taker is random, so takers can only be
   "matched by a random policy" until sniper or endgame families are added.
+
+## Next on Apex (real book; the lead runs it)
+
+Run inside the low-priority research unit, which has a 1,500 MiB memory limit. Use a range that
+does not overlap the reserved exam (the exam is Nov 26, 06:00–12:00).
+
+1. Real-order replay calibration first (plan Phase A item 3). Read no real posterior until bracket
+   violations are ≤ 5%.
+2. `doppel-simulate validate --data SEALED_TAPE --tokens LAB/tokens.jsonl --stream clob_btc_5m
+   --from F --to T --n 150 --per-family 4 --hidden 4 --loo 10 --workers 1 --seed <new>
+   --out SCRATCH/sim-validate`. Start with `--workers 1` and read `peak_rss_mb` and `sim_s_median`
+   before raising either.
+3. Only if (2) shows no wrongly confident cells, run `doppel-simulate table` on the wallet's range
+   and `doppel-simulate infer` with its order-tape JSONL.
