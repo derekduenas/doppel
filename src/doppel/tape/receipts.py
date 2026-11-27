@@ -96,7 +96,8 @@ def build_receipt(root: Path, day: str, hour: int, *, require_brti_import: bool 
     streams = {}
     unsealed_errors = []
     pair: dict[str, set[str]] = {}
-    for d in sorted(p for p in root.iterdir() if p.is_dir() and p.name not in ("receipts",)):
+    dirs = sorted(p for p in root.iterdir() if p.is_dir() and p.name not in ("receipts",))
+    for d in dirs:
         f = d / day / f"{hh}.dtape.zst"
         if f.exists():
             txs = pair.setdefault(d.name, set()) if d.name in ("rtds_a", "rtds_b") else None
@@ -137,6 +138,20 @@ def build_receipt(root: Path, day: str, hour: int, *, require_brti_import: bool 
     return rec
 
 
+_STUCK: dict[tuple[str, int], tuple] = {}   # (root, hour) -> file signature at its last failed attempt
+
+
+def _hour_signature(root: Path, day: str, hh: str) -> tuple:
+    """Sizes and mtimes of everything a receipt for this hour depends on. Cheap: stat calls only."""
+    sig = []
+    for d in sorted(p for p in root.iterdir() if p.is_dir()):
+        for f in (d / day / f"{hh}.dtape.zst", d / "manifest.jsonl", d / "import-watermark.json"):
+            if f.exists():
+                st = f.stat()
+                sig.append((str(f), st.st_size, st.st_mtime_ns))
+    return tuple(sig)
+
+
 def finish_receipts(root: Path, current_hour: int, require_brti_import: bool) -> None:
     """Retry every closed hour since this recorder first enabled durable receipt tracking."""
     cursor = root / "receipts" / ".first-pending-hour"
@@ -147,12 +162,19 @@ def finish_receipts(root: Path, current_hour: int, require_brti_import: bool) ->
     next_pending = current_hour
     for stamp in range(first, current_hour, 3600):
         dt = datetime.fromtimestamp(stamp, tz=timezone.utc)
+        # Release review 2026-11-27: an hour that cannot seal was decompressed and hashed again every
+        # minute, forever, inside the recorder. Retry it only when one of its files has changed.
+        key, sig = (str(root), stamp), _hour_signature(root, dt.strftime("%Y%m%d"), f"{dt.hour:02d}")
+        if _STUCK.get(key) == sig:
+            next_pending = min(next_pending, stamp)
+            continue
         try:
             doc = build_receipt(root, dt.strftime("%Y%m%d"), dt.hour, require_brti_import=require_brti_import)
             if doc.get("pending_unsealed_streams"):
                 raise ReceiptPending(f"failed CRC on unsealed streams {doc['pending_unsealed_streams']}")
         except (OSError, ValueError) as exc:
             next_pending = min(next_pending, stamp)
+            _STUCK[key] = sig
             logging.warning("receipt pending for %s: %s", dt.isoformat(), exc)
     if next_pending > first:
         atomic_write(cursor, str(next_pending).encode())

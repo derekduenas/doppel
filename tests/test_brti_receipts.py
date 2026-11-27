@@ -169,3 +169,29 @@ def test_failed_prepared_revision_keeps_previous_published_bytes(tmp_path, monke
     with pytest.raises(ValueError, match="prepared BRTI segment checksum differs"):
         brti_import.run(src, root, state)
     assert path.read_bytes() == before
+
+
+def test_a_stuck_hour_is_not_reread_until_its_files_change(tmp_path, monkeypatch):
+    """Release review 2026-11-27: one unsealable hour was re-read every minute inside the recorder."""
+    from doppel.tape import receipts as rc
+    root = tmp_path / "tape"
+    seg = root / "clob_btc_5m" / "20261126" / "03.dtape.zst"
+    seg.parent.mkdir(parents=True)
+    seg.write_bytes(b"x")
+    (root / "receipts").mkdir()
+    from datetime import datetime, timezone
+    hour = int(datetime(2026, 11, 26, 3, tzinfo=timezone.utc).timestamp())
+    (root / "receipts" / ".first-pending-hour").write_text(str(hour))
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(1)
+        raise rc.ReceiptPending("no published revision")
+    monkeypatch.setattr(rc, "build_receipt", boom)
+    rc._STUCK.clear()
+    for _ in range(3):
+        rc.finish_receipts(root, hour + 7200, False)
+    assert len(calls) == 2            # hours 03 and 04, once each; not once per check
+    seg.write_bytes(b"xy")            # the stuck hour's segment changed: try it again
+    rc.finish_receipts(root, hour + 7200, False)
+    assert len(calls) == 3 and int((root / "receipts" / ".first-pending-hour").read_text()) == hour

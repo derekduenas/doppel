@@ -52,22 +52,24 @@ def cached(root: Path) -> dict[str, list]:
 
 async def fetch_missing(root: Path, starts: list[int], have: dict, rps: float = 5.0) -> None:
     w = SegmentWriter(root, "pmus_price_history")
-    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=SSL_CTX),
-                                     timeout=aiohttp.ClientTimeout(total=20),
-                                     headers={"user-agent": UA}) as s:
-        for st in starts:
-            sl = slug(st)
-            if sl in have:
-                continue
-            q = {"symbol": sl, "timestamp.startTimestamp": st - 60,
-                 "timestamp.endTimestamp": st + 360, "fidelity": 1}
-            async with s.get(URL, params=q) as r:
-                body, status = await r.text(), r.status
-            w.append(body, meta={"slug": sl, "status": status, "start": st})
-            if status == 200:
-                have[sl] = orjson.loads(body).get("history") or []
-            await asyncio.sleep(1.0 / rps)
-    w.close()
+    try:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=SSL_CTX),
+                                         timeout=aiohttp.ClientTimeout(total=20),
+                                         headers={"user-agent": UA}) as s:
+            for st in starts:
+                sl = slug(st)
+                if sl in have:
+                    continue
+                q = {"symbol": sl, "timestamp.startTimestamp": st - 60,
+                     "timestamp.endTimestamp": st + 360, "fidelity": 1}
+                async with s.get(URL, params=q) as r:
+                    body, status = await r.text(), r.status
+                w.append(body, meta={"slug": sl, "status": status, "start": st})
+                if status == 200:
+                    have[sl] = orjson.loads(body).get("history") or []
+                await asyncio.sleep(1.0 / rps)
+    finally:
+        w.close()   # publish the manifest row even when a fetch fails
 
 
 def tape_books(root: Path) -> dict[str, list[tuple[float, float, float]]]:

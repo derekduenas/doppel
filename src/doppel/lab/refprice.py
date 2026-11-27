@@ -40,33 +40,35 @@ async def run(root: Path, state_path: Path, assets: list[str], backfill_days: fl
               rps: float = 2.0, lag: int = 5) -> dict:
     state = orjson.loads(state_path.read_bytes()) if state_path.exists() else {}
     writer = SegmentWriter(root, "ref_prices")
-    now = int(time.time()) - lag
-    done = {}
-    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=SSL_CTX),
-                                     timeout=aiohttp.ClientTimeout(total=30),
-                                     headers={"user-agent": UA}) as s:
-        for asset in assets:
-            start = state.get(asset, now - int(backfill_days * 86400))
-            calls = rows = 0
-            while start < now:
-                end = min(start + CHUNK - 1, now)
-                sent = time.time_ns()
-                status, body = await fetch(s, asset, start, end)
-                calls += 1
-                if status != 200:
-                    writer.append(body, meta={"asset": asset, "from": start, "to": end,
-                                              "status": status, "sent_tw": sent})
-                    break
-                n = sum(len(x.get("candles") or []) for x in orjson.loads(body).get("series", []))
-                writer.append(body, meta={"asset": asset, "from": start, "to": end, "status": 200,
-                                          "candles": n, "sent_tw": sent})
-                rows += n
-                start = end + 1
-                state[asset] = start
-                state_path.write_bytes(orjson.dumps(state))
-                await asyncio.sleep(1.0 / rps)
-            done[asset] = {"calls": calls, "candles": rows, "next_from": state.get(asset)}
-    writer.close()
+    try:
+        now = int(time.time()) - lag
+        done = {}
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=SSL_CTX),
+                                         timeout=aiohttp.ClientTimeout(total=30),
+                                         headers={"user-agent": UA}) as s:
+            for asset in assets:
+                start = state.get(asset, now - int(backfill_days * 86400))
+                calls = rows = 0
+                while start < now:
+                    end = min(start + CHUNK - 1, now)
+                    sent = time.time_ns()
+                    status, body = await fetch(s, asset, start, end)
+                    calls += 1
+                    if status != 200:
+                        writer.append(body, meta={"asset": asset, "from": start, "to": end,
+                                                  "status": status, "sent_tw": sent})
+                        break
+                    n = sum(len(x.get("candles") or []) for x in orjson.loads(body).get("series", []))
+                    writer.append(body, meta={"asset": asset, "from": start, "to": end, "status": 200,
+                                              "candles": n, "sent_tw": sent})
+                    rows += n
+                    start = end + 1
+                    state[asset] = start
+                    state_path.write_bytes(orjson.dumps(state))
+                    await asyncio.sleep(1.0 / rps)
+                done[asset] = {"calls": calls, "candles": rows, "next_from": state.get(asset)}
+    finally:
+        writer.close()   # publish the manifest row even when a fetch fails
     return done
 
 

@@ -66,6 +66,8 @@ PY
 exchange
 if "$live/.venv/bin/doppel-tape" --help >/dev/null &&
    { [ "$mode" = keep ] || systemctl restart doppel-tape; } &&
+   { [ "$mode" = keep ] || { n0=$(systemctl show doppel-tape -p NRestarts --value); sleep 20;
+       [ "$(systemctl show doppel-tape -p NRestarts --value)" = "$n0" ]; }; } &&  # a crash seconds in is a failed release
    systemctl is-active doppel-tape; then
     rm -rf "$old"
     mv "$stage" "$old"
