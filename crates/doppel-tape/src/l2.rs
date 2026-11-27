@@ -51,6 +51,8 @@ enum V {
     Gemini,
     Cryptocom,
     Bullish,
+    /// Coinbase Derivatives BTC perp-style future on the same public Advanced Trade feed
+    CbdePerp,
 }
 
 pub struct SpotL2 {
@@ -77,7 +79,7 @@ impl SpotL2 {
             _ => return None,
         };
         let url = match v {
-            V::Coinbase => "wss://advanced-trade-ws.coinbase.com",
+            V::Coinbase | V::CbdePerp => "wss://advanced-trade-ws.coinbase.com",
             V::Kraken => "wss://ws.kraken.com/v2",
             V::Bitstamp => "wss://ws.bitstamp.net",
             V::Gemini => "wss://api.gemini.com/v1/marketdata/BTCUSD?heartbeat=true&trades=false&auctions=false",
@@ -87,15 +89,25 @@ impl SpotL2 {
         Some(Self { url: url.into(), no_data_s: 30.0, v, last_book: Instant::now(), last_seq: None, drops_seen: 0, reconnect: None })
     }
 
+    /// `perp_cbde_btc`: Coinbase Derivatives BIP-20DEC30-CDE (nano BTC perp-style future, 0.01 BTC)
+    /// on the public Advanced Trade feed: `level2` + `market_trades` + `heartbeats`, no JWT (the
+    /// JWT is "optional; recommended for connection reliability"). One `sequence_num` counts every
+    /// frame on the connection, as for spot.
+    pub fn cbde_btc() -> Self {
+        let mut s = Self::new("coinbase").expect("coinbase");
+        s.v = V::CbdePerp;
+        s
+    }
+
     fn incremental(&self) -> bool {
-        matches!(self.v, V::Coinbase | V::Kraken | V::Gemini)
+        matches!(self.v, V::Coinbase | V::Kraken | V::Gemini | V::CbdePerp)
     }
 
     /// A frame that carries book data (not an ack, heartbeat, pong or error).
     fn is_book(&self, m: &Value) -> bool {
         let s = |v: Option<&Value>| v.and_then(Value::as_str).unwrap_or("").to_string();
         match self.v {
-            V::Coinbase => s(m.get("channel")) == "l2_data",
+            V::Coinbase | V::CbdePerp => s(m.get("channel")) == "l2_data",
             V::Kraken => s(m.get("channel")) == "book",
             V::Bitstamp => s(m.get("event")) == "data",
             V::Gemini => s(m.get("type")) == "update",
@@ -113,6 +125,11 @@ impl SpotL2 {
             V::Kraken => vec![json!({"method": "subscribe", "params": {"channel": "book", "symbol": ["BTC/USD"], "depth": 1000}})],
             V::Bitstamp => vec![json!({"event": "bts:subscribe", "data": {"channel": "order_book_btcusd"}})],
             V::Gemini => vec![], // the URL is the subscription
+            V::CbdePerp => vec![
+                json!({"type": "subscribe", "product_ids": [crate::perps::CBDE_BTC_PERP], "channel": "level2"}),
+                json!({"type": "subscribe", "product_ids": [crate::perps::CBDE_BTC_PERP], "channel": "market_trades"}),
+                json!({"type": "subscribe", "channel": "heartbeats"}),
+            ],
             V::Cryptocom => vec![json!({"id": 1, "method": "subscribe", "params": {"channels": ["book.BTC_USD.150"]}})],
             V::Bullish => vec![
                 json!({"jsonrpc": "2.0", "type": "command", "method": "subscribe", "params": {"topic": "l2Orderbook", "symbol": "BTCUSD"}, "id": "1"}),
@@ -146,7 +163,7 @@ impl SpotL2 {
             self.last_book = Instant::now();
         }
         match self.v {
-            V::Coinbase => {
+            V::Coinbase | V::CbdePerp => {
                 if let Some(s) = m.get("sequence_num").and_then(Value::as_u64) {
                     self.step(rec, s);
                 }
@@ -194,9 +211,9 @@ impl WsVenue for SpotL2 {
     }
     fn stall_s(&self) -> f64 {
         match self.v {
-            V::Coinbase | V::Kraken => 15.0, // 1 s heartbeats
-            V::Cryptocom => 45.0,            // 30 s heartbeats
-            _ => 30.0,                       // Gemini: 5 s heartbeats
+            V::Coinbase | V::Kraken | V::CbdePerp => 15.0, // 1 s heartbeats
+            V::Cryptocom => 45.0,                          // 30 s heartbeats
+            _ => 30.0,                                     // Gemini: 5 s heartbeats
         }
     }
     fn keepalive(&self) -> Option<(&'static str, f64)> {

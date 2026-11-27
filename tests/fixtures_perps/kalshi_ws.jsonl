@@ -1,0 +1,20 @@
+{"tw": 1000, "raw": "", "meta": {"ctl": "connect", "url": "wss://external-api-margin-ws.kalshi.com/trade-api/ws/v2/margin"}}
+{"tw": 1001, "raw": "", "meta": {"ctl": "subscribe"}}
+{"tw": 1002, "raw": "{\"id\":1,\"type\":\"subscribed\",\"msg\":{\"channel\":\"orderbook_delta\",\"sid\":1}}"}
+{"tw": 1003, "raw": "{\"id\":1,\"type\":\"subscribed\",\"msg\":{\"channel\":\"trade\",\"sid\":2}}"}
+{"tw": 1004, "raw": "{\"id\":1,\"type\":\"subscribed\",\"msg\":{\"channel\":\"ticker\",\"sid\":3}}"}
+{"tw": 2000, "raw": "{\"type\":\"orderbook_snapshot\",\"sid\":1,\"seq\":1,\"msg\":{\"market_ticker\":\"KXBTCPERP\",\"bid\":[[\"5.9931\",\"195.00\"],[\"5.9930\",\"10.00\"]],\"ask\":[[\"5.9933\",\"598.00\"],[\"5.9940\",\"5.00\"]]},\"sending_ts_ms\":1795808829000}"}
+{"tw": 3000, "raw": "{\"type\":\"orderbook_delta\",\"sid\":1,\"seq\":2,\"msg\":{\"market_ticker\":\"KXBTCPERP\",\"price\":\"5.9933\",\"delta\":\"-598.00\",\"side\":\"ask\",\"ts_ms\":1795808829100}}"}
+{"tw": 3500, "raw": "{\"type\":\"trade\",\"sid\":2,\"seq\":1,\"msg\":{\"trade_id\":\"t1\",\"market_ticker\":\"KXBTCPERP\",\"price\":\"5.9933\",\"count\":\"598.00\",\"taker_side\":\"bid\",\"is_block_trade\":false,\"ts_ms\":1795808829100}}"}
+{"tw": 4000, "raw": "{\"type\":\"ticker\",\"sid\":3,\"msg\":{\"market_ticker\":\"KXBTCPERP\",\"price\":\"5.9933\",\"bid\":\"5.9931\",\"ask\":\"5.9940\",\"reference_price\":{\"price\":\"5.9927\",\"ts_ms\":1795808829000},\"settlement_mark_price\":{\"price\":\"5.9935\",\"ts_ms\":1795808829130},\"funding_rate\":{\"rate\":0.00001,\"next_funding_time_ms\":1795813200000,\"ts_ms\":1795808829000},\"ts_ms\":1795808829200}}"}
+{"tw": 5000, "raw": "{\"type\":\"orderbook_delta\",\"sid\":1,\"seq\":3,\"msg\":{\"market_ticker\":\"KXBTCPERP\",\"price\":\"5.9932\",\"delta\":\"7.00\",\"side\":\"bid\",\"ts_ms\":1795808829300}}"}
+{"tw": 5500, "raw": "{\"type\":\"trade\",\"sid\":2,\"seq\":3,\"msg\":{\"trade_id\":\"t3\",\"market_ticker\":\"KXBTCPERP\",\"price\":\"5.9931\",\"count\":\"2.00\",\"taker_side\":\"ask\",\"is_block_trade\":false,\"ts_ms\":1795808829400}}"}
+{"tw": 6000, "raw": "{\"type\":\"orderbook_delta\",\"sid\":1,\"seq\":5,\"msg\":{\"market_ticker\":\"KXBTCPERP\",\"price\":\"5.9932\",\"delta\":\"-7.00\",\"side\":\"bid\",\"ts_ms\":1795808829500}}"}
+{"tw": 6001, "raw": "", "meta": {"ctl": "seq_gap", "sid": 1, "channel": "orderbook_delta", "expected": 4, "got": 5}}
+{"tw": 6002, "raw": "", "meta": {"ctl": "reconnect", "why": "seq_gap"}}
+{"tw": 6003, "raw": "", "meta": {"ctl": "disconnect"}}
+{"tw": 7000, "raw": "", "meta": {"ctl": "connect", "url": "wss://external-api-margin-ws.kalshi.com/trade-api/ws/v2/margin"}}
+{"tw": 7001, "raw": "", "meta": {"ctl": "subscribe"}}
+{"tw": 7500, "raw": "{\"type\":\"orderbook_delta\",\"sid\":1,\"seq\":2,\"msg\":{\"market_ticker\":\"KXBTCPERP\",\"price\":\"5.9932\",\"delta\":\"1.00\",\"side\":\"bid\"}}"}
+{"tw": 8000, "raw": "{\"type\":\"orderbook_snapshot\",\"sid\":1,\"seq\":1,\"msg\":{\"market_ticker\":\"KXBTCPERP\",\"bid\":[[\"5.9920\",\"10.00\"]],\"ask\":[[\"5.9925\",\"20.00\"]]}}"}
+{"tw": 9000, "raw": "{\"type\":\"trade\",\"sid\":2,\"seq\":1,\"msg\":{\"trade_id\":\"t1\",\"market_ticker\":\"KXBTCPERP\",\"price\":\"5.9933\",\"count\":\"598.00\",\"taker_side\":\"bid\",\"is_block_trade\":false,\"ts_ms\":1795808829100}}"}

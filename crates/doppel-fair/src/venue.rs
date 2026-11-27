@@ -363,12 +363,12 @@ fn bullish(b: &mut L2Book, m: &Value) {
     }
 }
 
-fn arr(v: Option<&Value>) -> &[Value] {
+pub(crate) fn arr(v: Option<&Value>) -> &[Value] {
     v.and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
 }
 
 /// A price or size given as a JSON string or number.
-fn num(v: Option<&Value>) -> Option<f64> {
+pub(crate) fn num(v: Option<&Value>) -> Option<f64> {
     match v? {
         Value::String(s) => s.parse().ok(),
         Value::Number(n) => n.as_f64(),
