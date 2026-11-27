@@ -8,9 +8,9 @@ import pyarrow.parquet as pq
 import pytest
 
 from doppel.lab.ordertape import SCHEMA
-from doppel.lab.profile import (COPY, ESTIMATED, UNKNOWN, VERIFIED, WEIGHTS, clusters, cohort, copyability,
-                                fingerprint, footprint, ledger, load_rows, main, prepare, salt_kind,
-                                similarity)
+from doppel.lab.profile import (BIAS_LENGTH, BIAS_NONE, BIAS_UPPER, COPY, ESTIMATED, UNKNOWN, VERIFIED, WEIGHTS,
+                                _ob, clusters, cohort, copyability, fingerprint, footprint, ledger, load_rows,
+                                main, prepare, salt_kind, similarity)
 
 MS = 1795629600_000  # ms, second-aligned
 W, X, Y = "0xaa", "0xbb", "0xcc"
@@ -239,7 +239,9 @@ def statuses(doc):
 def check_invariants(doc):
     assert list(doc["obligations"]) == list(WEIGHTS)
     for k, o in doc["obligations"].items():
+        assert o["bias"] in (BIAS_NONE, BIAS_UPPER, BIAS_LENGTH), k
         if o["status"] == VERIFIED:
+            assert o["bias"] == BIAS_NONE, k  # a number from a selection-biased sample is never VERIFIED
             assert o["n"] and o["value"] is not None and o["source"], k
         elif o["status"] == ESTIMATED:
             assert o["false_positive_rate"] is not None and o["value"] is not None and o["source"], k
@@ -331,14 +333,30 @@ def test_copyability_verdicts():
     assert r["verdict"] == "RESTING"
 
 
-def test_cadence_is_verified_only_when_most_quotes_fill():
+def test_a_selection_biased_number_is_never_verified():
+    """Cadence is measured between FILLED orders and cancel lives on partly filled orders: however
+    clean the data, neither can be VERIFIED, and both say which bias they carry."""
     fpd = {"sizes": [100.0], "active_token_hours": 10.0, "candidate_rest_ms_cancelled": q(5000, 50),
            "total": {"own": 300, "other_known": 0, "candidates": 400, "own_unmatched": 0, "control": 4,
                      "expected_by_chance": 40.0, "net_estimate": 100.0, "identity_precision_upper": 1.0}}
-    cad = led(maker_rows(200), om_e39(fingerprint=fpd))["obligations"]["placement_cadence"]
-    assert cad["status"] == VERIFIED and cad["n"] == 200  # fill ratio 300/400 = 0.75
+    clean = om_e39(fingerprint=fpd, outcomes={"filled:chain": 200, "cancelled:exact_decrease": 140},
+                   cancelled_alone=140)  # stamps validated, no unknown outcome, every cancel alone
+    doc = led(maker_rows(200), clean)
+    check_invariants(doc)
+    cad, can = doc["obligations"]["placement_cadence"], doc["obligations"]["cancel_replace"]
+    assert (cad["status"], cad["bias"], cad["n"]) == (ESTIMATED, BIAS_UPPER, 200)  # fill ratio 300/400 = 0.75
+    assert cad["value"]["fill_ratio"] == 0.75 and cad["value"]["thinned_gap_ms_same_token"] == 0.75 * \
+        cad["value"]["filled_order_gap_ms_same_token_p50"]
+    assert (can["status"], can["bias"], can["value"]["clean"]) == (ESTIMATED, BIAS_LENGTH, True)
+    assert can["value"]["unfilled_candidate_life_ms_p50"] == 5000
     cad = led(maker_rows(200), om_e39(fingerprint=None))["obligations"]["placement_cadence"]
-    assert (cad["status"], cad["false_positive_rate"]) == (ESTIMATED, 0.046)  # no footprint: upper bound only
+    assert (cad["status"], cad["false_positive_rate"], cad["bias"]) == (ESTIMATED, 0.046, BIAS_UPPER)  # no footprint
+    assert {k for k, o in doc["obligations"].items() if o["bias"] != BIAS_NONE} == {"placement_cadence", "cancel_replace"}
+    # the constructor itself refuses the combination, so no future branch can produce it
+    for bias in (BIAS_UPPER, BIAS_LENGTH):
+        with pytest.raises(ValueError, match="cannot be VERIFIED"):
+            _ob(VERIFIED, "src", n=500, value=1.0, bias=bias)
+    assert _ob(VERIFIED, "src", n=500, value=1.0)["bias"] == BIAS_NONE
 
 
 def test_taker_wallet():

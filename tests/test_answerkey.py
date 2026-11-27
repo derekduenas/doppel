@@ -264,6 +264,46 @@ def test_injected_book_equals_real_book_plus_resting_size(tape, tmp_path):
     assert landed and all((o["token"], o["price"], "BUY", o["size"]) in incs for o in landed)
 
 
+def test_a_book_cross_fill_is_published_once(tape, tmp_path):
+    """The opposite side reaching a resting quote is already in the public book. Its print carries
+    the tx and the time with size 0, so a replay that fills on the crossed book does not fill again
+    on the print. And the wallet's own quotes never cross each other in the public book."""
+    r = sim_only(tape, tmp_path, "b")
+    d = tmp_path / r["policy"]
+    truth = [orjson.loads(x) for x in (d / "truth" / "orders.jsonl").read_bytes().splitlines()]
+    cross = {f[3]: f[2] for o in truth for f in o["fills"] if f[4] == "book_cross"}
+    trade = {f[3]: f[2] for o in truth for f in o["fills"] if f[4] == "trade"}
+    assert cross and trade and r["truth"]["fill_via"]["book_cross"] == len(cross)
+    seen = {}
+    for p in sorted((d / "public" / "tape" / "clob_btc_5m").glob("*/*.dtape.zst")):
+        for rec in read_segment(p):
+            for m in orjson.loads(rec["raw"]):
+                if m["event_type"] == "last_trade_price" and m["transaction_hash"] in cross | trade:
+                    assert m["transaction_hash"] not in seen  # one print per fill
+                    seen[m["transaction_hash"]] = float(m["size"])
+    assert seen == {tx: 0.0 for tx in cross} | trade
+    # the order tape still holds the cross fill with its real quantity: it is on chain
+    pub = [orjson.loads(x) for x in (d / "public" / "orders.jsonl").read_bytes().splitlines()]
+    assert {x["tx"] for x in pub if x["maker"] == r["wallet"]} == set(cross) | set(trade)
+    # own quotes on the two tokens: the best Up bid stays under the Up ask its own Down bid makes
+    r = sim_only(tape, tmp_path, "d")
+    orders = [orjson.loads(x) for x in (tmp_path / r["policy"] / "truth" / "orders.jsonl").read_bytes().splitlines()]
+    live = sorted((o for o in orders if o["land_ms"] and o["end_ms"] and o["status"] in ("filled", "cancelled")),
+                  key=lambda o: o["land_ms"])
+    by = {}
+    for o in live:
+        by.setdefault(o["slug"], []).append(o)
+    n = 0
+    for os_ in by.values():
+        ups, downs = [o for o in os_ if o["up"]], [o for o in os_ if not o["up"]]
+        for u in ups:
+            for dn in downs:
+                if max(u["land_ms"], dn["land_ms"]) < min(u["end_ms"], dn["end_ms"]):
+                    n += 1
+                    assert u["price"] + dn["price"] < 1 - 1e-9, (u, dn)
+    assert n > 100
+
+
 # ---------------------------------------------------------------- the whole loop
 def test_end_to_end_scorecard(tape, tmp_path):
     out = tmp_path / "run"
@@ -272,6 +312,32 @@ def test_end_to_end_scorecard(tape, tmp_path):
     assert rc == 0
     card = orjson.loads((out / "scorecard.json").read_bytes())
     assert set(card["cells"]) == {"midpoint_maker", "fair_maker", "random_taker", "hidden_signal"}
+    # a holdout of 3 windows cannot test fidelity: the card says so, and no gate-INCONCLUSIVE counts as an answer
+    assert card["holdout_window_starts"] == 3 and card["fidelity_readable"] is False
+    assert "NO fidelity cell of this run can be read" in (out / "scorecard.md").read_text()
+    states = {k: row["fidelity_verdict"]["state"] for k, row in card["cells"].items()}
+    assert set(states.values()) <= {"gate_inconclusive", "not_run"} and card["totals"]["fidelity_states"]
+    for k, row in card["cells"].items():
+        c = row["fidelity_verdict"]
+        assert c["category"] in ("gate_inconclusive", "not_scored", "correctly_unknown", "missed"), (k, c)
+        assert c["category"] != "correctly_unknown" or c["state"] == "not_run"
+    # the decoy and the hidden-signal wallet: rulefit reports "not explained" (exit 0 for the taker), no genome
+    for k, key in (("random_taker", "e"), ("hidden_signal", "f")):
+        hd = card["hidden_and_decoy"][k]
+        assert hd["rulefit_genome_emitted"] is False and hd["rulefit_says_explained"] is False and hd["rulefit_reasons"]
+        assert hd["fidelity_state"] == "not_run" and hd["fidelity_passed"] is False
+        assert not (out / k / "tools" / "rulefit" / "genome.json").exists()
+    assert card["strategies"]["e"]["tools"]["exit"]["rulefit"] == 0
+    rep = orjson.loads((out / "random_taker" / "tools" / "rulefit" / "fit_report.json").read_bytes())
+    assert rep["taker_rule"]["found"] is False and rep["taker_rule"]["n_takes"] > 20
+    # every timing cell states its bias, is hedged, and none is confidently wrong
+    for k in ("midpoint_maker", "fair_maker", "hidden_signal"):
+        for ob in ("cadence", "cancel_rule"):
+            c = card["cells"][k][ob]
+            assert c["status"] != "claim" and c["category"] != "wrongly_confident", (k, ob, c)
+    assert card["cells"]["midpoint_maker"]["ladder"]["recovered"] is not True  # no false ladder from cancel/replace
+    for k in "abf":
+        assert "book_cross" not in card["strategies"][k]["pipeline"]["pessimistic_overfill_causes"]
     for row in card["cells"].values():
         assert set(row) == set(ak.OBLIGATIONS)
         for c in row.values():
@@ -303,6 +369,49 @@ def test_categories():
     rows = {"s": {"x": c(2, 2, "claim", True), "y": c(None, 3, "claim", None), "z": c(2, None, "unknown", None)}}
     t = ak.totals(rows)
     assert t["recovery_accuracy"] == 0.5 and t["false_confidence_rate"] == 0.5
+    # a fidelity run stopped by a data gate is in no rate: neither correct nor a miss
+    rows["s"]["fidelity_verdict"] = c(True, None, "unknown", None) | {"category": "gate_inconclusive", "state": "gate_inconclusive"}
+    t2 = ak.totals(rows)
+    assert (t2["recovery_accuracy"], t2["cells_with_true_value"]) == (t["recovery_accuracy"], t["cells_with_true_value"])
+    assert t2["fidelity_states"] == {"gate_inconclusive": 1} and t2["categories"]["gate_inconclusive"] == 1
+
+
+def test_fidelity_and_timing_cells_score_what_the_tools_state():
+    exp = ak.EXPECT
+    t = {"sizes": [20.0], "offset_c_p50": {"bid": -3.0, "ask": 3.0}, "repost_gap_s_p50": 1.0, "cancel_life_ms_p50": 900.0,
+         "fill_ratio": 0.2, "taker_share_of_shares": 0.0, "unfilled_cancel_life_ms_p50": 900.0,
+         "rest_ms_p50": {"filled": None, "cancelled_after_fill": None}}
+    led = {"obligations": {"placement_cadence": {"status": "ESTIMATED"}, "cancel_replace": {"status": "ESTIMATED"}}}
+
+    def cells(gap, life, ladder=None, fid=None, genome=None, explained=None):
+        rf = {"timing_rule": {"gap_s": gap, "cancel": {"life_ms": life}}, "ladder": ladder or {},
+              "explained_by_observed_inputs": explained or {}}
+        return ak.score("fair_maker", t, {"profile": led, "rulefit": rf, "fidelity": fid, "genome": genome})
+
+    est = {"value": 1.2, "status": "ESTIMATED", "ci95": [0.6, 2.0]}
+    c = cells(est, {"value": 5000.0, "status": "UPPER_BOUND", "ci95": None, "upper_bound": 6000.0})
+    assert c["cadence"]["category"] == "correct" and c["cadence"]["ci_covers_truth"] is True
+    assert c["cancel_rule"]["category"] == "wrong" and c["cancel_rule"]["bound_holds"] is True  # hedged, bound holds
+    # a stated interval or bound that excludes the truth is a confident error, whatever the status says
+    c = cells(est | {"value": 3.0, "ci95": [2.5, 3.5]}, {"value": 500.0, "status": "UPPER_BOUND", "upper_bound": 600.0})
+    assert c["cadence"]["category"] == c["cancel_rule"]["category"] == "wrongly_confident"
+    c = cells({"value": 3.0, "status": "UNKNOWN"}, None)  # evidence shown, nothing stated
+    assert c["cadence"]["category"] == c["cancel_rule"]["category"] == "missed"
+    # ladder: "ladder" is a claim, "no_ladder_seen" is hedged, anything else is unknown
+    assert cells(est, None, {"status": "ladder"})["ladder"]["category"] == "wrongly_confident"   # fair_maker has none
+    assert cells(est, None, {"status": "no_ladder_seen"})["ladder"]["category"] == "correct"
+    assert cells(est, None, {"status": "unknown"})["ladder"]["category"] == "missed"
+    assert exp["fair_maker"]["expressible"] is True
+    gate = {"verdict": {"decision": "INCONCLUSIVE", "reason": "data gate: comparable_starts 3 outside [30, inf]"}}
+    open_ = {"verdict": {"decision": "INCONCLUSIVE", "reason": "binding: pnl.corr"}}
+    assert cells(est, None, fid=gate)["fidelity_verdict"]["category"] == "gate_inconclusive"
+    assert cells(est, None, fid=open_)["fidelity_verdict"] | {} and cells(est, None, fid=open_)["fidelity_verdict"]["state"] == "inconclusive"
+    assert cells(est, None, fid=open_)["fidelity_verdict"]["category"] == "missed"
+    assert cells(est, None)["fidelity_verdict"]["state"] == "not_run"
+    assert cells(est, None, fid={"verdict": {"decision": "PASS", "reason": ""}})["fidelity_verdict"]["category"] == "correct"
+    # explained: what rulefit states wins over the mere presence of a genome file
+    c = cells(est, None, genome={"x": 1}, explained={"verdict": False, "reasons": ["side"]})
+    assert c["explained_by_observed_inputs"]["recovered"] is False and c["explained_by_observed_inputs"]["category"] == "wrong"
 
 
 def test_tool_rss_is_read_in_megabytes(tmp_path):

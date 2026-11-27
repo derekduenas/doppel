@@ -185,14 +185,24 @@ def test_known_rule_is_recovered(fitted):
     assert size["descriptor"]["rule"] == "fixed_sizes" and set(size["descriptor"]["sizes_90"]) <= {97.0, 98.0, 99.0, 100.0}
     assert size["train_size_set_covers_test"]["value"] == 1 and 97 <= size["median_size"]["value"] <= 100
     gap = rep["timing_rule"]["gap_s"]
-    assert gap["value"] == 2 and gap["ci95"] == [2, 2] and gap["oos"]["holdout_value"] == 2
+    # no fingerprint and no candidates: nothing corrects the gap between FILLED orders, so it is an
+    # upper bound with its bias named and NO confidence interval
+    assert gap["value"] == 2 and gap["ci95"] is None and gap["status"] == "UPPER_BOUND" and gap["upper_bound"] == 2
+    assert gap["bias"] == "fill-conditional upper bound" and gap["filled"]["ci95"] is None
+    assert gap["filled"]["oos"]["holdout_value"] == 2
     shares = {k: v["value"] for k, v in rep["timing_rule"]["trigger_shares"].items()}
     assert abs(sum(shares.values()) - 1) < 1e-3 and shares["own_fill"] > 0.3 and shares["unknown"] == 0
-    assert rep["timing_rule"]["cancel"]["life_ms"]["value"] == 1500
+    life = rep["timing_rule"]["cancel"]["life_ms"]
+    assert life["value"] == 1500 and life["ci95"] is None and life["bias"] == "length-biased"
+    assert life["status"] == "UPPER_BOUND" and life["upper_bound"] == 1500
     part = rep["participation_rule"]
     assert part["windows_seen"] == part["windows_with_orders"] == 6 and part["presence_rate"]["value"] > 0.9
     assert part["both_sides_share_when_present"]["value"] == 1 and part["pre_open_order_share"] == 0
     assert rep["ladder"]["ladder_share"]["value"] == 0 and rep["ladder"]["depth_max"] == 1
+    assert rep["ladder"]["status"] == "no_ladder_seen"
+    ex = rep["explained_by_observed_inputs"]  # quotes both sides in every window: exempt from the side test
+    assert ex["verdict"] is True and ex["side"]["kind"] == "two_sided" and ex["price"]["explained"] is True
+    assert ex["price"]["value"] > 0.5 and ex["timing"]["null"]
 
 
 def test_genome_is_a_valid_draft_that_acts_like_the_fit_and_cannot_be_registered(fitted, tmp_path):
@@ -216,7 +226,10 @@ def test_genome_is_a_valid_draft_that_acts_like_the_fit_and_cannot_be_registered
     # every number that reaches the genome carries n, a window-clustered CI and a holdout score
     e, part = rep["expressible_price_rule"], rep["participation_rule"]
     fitted_numbers = [e["half_spread_fit"], e["centre_shift_fit"], e["skew_fit"], rep["size_rule"]["median_size"],
-                      rep["timing_rule"]["cancel"]["life_ms_p90"], part["tte_s_p1"], part["tau_s_p1"]]
+                      part["tte_s_p1"], part["tau_s_p1"]]
+    # ... except the quote life: its sample is length-biased, so it says so and carries no CI
+    assert rep["timing_rule"]["cancel"]["life_ms_p90"] == {"value": 1500, "method": "cancels of partly filled orders",
+                                                           "bias": "length-biased"}
     assert all(x["n"] > 100 and x["clusters"] == 6 and len(x["ci95"]) == 2 and x["oos"] for x in fitted_numbers)
     assert e["half_spread_fit"]["ci95"][0] <= m.half_spread_c <= e["half_spread_fit"]["ci95"][1]
     # the printed rule is the selected one: intercept at zero inventory with the skew, not the raw median
@@ -742,8 +755,272 @@ def test_ladders_are_counted_from_overlapping_lives_at_distinct_prices():
              spec(7, "U", "BUY", 0.41, 6050, 10),      # 6's life ends AT 6050: no overlap
              {"kind": "candidate", "id": "c", "token": "U", "side": "BUY", "price": 0.3, "placed_ms": 100, "om": {}}]
     lad = rulefit.fit_ladder(specs)
-    assert lad["n"] == 8 and lad["ladder_share"]["value"] == 0.375 and lad["depth_max"] == 3
+    # 0 and 1 rest together for 1000 ms (the floor): a ladder pair. 2 overlaps them for 100 ms only.
+    assert lad["n"] == 8 and lad["floor_ms"] == 1000 and lad["ladder_share"]["value"] == 0.25 and lad["depth_max"] == 2
+    assert lad["brief_overlap_share"] == 0.375  # the old count: any overlap, however short
     assert lad["depth"]["p50"] == 1 and rulefit.fit_ladder([])["n"] == 0
+    # the floor follows the wallet's own re-post gap: at a 4 s gap an overlap must last 2 s
+    slow = rulefit.fit_ladder(specs, gap_s=4.0)
+    assert slow["floor_ms"] == 2000 and slow["ladder_share"]["value"] == 0
+
+
+def lad_spec(i, price, placed, rest, window):
+    return {"kind": "order", "id": f"{i:05d}", "token": "U", "side": "BUY", "price": price, "placed_ms": placed,
+            "om": {"rest_max_ms": rest, "rest_min_ms": rest}, "row": {"window": f"w{window}"}}
+
+
+def test_a_cancel_and_its_replacement_are_not_a_ladder():
+    """A re-quoting wallet: every 5 s the old bid is cancelled and a new one lands 1 c away. The
+    two latencies differ, so old and new overlap for 300 ms at two prices. That is not a ladder.
+    A wallet that keeps two levels up together is one, with its depth and a CI."""
+    requote = [lad_spec(i, 0.50 + 0.01 * (i % 2), 5000 * i, 5300, i // 25) for i in range(200)]
+    lad = rulefit.fit_ladder(requote, gap_s=5.0)
+    assert lad["brief_overlap_share"] == 1  # the pre-floor definition called this a ladder at every order
+    assert lad["ladder_share"]["value"] == 0 and lad["ladder_share"]["ci95"] == [0, 0]
+    assert lad["status"] == "no_ladder_seen" and lad["depth_max"] == 1 and lad["depth_when_laddered"] is None
+    assert "lower bound" in lad["bias"]
+    # three levels re-posted together every 5 s and resting 4 s
+    ladder = [lad_spec(3 * i + j, 0.50 - 0.01 * j, 5000 * i + 10 * j, 4000, i // 25) for i in range(200) for j in range(3)]
+    lad = rulefit.fit_ladder(ladder, gap_s=5.0)
+    d = lad["depth_when_laddered"]
+    assert lad["status"] == "ladder" and lad["ladder_share"]["value"] == 1 and lad["ladder_share"]["ci95"] == [1, 1]
+    assert d["value"] == 3 and d["ci95"] == [3, 3] and lad["depth_max"] == 3
+    # too few orders, or one market window: neither answer is given
+    assert rulefit.fit_ladder(ladder[:9], gap_s=5.0)["status"] == "unknown"
+    assert rulefit.fit_ladder([s | {"row": {"window": "w"}} for s in ladder], gap_s=5.0)["status"] == "unknown"
+
+
+# ---------------------------------------------------------------- selection: cadence and quote life
+def stream(kind, n, gap, rng):
+    """Placement times (ms) of one token: strictly periodic or Poisson, true median gap known."""
+    steps = np.full(n, gap) if kind == "periodic" else rng.exponential(gap, n)
+    return np.cumsum(steps), float(np.median(steps))
+
+
+@pytest.mark.parametrize("kind", ["periodic", "poisson"])
+@pytest.mark.parametrize("p", [0.1, 0.3, 0.6])
+def test_thinned_cadence_is_recovered_on_a_known_fill_share(kind, p):
+    """Only a share p of the placements is seen (the filled ones). The gap between the seen ones is
+    1/p too long; the thinning range holds the true median gap for both a periodic and a Poisson
+    stream, and without p the tool states an upper bound and no interval."""
+    rng = np.random.default_rng(int(p * 100))
+    g, cl, truth = [], [], []
+    for w in range(20):  # 20 market windows
+        t, med = stream(kind, 3000, 2000.0, rng)
+        seen = t[rng.random(len(t)) < p]
+        g += list(np.diff(seen) / 1000)
+        cl += [f"w{w}"] * (len(seen) - 1)
+        truth.append(med / 1000)
+    g, cl, true = np.array(g), np.array(cl), float(np.median(truth))
+    m = float(np.median(g))
+    if kind == "poisson" or p < 0.5:
+        assert m > 1.4 * true  # the bias being corrected (a periodic stream seen more than half the time has none)
+    lo, hi = rulefit.thinned_gap(m, p, p)
+    assert lo * 0.95 <= true <= hi * 1.05
+    fb = {"p": p, "p_range": [0.8 * p, min(1.0, 1.2 * p)], "chance_known": True, "chance_share": 0.0,
+          "chance_share_range": [0.0, 0.0]}
+    c = rulefit.fit_cadence(g, cl, {}, {}, fb)
+    assert c["status"] == "ESTIMATED" and c["ci95"][0] <= true <= c["ci95"][1] and c["bias"] == "fill-conditional upper bound"
+    assert abs(math.log(c["value"] / true)) < math.log(2) and c["filled"]["ci95"] is None
+    assert c["ci95"][1] / c["ci95"][0] > 1.4  # never a tight interval on a biased sample
+    blind = rulefit.fit_cadence(g, cl, {}, {}, None)  # p cannot be estimated
+    assert blind["status"] == "UPPER_BOUND" and blind["ci95"] is None and blind["value"] == pytest.approx(m, abs=1e-3)
+    assert blind["upper_bound"] >= true
+    few = rulefit.fit_cadence(g[:5], cl[:5], {}, {}, fb)  # five gaps: not even a bound
+    assert few["status"] == "UNKNOWN" and few["ci95"] is None and few["upper_bound"] is None
+
+
+def test_cadence_from_located_orders_merged_with_unfilled_candidates():
+    """With ordermatch's fingerprint candidates the unfilled placements are in the series again
+    (plus other people's quotes at the stated chance share): the merged gap is the estimate."""
+    rng = np.random.default_rng(4)
+    own, cand, g, cl = {}, {}, [], []
+    for w in range(12):
+        t, _ = stream("periodic", 600, 500.0, rng)
+        t = t + rng.uniform(-50, 50, len(t))
+        hit = rng.random(len(t)) < 0.25
+        noise = rng.uniform(t[0], t[-1], 60)  # other makers posting the same size: 10 % of the candidates
+        own[f"t{w}"], cand[f"t{w}"] = [int(x) for x in t[hit]], [int(x) for x in np.concatenate([t[~hit], noise])]
+        g += list(np.diff(t[hit]) / 1000)
+        cl += [f"w{w}"] * (hit.sum() - 1)
+    fb = rulefit.footprint_bounds({"active_token_hours": 12.0, "control_token_hours": 12.0, "total": {
+        "own": 1800, "own_unmatched": 0, "candidates": 6120, "control": 720, "expected_by_chance": 720.0}})
+    assert fb["chance_known"] and 0.1 < fb["chance_share"] < 0.13 and fb["p_range"][0] < 0.25 < fb["p_range"][1]
+    c = rulefit.fit_cadence(np.array(g), np.array(cl), own, cand, fb)
+    assert c["status"] == "ESTIMATED" and c["ci95"][0] <= 0.5 <= c["ci95"][1] and abs(c["value"] - 0.5) < 0.1
+    assert c["filled"]["value"] > 1.2 and "candidate" in c["method"]
+    # no control tokens: the chance share is not measured, p ranges up to 1 and the interval reaches the bound
+    fb0 = rulefit.footprint_bounds({"active_token_hours": 12.0, "control_token_hours": 0.0, "total": {
+        "own": 1800, "own_unmatched": 0, "candidates": 6120, "control": 0, "expected_by_chance": None}})
+    assert not fb0["chance_known"] and fb0["p_range"][1] == 1 and fb0["chance_share"] is None
+    c0 = rulefit.fit_cadence(np.array(g), np.array(cl), own, cand, fb0)
+    assert c0["ci95"][0] <= 0.5 and c0["ci95"][1] >= c0["filled"]["value"]
+    assert rulefit.footprint_bounds(None) is None and rulefit.footprint_bounds({"total": None}) is None
+
+
+def test_quote_life_from_cancels_of_filled_orders_is_length_biased():
+    """A quote that rests longer is more likely to fill, so the cancels DOPPEL can see (remainders
+    of filled orders) over-state the quote life. Alone they are an upper bound without a CI; pooled
+    with the cancelled unfilled candidates the median comes back, inside a contamination band."""
+    rng = np.random.default_rng(9)
+    life = rng.exponential(1000.0, 6000)                      # true median ~693 ms
+    filled = rng.random(len(life)) < 1 - np.exp(-life / 2000)  # fill chance grows with the life
+    win = np.array([f"w{i % 15}" for i in range(len(life))])
+    true = float(np.median(life))
+    vis, vcl = life[filled], win[filled]
+    tok = {f"t{k}": {"slug": f"w{k}"} for k in range(15)}
+    alone = rulefit.fit_life(vis, vcl, {}, tok, None)["life_ms"]
+    assert alone["value"] > 1.5 * true and alone["ci95"] is None and alone["bias"] == "length-biased"
+    assert alone["status"] == "UPPER_BOUND" and alone["upper_bound"] >= true and alone["visible"]["ci95"] is None
+    cand = {f"t{k}": [int(v) for v in life[~filled][k::15]] + [int(v) for v in rng.exponential(5000.0, 27)]
+            for k in range(15)}  # the unfilled quotes, plus other makers' longer ones (~10 %)
+    fb = {"chance_known": True, "chance_share_range": [0.05, 0.15]}
+    both = rulefit.fit_life(vis, vcl, cand, tok, fb)
+    pooled = both["life_ms"]
+    assert pooled["status"] == "ESTIMATED" and abs(pooled["value"] - true) < 0.15 * true
+    assert pooled["ci95"][0] <= true <= pooled["ci95"][1] and pooled["ci95"][1] - pooled["ci95"][0] > 0.2 * true
+    assert both["life_ms_p90"]["value"] < np.percentile(vis, 90)  # the genome's quote age no longer uses the biased p90
+    # chance share not measured: the pooled value is shown, with no interval
+    blind = rulefit.fit_life(vis, vcl, cand, tok, {"chance_known": False, "chance_share_range": [0.0, 1.0]})["life_ms"]
+    assert blind["status"] == "ESTIMATED" and blind["ci95"] is None
+    # three visible cancels and no candidates: not even a bound
+    tiny = rulefit.fit_life(vis[:3], vcl[:3], {}, tok, None)["life_ms"]
+    assert tiny["status"] == "UNKNOWN" and tiny["ci95"] is None and tiny["upper_bound"] is None
+
+
+# ---------------------------------------------------------------- explained share
+def side_rows(n_windows, side_of, seed=0, per_window=8):
+    """Decision rows of a wallet that quotes ONE side per window. ``side_of(k, mid, rng)`` -> bid|ask."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for k in range(n_windows):
+        mid = float(rng.choice([35, 40, 45, 55, 60, 65]))
+        s = side_of(k, mid, rng)
+        for j in range(per_window):
+            rows.append({"window": slug(k), "window_start_ns": (T0 + L * k) * NS, "window_end_ns": (T0 + L * k + L) * NS,
+                         "cutoff_tw_ns": (T0 + L * k + 5 + 20 * j) * NS, "up_side": s,
+                         # the book drifts with the side after the first order: a per-order test would leak it
+                         "mid_c": mid if j == 0 else (70.0 if s == "bid" else 30.0), "fair_c": None})
+    return rows
+
+
+def test_a_side_chosen_by_a_hidden_signal_is_not_explained():
+    hidden = side_rows(40, lambda k, mid, rng: "bid" if rng.random() < 0.5 else "ask")
+    th = thresholds(hidden)
+    t = rulefit.side_test(hidden, th)
+    assert t["kind"] == "one_sided_by_window" and t["explained"] is False and t["ci95"][0] <= 0.5
+    assert "includes chance" in t["reason"] and t["n_held_out"] >= 10
+    # the same wallet whose side follows the book at its first order: explained, on the held-out windows
+    seen = side_rows(40, lambda k, mid, rng: "bid" if mid > 50 else "ask")
+    t = rulefit.side_test(seen, thresholds(seen))
+    assert t["explained"] is True and t["predictor"] == "mid_minus_50" and t["balanced_accuracy"] == 1 and t["ci95"][0] > 0.5
+    # too few held-out windows to tell: not explained (never the benefit of the doubt)
+    few = side_rows(6, lambda k, mid, rng: "bid" if mid > 50 else "ask", seed=3)
+    assert rulefit.side_test(few, thresholds(few))["explained"] is False
+    # always the same side: nothing to explain. Both sides in most windows: exempt.
+    const = side_rows(10, lambda k, mid, rng: "bid")
+    assert rulefit.side_test(const, thresholds(const)) | {} == rulefit.side_test(const, thresholds(const))
+    assert rulefit.side_test(const, thresholds(const))["kind"] == "one_sided_constant"
+    assert rulefit.side_test(const, thresholds(const))["explained"] is True
+    two = [r | {"up_side": "bid" if i % 2 else "ask"} for i, r in enumerate(hidden)]
+    assert rulefit.side_test(two, th)["kind"] == "two_sided" and rulefit.side_test(two, th)["explained"] is None
+    thin = side_rows(10, lambda k, mid, rng: "bid", per_window=2)  # two visible orders a window say nothing
+    assert rulefit.side_test(thin, thresholds(thin))["kind"] == "undetermined"
+
+
+def test_no_genome_for_a_wallet_whose_side_follows_a_hidden_signal(tmp_path):
+    """The known-rule world, but in each window the wallet quotes ONE side, picked by a coin DOPPEL
+    never sees. Its price rule fits perfectly; the genome is still not emitted, with the numbers."""
+    frames, orders, tape, _ = world(seed=5, windows=12)
+    coin = np.random.default_rng(1).random(12) < 0.5
+    keep = [o for o in orders if o["token_id"].startswith("U") == bool(coin[int(o["token_id"][1:])])]
+    ids = {o["order_id"] for o in keep}
+    write(tmp_path, frames, keep, [r for r in tape if r["order_id"] in ids], windows=12)
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "genome.json").write_text("{}")
+    genome, rep, _ = run(tmp_path / "tape", tmp_path / "om", tmp_path / "ordertape.jsonl", W, T0, T0 + 3600,
+                         tmp_path / "out", [tmp_path / "tokens.jsonl"])
+    ex = rep["explained_by_observed_inputs"]
+    assert genome is None and rep["genome"]["status"] == "not_emitted" and not (tmp_path / "out" / "genome.json").exists()
+    assert ex["verdict"] is False and ex["side"]["kind"] == "one_sided_by_window" and ex["side"]["explained"] is False
+    assert any(r.startswith("not explained by observed inputs: side") for r in rep["genome"]["reasons"])
+    assert "explained by observed inputs: NO" in (tmp_path / "out" / "rule.md").read_text()
+
+
+# ---------------------------------------------------------------- takers
+class FlatFair:
+    def __init__(self, fair):
+        self.fair = fair
+
+    def at(self, info, tw):
+        return self.fair.get((info["slug"], tw // NS))
+
+
+def taker_world(rule, windows=30, seed=2):
+    """Cells of ``windows`` 5m windows with a wandering mid and fair; ``rule(mid, fair, tte_frac, rng)``
+    -> list of (side, idx) takes in the cell."""
+    rng = np.random.default_rng(seed)
+    tok, grid, fair, takes = {}, {}, {}, []
+    for k in range(windows):
+        s = slug(k)
+        start = T0 + L * k
+        for i in (0, 1):
+            tok[f"{'UD'[i]}{k}"] = {"slug": s, "asset": "btc", "hz": "5m", "start": start, "end": start + L, "idx": i}
+        mid = 50.0
+        for b in range(start + 10, start + L, 10):
+            mid = float(np.clip(mid + rng.integers(-4, 5), 10, 90))
+            f = mid + float(rng.integers(-5, 6))
+            grid[(s, b, 0)] = ((mid - 1) / 100, 100.0, (mid + 1) / 100, 100.0)
+            fair[(s, b)] = f
+            for j, (side, idx) in enumerate(rule(mid, f, (start + L - b) / L, rng)):
+                takes.append({"tw": (b + 1 + j % 9) * NS, "token": f"{'UD'[idx]}{k}", "idx": idx, "side": side,
+                              "slug": s, "located": True})
+    return {"takes": takes, "tok": tok, "res": {"grid": grid}, "fair": FlatFair(fair)}
+
+
+def test_a_random_taker_gets_no_rule_and_a_rule_following_taker_gets_one():
+    def decoy(mid, fair, frac, rng):   # Poisson times, a coin for the token: nothing to find
+        return [("BUY", int(rng.random() < 0.5)) for _ in range(rng.poisson(1.5))]
+
+    def edge(mid, fair, frac, rng):    # takes when fair is >= 3 c from the mid, on the side of fair
+        return [("BUY", 0 if fair > mid else 1) for _ in range(rng.poisson(3.0))] if abs(fair - mid) >= 3 else []
+
+    r = rulefit.fit_taker(taker_world(decoy))
+    assert r["found"] is False and r["n_takes"] > 500 and r["reason"].startswith("no rule found")
+    assert r["when"]["explained"] is False and r["when"]["ci95"][0] <= rulefit.SKILL_MIN
+    assert r["side"]["explained"] is False and r["side"]["ci95"][0] <= 0.5 <= r["side"]["ci95"][1]
+    r = rulefit.fit_taker(taker_world(edge))
+    assert r["found"] is True and r["reason"] is None
+    assert r["when"]["feature"] == "edge_vs_fair" and r["when"]["value"] > 0.3 and r["when"]["ci95"][0] > rulefit.SKILL_MIN
+    assert r["side"]["predictor"] == "fair_minus_mid" and r["side"]["balanced_accuracy"] == 1
+    # always the same token: the side needs no rule, the timing still does
+    r = rulefit.fit_taker(taker_world(lambda mid, fair, frac, rng: [("BUY", 0)] * rng.poisson(1.5)))
+    assert r["side"]["explained"] is True and r["found"] is False
+    assert rulefit.fit_taker(taker_world(decoy, windows=2))["reason"].startswith("fewer than 3 market windows")
+    assert rulefit.fit_taker({"takes": [], "tok": {}, "res": {"grid": {}}, "fair": None})["found"] is False
+
+
+def test_a_wallet_with_only_taker_fills_gets_a_report_and_exit_0(tmp_path):
+    """No maker order to fit: rulefit says so in a report (exit 0), writes no genome, and tests the
+    taker fills for a rule. A wallet with no order at all is still an error."""
+    frames, orders, tape, _ = world(seed=6, windows=6)
+    rng = np.random.default_rng(0)
+    takes = [dict(r, role="taker", order_id=f"t{i}", tx=r["tx"]) for i, r in enumerate(tape) if rng.random() < 0.5]
+    write(tmp_path, frames, [], takes, windows=6)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "genome.json").write_text("{}")
+    cli = ["--data", str(tmp_path / "tape"), "--ordermatch-dir", str(tmp_path / "om"), "--orders",
+           str(tmp_path / "ordertape.jsonl"), "--from", str(T0), "--to", str(T0 + 3600), "--out", str(out),
+           "--tokens", str(tmp_path / "tokens.jsonl")]
+    assert main(cli + ["--wallet", W]) == 0
+    rep = orjson.loads((out / "fit_report.json").read_bytes())
+    assert not (out / "genome.json").exists() and rep["genome"]["status"] == "not_emitted"
+    assert rep["taker_rule"]["n_takes"] == len(takes) and rep["taker_rule"]["located_by_print"] == len(takes)
+    assert rep["taker_rule"]["found"] is False and rep["explained_by_observed_inputs"]["verdict"] is False
+    assert "no maker order" in rep["genome"]["reasons"][0] and "NO RULE FOUND" in (out / "rule.md").read_text()
+    with pytest.raises(SystemExit, match="no order of .* could be put in a window"):
+        main(cli + ["--wallet", "0x" + "9" * 40])
 
 
 def test_a_laddering_wallet_is_flagged_even_when_each_level_fits_tightly(tmp_path):

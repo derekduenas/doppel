@@ -72,22 +72,27 @@ Status: VERIFIED = measured directly from verified orders, chain fills or exact 
 n and the number; ESTIMATED = inferred, with a stated false-positive / placebo rate; UNKNOWN =
 with what data would resolve it. Evidence is always attached, whatever the status. "stamps
 validated" = ordermatch observable >= 30, match_rate >= 0.9 and placebo_rate <= 0.1.
+Every obligation states ``bias``, the known selection bias of the sample its number comes from:
+``none``, ``fill-conditional upper bound`` or ``length-biased``. A biased number is never VERIFIED
+(``_ob`` raises) and carries no confidence interval: it is a bound, reported as ESTIMATED.
 
   identity_software   VERIFIED: >= 200 orders, a salt kind, salt stable, a stamp granularity.
   universe            VERIFIED: >= 200 orders and a dossier asset-horizon mix.
   size_rule           VERIFIED: >= 200 maker orders and rule fixed_sizes or fixed_notional.
   price_rule          VERIFIED: dossier maker_mid_dist_c n >= 200 and book_share >= 0.5.
-  placement_cadence   The measured number is the gap between FILLED orders, an upper bound on
-                      the re-post cadence. VERIFIED: >= 200 maker orders with a plausible stamp,
-                      stamps validated, and a fill footprint with fill ratio >= 0.5 (so filled
-                      orders are most of the quoting). ESTIMATED: the same with a lower fill
-                      ratio (value adds the estimated quotes per active token-hour; rate
-                      stated = the footprint's chance share), or without a footprint, or with
-                      >= 30 such orders, observable >= 30 and match_rate > placebo_rate (rate
-                      stated = placebo_rate).
-  cancel_replace      VERIFIED: stamps validated, >= 200 followed orders, unknown outcomes
-                      <= 10 %, >= 90 % of cancels ``alone``. ESTIMATED: >= 30 followed orders
-                      and a placebo rate (stated).
+  placement_cadence   bias: fill-conditional upper bound. The measured number is the gap between
+                      FILLED orders. Never VERIFIED. ESTIMATED: >= 200 maker orders with a
+                      plausible stamp, stamps validated and a fill footprint (value adds the
+                      estimated quotes per active token-hour, the fill ratio and the gap times
+                      the fill ratio; rate stated = the footprint's chance share), or >= 30 such
+                      orders, observable >= 30 and match_rate > placebo_rate (rate stated =
+                      placebo_rate).
+  cancel_replace      bias: length-biased. Every followed order filled at least once, so its
+                      cancel is the cancel of a remainder. Never VERIFIED. ESTIMATED: >= 30
+                      followed orders and a placebo rate (stated); ``value.clean`` = stamps
+                      validated, >= 200 followed orders, unknown outcomes <= 10 %, >= 90 % of
+                      cancels ``alone``. The value adds the median life of the unfilled
+                      fingerprint candidates, which is an attribution estimate.
   fill_footprint      ESTIMATED: ordermatch fingerprint with a net estimate; fill ratio =
                       (own + own_unmatched) / (own + own_unmatched + net_estimate), all
                       fingerprint-size bids in the ordermatch window; rate stated =
@@ -130,6 +135,11 @@ from .ordermatch import filled_shares
 from .ordertape import committed_parts, ts_flag
 
 VERIFIED, ESTIMATED, UNKNOWN = "VERIFIED", "ESTIMATED", "UNKNOWN"
+# Known selection bias of the sample an obligation's number is measured on. Anything but
+# BIAS_NONE can never be VERIFIED (``_ob`` refuses it) and never carries a confidence interval.
+BIAS_NONE = "none"
+BIAS_UPPER = "fill-conditional upper bound"   # measured between FILLED orders only: bounds the true value from above
+BIAS_LENGTH = "length-biased"                 # only cancels of partly filled orders are seen: long lives are over-sampled
 
 # obligation -> weight in the coverage score (sums to 1)
 WEIGHTS = {
@@ -153,7 +163,6 @@ T = {
     "size_cover": 0.9, "max_sizes": 8, "notional_cv": 0.05,
     "match_min": 0.9, "placebo_max": 0.1, "min_observable": 30,
     "unknown_outcomes_max": 0.1, "alone_min": 0.9,
-    "cadence_fill_ratio_min": 0.5,
     "min_windows": 30, "book_share_min": 0.5, "taker_negligible": 0.05,
 }
 
@@ -398,8 +407,10 @@ def clusters(fps: dict[str, dict], key: str) -> dict[str, list[str]]:
 
 # ---------------------------------------------------------------- B. ledger
 def _ob(status: str, source: str | None, *, n=None, value=None, rate=None, resolve=None,
-        evidence=None) -> dict:
-    return {"status": status, "n": n, "value": value, "false_positive_rate": rate,
+        evidence=None, bias: str = BIAS_NONE) -> dict:
+    if status == VERIFIED and bias != BIAS_NONE:
+        raise ValueError(f"a number from a sample with a known selection bias ({bias}) cannot be VERIFIED")
+    return {"status": status, "bias": bias, "n": n, "value": value, "false_positive_rate": rate,
             "resolve": resolve, "evidence": evidence, "source": source}
 
 
@@ -518,16 +529,18 @@ def ledger(wallet: str, w: dict, fp: dict, om: dict | None = None, dos: dict | N
            "note": "gaps between FILLED orders: an upper bound on the re-post cadence"}
     ratio = ft["fill_ratio"] if ft else None
     if n_ts >= N and _stamps_validated(om) and ft and ratio is not None:
-        if ratio >= T["cadence_fill_ratio_min"]:
-            ob["placement_cadence"] = _ob(VERIFIED, S_ord, n=n_ts, value=val, evidence=ev)
-        else:
-            ob["placement_cadence"] = _ob(ESTIMATED, S_om, n=n_ts, evidence=ev, rate=ft["chance_share"], value=val | {
-                "est_quotes_per_token_hour": ft["quotes_per_token_hour"], "fill_ratio": ratio})
+        gap = val["filled_order_gap_ms_same_token_p50"]
+        ob["placement_cadence"] = _ob(ESTIMATED, S_om, n=n_ts, evidence=ev, rate=ft["chance_share"], bias=BIAS_UPPER, value=val | {
+            "est_quotes_per_token_hour": ft["quotes_per_token_hour"], "fill_ratio": ratio,
+            "thinned_gap_ms_same_token": None if gap is None else _r(gap * ratio, 1),
+            "thinned_note": "filled-order gap x fill ratio: the re-post gap if fills were an independent "
+                            "thinning of a Poisson stream of quotes; doppel-rulefit reports the interval"})
     elif (om and n_ts >= T["min_fp_n"] and om["observable"] >= T["min_observable"]
           and om["match_rate"] > om["placebo_rate"]):
-        ob["placement_cadence"] = _ob(ESTIMATED, S_ord, n=n_ts, value=val, evidence=ev, rate=om["placebo_rate"])
+        ob["placement_cadence"] = _ob(ESTIMATED, S_ord, n=n_ts, value=val, evidence=ev, rate=om["placebo_rate"],
+                                      bias=BIAS_UPPER)
     else:
-        ob["placement_cadence"] = _ob(UNKNOWN, S_ord, n=n_ts, value=val, evidence=ev, resolve=(
+        ob["placement_cadence"] = _ob(UNKNOWN, S_ord, n=n_ts, value=val, evidence=ev, bias=BIAS_UPPER, resolve=(
             "created_ms is self-reported: run doppel-ordermatch on a tape window holding >= "
             f"{T['min_observable']} of the wallet's orders (match rate vs placebo)"))
 
@@ -540,17 +553,21 @@ def ledger(wallet: str, w: dict, fp: dict, om: dict | None = None, dos: dict | N
               "cancelled_alone": om["cancelled_alone"], "wrong_matches": om["fill_before_placement"],
               "placebo_rate": om["placebo_rate"]}
         val = {"filled": oc["filled"], "cancelled_or_replaced": canc, "unknown": oc["unknown"],
-               "rest_ms_p50": {k: v and v["p50"] for k, v in om["rest_ms_known"].items()}}
-        if (_stamps_validated(om) and fol >= N and oc["unknown"] <= T["unknown_outcomes_max"] * fol
-                and om["cancelled_alone"] >= T["alone_min"] * canc):
-            ob["cancel_replace"] = _ob(VERIFIED, S_om, n=fol, value=val, evidence=ev)
-        elif fol >= T["min_fp_n"] and om["placebo_rate"] is not None:
-            ob["cancel_replace"] = _ob(ESTIMATED, S_om, n=fol, value=val, evidence=ev, rate=om["placebo_rate"])
+               "rest_ms_p50": {k: v and v["p50"] for k, v in om["rest_ms_known"].items()},
+               "unfilled_candidate_life_ms_p50": ((om.get("fingerprint") or {}).get("candidate_rest_ms_cancelled")
+                                                  or {}).get("p50"),
+               "clean": bool(_stamps_validated(om) and fol >= N and oc["unknown"] <= T["unknown_outcomes_max"] * fol
+                             and om["cancelled_alone"] >= T["alone_min"] * canc),
+               "note": "every followed order filled at least once, so a cancel here is the cancel of a remainder: "
+                       "its life over-samples long-lived quotes (an upper bound on the quote life)"}
+        if fol >= T["min_fp_n"] and om["placebo_rate"] is not None:
+            ob["cancel_replace"] = _ob(ESTIMATED, S_om, n=fol, value=val, evidence=ev, rate=om["placebo_rate"],
+                                       bias=BIAS_LENGTH)
         else:
-            ob["cancel_replace"] = _ob(UNKNOWN, S_om, n=fol, value=val, evidence=ev, resolve=(
+            ob["cancel_replace"] = _ob(UNKNOWN, S_om, n=fol, value=val, evidence=ev, bias=BIAS_LENGTH, resolve=(
                 f">= {T['min_fp_n']} orders followed in the book (have {fol}) with a placebo rate"))
     else:
-        ob["cancel_replace"] = _ob(UNKNOWN, None, n=0, resolve=(
+        ob["cancel_replace"] = _ob(UNKNOWN, None, n=0, bias=BIAS_LENGTH, resolve=(
             "doppel-ordermatch follow-forward of the wallet's orders (cancels are not on chain)"))
 
     if ft and ft["fill_ratio"] is not None:
@@ -626,9 +643,10 @@ def card(doc: dict) -> str:
     L = [f"# Ledger {doc['wallet']}", "",
          f"coverage **{doc['coverage']}** | copyability **{doc['copyability']}** (thresholds provisional) | "
          f"orders {fp['n_orders']} (maker {fp['n_maker_orders']}) | input {_s(doc['input'])}", "",
-         "| obligation | weight | status | n | value | fp rate | resolve by | source |", "|---|---|---|---|---|---|---|---|"]
+         "| obligation | weight | status | bias | n | value | fp rate | resolve by | source |",
+         "|---|---|---|---|---|---|---|---|---|"]
     for k, o in doc["obligations"].items():
-        L.append(f"| {k} | {WEIGHTS[k]} | {o['status']} | {_s(o['n'])} | {_s(o['value'])} | "
+        L.append(f"| {k} | {WEIGHTS[k]} | {o['status']} | {o['bias']} | {_s(o['n'])} | {_s(o['value'])} | "
                  f"{_s(o['false_positive_rate'])} | {_s(o['resolve'])} | {_s(o['source'])} |")
     L += ["", "## Software fingerprint", "",
           f"- software_key `{fp['software_key']}`, operator_key `{fp['operator_key']}`: {NOTE}",

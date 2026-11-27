@@ -33,7 +33,8 @@ adapter is orderreplay's: books of the order's own token, prints of the token an
 (mirrored, mirror duplicates dropped). Two own orders never share a level; prints are offered to
 own orders best price first and what one fills is taken from the print before the next. A cancel is
 effective at its landing (no dying-quote grace: the book showed it gone). A post-only order that
-would cross on landing is rejected (never visible). Takers are FAK at the best ask seen at the
+would cross on landing is rejected (never visible); "cross" includes the wallet's own bid on the
+mate token, which is an ask on this one. Takers are FAK at the best ask seen at the
 decision, filled at landing up to that level's displayed size. Fees are 0.
 
 THE PUBLIC EVIDENCE (``public/``), in the formats the tools read, and nothing more:
@@ -58,8 +59,9 @@ THE PUBLIC EVIDENCE (``public/``), in the formats the tools read, and nothing mo
   NEVER written there: cancels as events, unfilled or rejected orders, parameters, the signal.
 
 KNOWN LIMITS: injected quotes and trades do not change any other participant's behaviour; a
-book-cross fill (the opposite side reached a resting quote with no print) gets an injected print
-and may fill twice in orderreplay; frames' own best_bid/best_ask and hash fields are not
+book-cross fill (the opposite side reached a resting quote with no print) is published as the
+crossed book itself plus a ZERO-SIZE print that carries its tx and time (so the fill can be
+located, and is not counted a second time); frames' own best_bid/best_ask and hash fields are not
 recomputed; while an asset's state is unknown nothing is injected for it (the next snapshot
 carries the overlay); RTDS activity is absent.
 
@@ -92,6 +94,7 @@ import numpy as np
 import orjson
 
 from ..tape.segment import SegmentWriter, read_segment, segment_path
+from .census import LEN
 from .fillstore import compact
 from .flow import _ts
 from .intlbook import NS, IntlBook, LevelEvent, Print, Reset, px
@@ -106,6 +109,7 @@ STOP_S = 15              # no new orders and everything cancelled this long befo
 MIN_QTY = 0.01
 TOL = 0.02
 JOB = "cohort-answerkey"
+MIN_FIDELITY_STARTS = 30   # fidelity's comparable_starts gate (fidelity.GATES)
 ZERO32 = "0" * 64
 
 
@@ -375,6 +379,7 @@ class Sim:
         self.dirty = False                                      # the current record was rewritten
         self.t_stop = 0
         self.seen_prints: dict[tuple, float] = {}               # print view key -> shares taken from it
+        self.markers: set[str] = set()                          # txs of book-cross fills (zero-size prints)
         self.next_decide = 0
         self.n = 0
         self.stats: Counter = Counter()
@@ -417,7 +422,11 @@ class Sim:
         self.inv[o.slug] += q if o.up else -q
         for k in self.keys(o.token, o.price):
             self.rest[k] -= q
-        out = [self.print_msg(o.token, o.price, q, "SELL", ms, tx)]
+        # A book-cross fill is already in the public book (the opposite side is shown at the quote's
+        # price), so its print carries the tx and the time but NO size: the execution is published once.
+        if via == "book_cross":
+            self.markers.add(tx)
+        out = [self.print_msg(o.token, o.price, 0.0 if via == "book_cross" else q, "SELL", ms, tx)]
         lv = self.level_msg(self.keys(o.token, o.price), ms)
         if lv:
             out.append(lv)
@@ -469,7 +478,11 @@ class Sim:
             if o.status.startswith("rejected"):
                 self.open.pop(o.oid, None)
             elif o.kind == "maker":
-                if ba is not None and o.price >= ba - 1e-9:
+                # post-only against the book the venue would show: the real asks AND the wallet's own bids on
+                # the mate token, which are asks here (BUY mate @ p == SELL this @ 1 - p). Without the second
+                # part two of its own quotes can cross each other in the public book.
+                own_ask = min((1 - x.price for x in self.live[self.mate[o.token]]), default=None)
+                if (ba is not None and o.price >= ba - 1e-9) or (own_ask is not None and o.price >= own_ask - 1e-9):
                     o.status = "rejected:post_only"
                     self.open.pop(o.oid, None)
                 elif any(abs(x.price - o.price) < 1e-9 for x in self.live[o.token]):
@@ -680,7 +693,8 @@ class Sim:
                         new += self.message(m, tw) if isinstance(m, dict) else [m]
                     if self.dirty:
                         new = [x for x in new if not (isinstance(x, dict) and x.get("event_type") == "last_trade_price"
-                                                     and float(x.get("size") or 0) <= 1e-9)]
+                                                     and float(x.get("size") or 0) <= 1e-9
+                                                     and x.get("transaction_hash") not in self.markers)]
                         raw = orjson.dumps(new if isinstance(obj, list) or len(new) != 1 else new[0]).decode()
                     w.append(raw, tw=tw, tm=rec.get("tm"), meta=rec.get("meta"))
                 self.pre_tw = max(self.pre_tw, tw)
@@ -905,6 +919,23 @@ def _covers(ci, x, pad=0.0) -> bool | None:
     return None if not ci or None in ci or x is None else ci[0] - pad <= x <= ci[1] + pad
 
 
+def _timing_cell(truth, q: dict | None, ob: dict | None) -> dict:
+    """A cadence or quote-life cell from rulefit's corrected estimate ``q`` (value, status, ci95 =
+    its stated interval, upper_bound) and the profile obligation. The stated interval is scored as
+    a claim about the truth; so is a stated upper bound when no interval is given."""
+    q = q or {}
+    st = q.get("status")
+    v = q.get("value") if st in ("ESTIMATED", "UPPER_BOUND") else None
+    cover = _covers(q.get("ci95"), truth)
+    ub = q.get("upper_bound")
+    holds = None if ub is None or truth is None else truth <= ub
+    if cover is None and st == "UPPER_BOUND":
+        cover = holds
+    return _cell(truth, v, _status(ob) if v is not None else "unknown", _ratio_ok(v, truth), cover,
+                 tool="rulefit+profile", stated=st, method=q.get("method"), interval=q.get("ci95"),
+                 upper_bound=ub, bound_holds=holds, bias=q.get("bias"))
+
+
 def score(name: str, t: dict, tools: dict) -> dict:
     """One strategy's row of the scorecard from the truth summary and the tools' outputs."""
     e = EXPECT[name]
@@ -956,24 +987,17 @@ def score(name: str, t: dict, tools: dict) -> dict:
     cv = None if not skc or None in skc else all(skc)
     cells["skew"] = _cell(e["skew"], sk if have else None, "claim" if have else "unknown",
                           bool(sko) and all(sko), cv, tool="rulefit")
-    # cadence: rulefit's gap between filled orders on a token, status from the profile ledger
+    # cadence and quote life: rulefit's corrected estimates, status from the profile ledger
     tm = rf.get("timing_rule") or {}
-    gap = (tm.get("gap_s") or {})
-    gv = gap.get("value")
-    st_c = _status(led.get("placement_cadence")) if gv is not None else "unknown"
-    cells["cadence"] = _cell(t["repost_gap_s_p50"], gv, st_c, _ratio_ok(gv, t["repost_gap_s_p50"]),
-                             _covers(gap.get("ci95"), t["repost_gap_s_p50"]), tool="rulefit+profile",
-                             bound_holds=None if gv is None or t["repost_gap_s_p50"] is None else gv >= t["repost_gap_s_p50"])
-    cl = ((tm.get("cancel") or {}).get("life_ms") or {})
-    lv = cl.get("value")
-    tl = t["cancel_life_ms_p50"] if maker else None
-    cells["cancel_rule"] = _cell(tl, lv, _status(led.get("cancel_replace")) if lv is not None else "unknown",
-                                 _ratio_ok(lv, tl), _covers(cl.get("ci95"), tl), tool="rulefit+profile")
+    cells["cadence"] = _timing_cell(t["repost_gap_s_p50"], tm.get("gap_s"), led.get("placement_cadence"))
+    cells["cancel_rule"] = _timing_cell(t["cancel_life_ms_p50"] if maker else None, (tm.get("cancel") or {}).get("life_ms"),
+                                        led.get("cancel_replace"))
+    # ladder: rulefit states ladder (a claim) / no_ladder_seen (hedged: unfilled levels are invisible) / unknown
     lad = rf.get("ladder") or {}
-    ls = (lad.get("ladder_share") or {}).get("value")
-    det = None if ls is None or (lad.get("n") or 0) < 20 else ls >= 0.1
-    cells["ladder"] = _cell(e["ladder"], det, "claim" if det is not None else "unknown", det == e["ladder"],
-                            tool="rulefit", ladder_share=ls)
+    det = {"ladder": True, "no_ladder_seen": False}.get(lad.get("status") or "")
+    cells["ladder"] = _cell(e["ladder"], det, "claim" if det else "hedged" if det is False else "unknown",
+                            det == e["ladder"], tool="rulefit", stated=lad.get("status"),
+                            ladder_share=(lad.get("ladder_share") or {}).get("value"), floor_ms=lad.get("floor_ms"))
     ob = led.get("fill_footprint")
     fv = ((ob or {}).get("value") or {}).get("fill_ratio")
     cells["fill_footprint"] = _cell(t["fill_ratio"] if maker else None, fv, _status(ob) if fv is not None else "unknown",
@@ -985,42 +1009,51 @@ def score(name: str, t: dict, tools: dict) -> dict:
     cells["copyability"] = _cell(tc, cvd, _status(ob) if cvd else "unknown", cvd == tc, tool="profile")
     dec = ((fid or {}).get("verdict") or {}).get("decision")
     by_gate = bool(fid) and str(((fid or {}).get("verdict") or {}).get("reason", "")).startswith("data gate")
+    # three states that are not a verdict must not read as one: not run (no genome), stopped by a data gate, open
+    state = "not_run" if not fid else "gate_inconclusive" if by_gate else {
+        "PASS": "pass", "FAIL": "fail"}.get(dec or "", "inconclusive")
     exp = e["expressible"]
-    if exp is NA:
-        cells["fidelity_verdict"] = _cell(NA, dec, "unknown", None, tool="fidelity", by_gate=by_gate)
-    else:
-        said = {"PASS": True, "FAIL": False}.get(dec or "")
-        cells["fidelity_verdict"] = _cell(exp, said, "claim" if said is not None else "unknown", said == exp,
-                                          tool="fidelity", decision=dec, by_gate=by_gate)
-        if exp is False and said is None:
-            cells["fidelity_verdict"]["category"] = "correctly_unknown"
+    said = {"PASS": True, "FAIL": False}.get(dec or "")
+    c = _cell(exp, said, "claim" if said is not None else "unknown", said == exp, tool="fidelity", decision=dec,
+              by_gate=by_gate, state=state)
+    if exp is not NA and state == "gate_inconclusive":
+        c["category"] = "gate_inconclusive"   # the data could not test it: neither right nor wrong
+    elif exp is False and said is None:
+        c["category"] = "correctly_unknown"
+    cells["fidelity_verdict"] = c
     emitted = bool(tools.get("genome"))
+    ex = rf.get("explained_by_observed_inputs") or {}
+    rec = ex["verdict"] if "verdict" in ex else emitted   # what rulefit states; a genome only when it states yes
     cells["explained_by_observed_inputs"] = _cell(
-        e["explained"], emitted, "claim" if dec == "PASS" else "hedged", emitted == e["explained"],
-        tool="rulefit+fidelity", genome_emitted=emitted, fidelity=dec)
+        e["explained"], rec, "claim" if dec == "PASS" else "hedged", rec == e["explained"],
+        tool="rulefit+fidelity", genome_emitted=emitted, fidelity=dec, fidelity_state=state,
+        reasons=ex.get("reasons"), side=ex.get("side"), timing=ex.get("timing"))
     return cells
 
 
 def totals(rows: dict[str, dict]) -> dict:
     cats = Counter(c["category"] for r in rows.values() for c in r.values())
-    scored = sum(c["truth"] is not None and c["truth"] != NA for r in rows.values() for c in r.values())
+    scored = sum(c["truth"] is not None and c["truth"] != NA and c["category"] != "gate_inconclusive"
+                 for r in rows.values() for c in r.values())
+    fid = Counter(r["fidelity_verdict"].get("state", "?") for r in rows.values() if "fidelity_verdict" in r)
     claims = sum(c["status"] == "claim" and c["category"] not in ("not_scored",) for r in rows.values() for c in r.values())
     cov = [c["ci_covers_truth"] for r in rows.values() for c in r.values() if c["ci_covers_truth"] is not None]
     return {"categories": dict(cats), "cells_with_true_value": scored, "confident_claims": claims,
+            "fidelity_states": dict(fid),
             "recovery_accuracy": round(cats["correct"] / scored, 4) if scored else None,
             "false_confidence_rate": round(cats["wrongly_confident"] / claims, 4) if claims else None,
             "ci_coverage": round(sum(cov) / len(cov), 4) if cov else None, "ci_cells": len(cov)}
 
 
 SHORT = {"correct": "OK", "wrong": "WRONG", "wrongly_confident": "WRONG!", "correctly_unknown": "unk-ok",
-         "missed": "missed", "not_scored": "-"}
+         "missed": "missed", "not_scored": "-", "gate_inconclusive": "gate"}
 
 
 def markdown(card: dict) -> str:
     L = ["# Answer-key scorecard", "",
          f"range {card['range']}, stream {card['stream']}, seed {card['seed']}; categories: OK correct, "
          "WRONG hedged wrong, WRONG! wrongly confident, unk-ok correctly unknown, missed (said UNKNOWN on a "
-         "true rule), - not scored", "",
+         "true rule), gate fidelity stopped by a data gate (in no rate), - not scored", "",
          "| strategy | " + " | ".join(OBLIGATIONS) + " |", "|---" * (len(OBLIGATIONS) + 1) + "|"]
     for s, row in card["cells"].items():
         L.append(f"| {s} | " + " | ".join(SHORT[row[o]["category"]] for o in OBLIGATIONS) + " |")
@@ -1028,7 +1061,12 @@ def markdown(card: dict) -> str:
     L += ["", f"recovery accuracy {t['recovery_accuracy']} ({t['categories'].get('correct', 0)} of "
               f"{t['cells_with_true_value']} cells with a true value); false-confidence rate "
               f"{t['false_confidence_rate']} ({t['categories'].get('wrongly_confident', 0)} of "
-              f"{t['confident_claims']} confident claims); CI coverage {t['ci_coverage']} over {t['ci_cells']} cells", ""]
+              f"{t['confident_claims']} confident claims); CI coverage {t['ci_coverage']} over {t['ci_cells']} cells", "",
+          f"fidelity: {t.get('fidelity_states')} (not_run = rulefit emitted no genome; gate_inconclusive = a data gate "
+          f"stopped it, which is not a verdict); holdout window starts {card.get('holdout_window_starts')}"
+          + ("" if card.get("fidelity_readable", True) else " < 30: NO fidelity cell of this run can be read"), ""]
+    wc = [f"{s}.{o}" for s, row in card["cells"].items() for o in OBLIGATIONS if row[o]["category"] == "wrongly_confident"]
+    L += ["wrongly confident cells: " + (", ".join(wc) or "none"), ""]
     for k, v in card.get("hidden_and_decoy", {}).items():
         L.append(f"- {k}: {v}")
     L += ["", "Per cell values: scorecard.json -> cells.<strategy>.<obligation> (truth, recovered, status, category)."]
@@ -1089,7 +1127,29 @@ def run_tools(pub: Path, out: Path, wallet: str, t_from: int, split: int, t_to: 
         "genome": _load(g), "fidelity": _load(out / "fidelity" / "fidelity.json")}
 
 
-def pipeline_checks(sim: Sim, tools: dict) -> dict:
+def violation_causes(sim: Sim, tdir: Path) -> dict:
+    """Each pessimistic over-fill of orderreplay's headline set, by its cause in the truth: the book
+    match took another increase (``wrong_placement``), the order's real cancel was not the decrease
+    ordermatch took (``wrong_cancel_end``), a book-cross fill (``book_cross``), else ``other``."""
+    truth = {o.oid: o for o in sim.orders}
+    rp, om = tdir / "orderreplay" / "orderreplay.jsonl", tdir / "ordermatch" / "orders.jsonl"
+    if not rp.exists() or not om.exists():
+        return {}
+    match = {r["order_id"]: r for r in map(orjson.loads, om.read_bytes().splitlines())}
+    out: Counter = Counter()
+    for r in map(orjson.loads, rp.read_bytes().splitlines()):
+        if r.get("kind") != "order" or str(r.get("outcome", "")).startswith("unknown") or r.get("cut") \
+                or r["pessimistic"]["error"] <= TOL:
+            continue
+        o, m = truth.get(r["id"]), match.get(r["id"])
+        out["unknown_order" if o is None or m is None else
+            "wrong_placement" if m["placed_venue_ms"] != o.land_ms else
+            "wrong_cancel_end" if o.status == "cancelled" and m.get("end_ms") != o.end_ms else
+            "book_cross" if any(f[4] == "book_cross" for f in o.fills) else "other"] += 1
+    return dict(out)
+
+
+def pipeline_checks(sim: Sim, tools: dict, tdir: Path | None = None) -> dict:
     """Plumbing: does the book match find the subject's filled orders, and does the twin replay
     reproduce the truth's own fills (same fill code, same queue rule)?"""
     om = tools.get("ordermatch") or {}
@@ -1103,7 +1163,8 @@ def pipeline_checks(sim: Sim, tools: dict) -> dict:
             "ordermatch_match_rate": om.get("match_rate"), "ordermatch_placebo_rate": om.get("placebo_rate"),
             "ordermatch_outcomes": om.get("outcomes"),
             "orderreplay_pessimistic_ratio": rp.get("ratio"), "orderreplay_n": rp.get("n"),
-            "bracket_violations": {k: bv.get(k) for k in ("pessimistic_overfilled", "optimistic_underfilled")}}
+            "bracket_violations": {k: bv.get(k) for k in ("pessimistic_overfilled", "optimistic_underfilled")},
+            "pessimistic_overfill_causes": violation_causes(sim, tdir) if tdir is not None else None}
 
 
 # ---------------------------------------------------------------- driver
@@ -1146,7 +1207,7 @@ def run_strategy(key: str, root: Path, tokens: Path, stream: str, t_from: int, s
         tl = run_tools(pub, d / "tools", wallet, t_from, split, t_to)
         res["tools"] = {k: tl[k] for k in ("exit", "rss_mb")}
         res["cells"] = score(pol.name, truth, tl)
-        res["pipeline"] = pipeline_checks(sim, tl)
+        res["pipeline"] = pipeline_checks(sim, tl, d / "tools")
         res["fidelity_reason"] = ((tl.get("fidelity") or {}).get("verdict") or {}).get("reason")
     return res
 
@@ -1159,7 +1220,10 @@ def main(argv=None) -> int:
     ap.add_argument("--from", dest="t_from", type=_ts, required=True)
     ap.add_argument("--to", dest="t_to", type=_ts, required=True)
     ap.add_argument("--split", type=_ts, help="rulefit fits [from, split), fidelity holds out [split, to); "
-                                              "default the middle, on a whole minute")
+                                              "default the middle, on a whole minute. Fidelity needs >= 30 "
+                                              "window starts in the holdout: 2.5 h of 5m windows, 7.5 h of 15m. "
+                                              "On a shorter holdout every fidelity verdict is INCONCLUSIVE by "
+                                              "gate and the scorecard says so")
     ap.add_argument("--strategies", default="a,b,c,d,e,f")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--no-tools", action="store_true", help="simulate and write evidence only")
@@ -1167,6 +1231,12 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     split = a.split or (a.t_from + (a.t_to - a.t_from) // 2) // 60 * 60
     a.out.mkdir(parents=True, exist_ok=True)
+    length = LEN.get(a.stream.rsplit("_", 1)[-1], 300)
+    starts = max(0, a.t_to // length - -(-split // length))   # whole windows inside the holdout
+    if starts < MIN_FIDELITY_STARTS and not a.no_tools:
+        print(f"doppel-answerkey: the holdout [{split}, {a.t_to}) holds {starts} whole window(s); fidelity needs "
+              f">= {MIN_FIDELITY_STARTS} comparable window starts, so every fidelity verdict will be INCONCLUSIVE by "
+              f"gate. Use a range with >= {MIN_FIDELITY_STARTS * length / 3600:g} h after --split.", file=sys.stderr)
     res: dict = {}
     for k in a.strategies.split(","):
         params = None
@@ -1177,6 +1247,7 @@ def main(argv=None) -> int:
                               not a.no_tools)
         print(f"{k} {res[k]['policy']}: {res[k]['truth']['status']} sim {res[k]['sim_s']} s", file=sys.stderr)
     card = {"range": [a.t_from, split, a.t_to], "stream": a.stream, "seed": a.seed,
+            "holdout_window_starts": starts, "fidelity_readable": starts >= MIN_FIDELITY_STARTS,
             "strategies": {k: {x: v for x, v in r.items() if x != "cells"} for k, r in res.items()}}
     if not a.no_tools:
         card["cells"] = {r["policy"]: r["cells"] for r in res.values()}
@@ -1186,6 +1257,8 @@ def main(argv=None) -> int:
             if r["policy"] in ("random_taker", "hidden_signal"):
                 c = r["cells"]["explained_by_observed_inputs"]
                 hd[r["policy"]] = {"rulefit_genome_emitted": c["genome_emitted"], "fidelity": c["fidelity"],
+                                   "fidelity_state": c["fidelity_state"], "fidelity_passed": c["fidelity"] == "PASS",
+                                   "rulefit_says_explained": c["recovered"], "rulefit_reasons": c["reasons"],
                                    "confident_but_wrong_rule": c["category"] == "wrongly_confident",
                                    "unvalidated_wrong_rule": c["genome_emitted"] and c["category"] == "wrong"}
         card["hidden_and_decoy"] = hd
