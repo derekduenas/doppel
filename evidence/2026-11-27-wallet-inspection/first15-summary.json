@@ -1,0 +1,145 @@
+{
+  "schema": "wallet-inspection/1",
+  "use": "retrospective_diagnostic",
+  "layer1_summary_sha256": "652d8f5225786fc83ebca8c5cd3b8e06d6eb4803465977778fd8a3973103eae2",
+  "window_time": [
+    1795629600,
+    1795630500
+  ],
+  "stream": "clob_btc_5m",
+  "source_segments": [
+    {
+      "file": "clob_btc_5m/20261125/18.dtape.zst",
+      "sha256": "9691cd2cc196e6d9e5a36dedf10eba79a9d4cfbacb3146aa6bcda53dc83de883",
+      "bytes": 236324236,
+      "records": 2429165,
+      "selected_records": 553638,
+      "first_tw": 1795629654345353667,
+      "last_tw": 1795633199983155536
+    }
+  ],
+  "missing_segments": [],
+  "book_counts": {
+    "reset:connect": 4,
+    "reset:subscribe": 4,
+    "reset:asset_clock_reversal": 104,
+    "reset:unsubscribe": 2,
+    "uninitialized_level_rows": 1363,
+    "reset:disconnect": 3
+  },
+  "lookback_ms": 10000,
+  "placebo_shift_ms": -60000,
+  "size_tolerance_shares": 0.02,
+  "orders_sha256": "db4d7a4698c05d723e50ea399cded30c0c5aa8ae1dedcf83bd4e4148d2955c8d",
+  "inputs": [
+    {
+      "wallet": "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c",
+      "layer1_sha256": "13c190f982c5d84fbfbd3f1a7f025e6ead0411254dedff464a6aa8d843c8543d",
+      "window_time": [
+        1795629600,
+        1795630500
+      ],
+      "bound_source_fills": 30,
+      "fill_roles": {
+        "maker": 30
+      },
+      "store_manifest_sha256": "716acfdf84aa831c05b451201488ebc0ac609ce875625a549cbf53034d4f980e",
+      "signed_order_manifest_sha256": "d60083957ca6fec33781adee8b9e37c55b39159bae51276b3fc6ff1d83b15f47",
+      "signed_order_files": {
+        "_state/flush-000001.json": "f036e14358c32e29f43d1063fb2fae0bcfbe9c86a255e57bfd7515ed31131025",
+        "day=2026-11-25/part-000001.parquet": "5d6da3f9416e6418be3713970f5dffb2482f051dc9250e21c7b54be191770aa7"
+      },
+      "unique_orders_filled_in_window": 17,
+      "orders_with_maker_fills": 17
+    },
+    {
+      "wallet": "0x28cc505fb60501dbb2199a9662ba175919af904f",
+      "layer1_sha256": "9c528de64e36fb2e44b5257f7f86018dae61a472a0de1ea90b3faf9632909952",
+      "window_time": [
+        1795629600,
+        1795630500
+      ],
+      "bound_source_fills": 35,
+      "fill_roles": {
+        "maker": 35
+      },
+      "store_manifest_sha256": "716acfdf84aa831c05b451201488ebc0ac609ce875625a549cbf53034d4f980e",
+      "signed_order_manifest_sha256": "d60083957ca6fec33781adee8b9e37c55b39159bae51276b3fc6ff1d83b15f47",
+      "signed_order_files": {
+        "_state/flush-000001.json": "f036e14358c32e29f43d1063fb2fae0bcfbe9c86a255e57bfd7515ed31131025",
+        "day=2026-11-25/part-000001.parquet": "5d6da3f9416e6418be3713970f5dffb2482f051dc9250e21c7b54be191770aa7"
+      },
+      "unique_orders_filled_in_window": 18,
+      "orders_with_maker_fills": 18
+    }
+  ],
+  "wallets": {
+    "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": {
+      "maker_orders": 17,
+      "clock_flags": {
+        "after_block": 17
+      },
+      "anchor_status": {
+        "located": 17
+      },
+      "with_actual_coverage": 11,
+      "paired_orders": 6,
+      "paired_conditions": 2,
+      "paired_unbroken_between_arms": 0,
+      "paired_compatible": {
+        "actual": 6,
+        "placebo": 3
+      },
+      "paired_sole_uncontested": {
+        "actual": 0,
+        "placebo": 1
+      },
+      "paired_add_multiplicity": {
+        "actual": {
+          "3": 4,
+          "2": 1,
+          "4": 1
+        },
+        "placebo": {
+          "0": 3,
+          "2": 2,
+          "1": 1
+        }
+      },
+      "residence_upper_bounds": 11,
+      "wallet_identified_placements": 0
+    },
+    "0x28cc505fb60501dbb2199a9662ba175919af904f": {
+      "maker_orders": 18,
+      "clock_flags": {
+        "plausible": 18
+      },
+      "anchor_status": {
+        "missing_transaction_print": 2,
+        "located": 16
+      },
+      "with_actual_coverage": 4,
+      "paired_orders": 2,
+      "paired_conditions": 1,
+      "paired_unbroken_between_arms": 1,
+      "paired_compatible": {
+        "actual": 2,
+        "placebo": 0
+      },
+      "paired_sole_uncontested": {
+        "actual": 2,
+        "placebo": 0
+      },
+      "paired_add_multiplicity": {
+        "actual": {
+          "1": 2
+        },
+        "placebo": {
+          "0": 2
+        }
+      },
+      "residence_upper_bounds": 2,
+      "wallet_identified_placements": 0
+    }
+  }
+}

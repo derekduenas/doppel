@@ -39,7 +39,7 @@ is graded on scripted traders whose true rules we hold as an answer key (§4, st
 | Finding | Consequence for the design |
 |---|---|
 | The signed order behind every fill is on chain: creation time, full size, limit price (E34). 8,077 of 8,077 cohort fills verified (E36 and the 12-wallet run). | Dissection works on orders, not just fills. |
-| Those orders can be found and followed in the public book: 98% matched vs 4.6% placebo for one wallet-hour (E37, E39). | Placement, resting time and cancels are observable for filled orders. Never-filled orders stay invisible. |
+| Those orders can be found and followed in the public book: 98% matched vs 4.6% placebo for one wallet-hour (E37, E39). | Earlier single-wallet placement estimates require independent checking. Ownership and exact withdrawals are unresolved in anonymous depth. |
 | One studied maker appears to post sub-second quotes and fill on ~0.3% of them (E39, an estimate). | Some traders' rule is speed. A 250 ms system cannot be that trader; see lanes (§3). |
 | Every cohort wallet has one comparable day (E28). | Persistence must be shown before reconstruction effort is spent. |
 | Plain US makers lose 0.6–1.6 c/contract (E35). Kalshi leads Polymarket US by ~0.08 s (E38). | The US engine needs signals and speed; whether intl leads the US venues at our latency is still unmeasured. |
@@ -64,7 +64,7 @@ cannot twin still earns.
 |---|---|---|---|
 | 0 | **Select** | Traders whose profit persists after the cohort freeze, versus matched controls | G1: beats controls in 3 of 4 rolling windows |
 | 1 | **Absorb** | Complete history: fills, splits, merges, redemptions, transfers; signer vs account; wallets grouped by operator | Every pull reaches its last page; shares and cash equal on-chain balances |
-| 2 | **Inspect** | The signed order behind each fill; its placement, life and end in the book | Order hash equals the chain's order id; book match rate against a placebo |
+| 2 | **Inspect** | Signed order, located execution, candidate placements, bounds on residence, and unresolved ends | Verify order hash and execution economics, compare paired book matches against a shifted placebo |
 | 3 | **Dissect** | What the trader could see at each decision (book, fair value, Kalshi, flow, own inventory), for markets traded and markets skipped; complete-set pairing; outside-hedge test | No-look-ahead tests on every input; share of behaviour the inputs explain |
 | 4 | **Reverse-engineer** | A draft genome with uncertainty, plus rival explanations and the moments that separate them | Out-of-sample on a held-out slice; a draft that cannot quote like the trader is not emitted |
 | 5 | **Prove the machine** | Accuracy score on scripted traders with known rules, including a decoy and a trader using a signal we do not record | Recovery accuracy and false-confidence rate; the decoy and hidden-signal trader must not get a confident rule |
@@ -85,6 +85,12 @@ a subsequent 24-hour capture reconciled independently through source fills, Poly
 and both collateral balances. The intervening 37 minutes and 7 seconds lack a supporting
 Goldsky capture. Stage 2 starts with a signed order whose timestamp is later than its fill.
 [Layer 1 audit and receipts](WALLET-ABSORPTION.md)
+
+Stage 2 has now followed those same wallets from signed fill to public book. Execution
+anchors, eligible search windows, ambiguous placements and unknown cancellations have
+separate counts. The first candidate buy has two compatible additions and a 1.329-second
+upper bound on continuous displayed residence. Layer 3 needs a decision-time anchor before
+it can label posting behaviour. [Layer 2 audit and receipts](WALLET-INSPECTION.md)
 
 ## 5. Genome v2
 

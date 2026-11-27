@@ -1,5 +1,17 @@
 # Claude Code handoff
 
+## Wallet-by-wallet audit · Layer 2
+
+Use `review/wallet-inspection-20261127` in
+`/Users/derekduenas/doppel-wallet-inspection-20261127`. The registered candidate and
+control went from reconciled fills to a sealed book. The candidate's first 60-share
+buy has an independently located execution, two competing bid additions and a
+1,329 ms upper bound on continuous displayed residence. Its placement owner and
+posting time remain unknown. The [Layer 2 report](WALLET-INSPECTION.md) contains
+the wallet-level denominators, independent comparator, retained Apex commands and
+the four decision-time checks that start Layer 3. Keep the November research sample
+separate from the December selection checkpoints.
+
 ## Wallet-by-wallet audit · Layer 1
 
 Resume on `review/wallet-absorption-20261127` in

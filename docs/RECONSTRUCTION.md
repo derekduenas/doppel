@@ -12,8 +12,8 @@ has no row yet, this page says so.
 
 | stage | tool | what it establishes | how it is checked |
 |---|---|---|---|
-| 1. Order tape | `doppel-ordertape` | For every FILLED order of a wallet: when it was signed, its full size and its limit, not only the filled part (E34). | Chain hash check, per order. |
-| 2. Book match | `doppel-ordermatch` | Where that order sat in the anonymous public book, when it left, and an estimate of the quotes that never filled (E37, E39). | Placebo-controlled match rate. |
+| 1. Order tape | `doppel-ordertape` | Signed creation field, full size, limit and executions for decoded filled orders (E34). | Chain hash check, per order. |
+| 2. Book match | `doppel-ordermatch` | Compatible anonymous book additions, conditional resting-time evidence and a statistical estimate of never-filled quotes (E37, E39). | Placebo-controlled match rate. |
 | 3. Twin replay | `doppel-orderreplay` | How the twin's maker fill model behaves on those real orders: its fills against the real fills. | Adapter gate and bracket. No FINDINGS row yet. |
 | 4. Ledger | `doppel-profile` | Per wallet, which parts of the strategy are measured, which are estimated and which are unknown. | Fixed status rules with n and a stated false-positive rate. |
 
@@ -30,20 +30,19 @@ Not proven: `created_ms`. The signer writes that stamp; the chain does not check
 
 ### 2. Book match: the placebo control
 
-An order is "matched" when the book shows an increase of exactly its size, at its price and side,
-within -0.3 to +2.5 s of its signed stamp. Someone else could have posted that size then, so the
-same test is run with every stamp shifted by 60 s. The placebo rate is how often a match appears
-by chance. On one wallet-hour 98% of observable orders matched against a 4.6% placebo (E39). The
-first probe (E37) measured the same wallet in the same hour with a looser rule and got 93%: the
-two rows are one sample, not two. A high match rate with a low placebo rate is also the evidence
-that a wallet's `created_ms` stamps are real. How close they are is per wallet: for that one
-wallet the venue stamp trailed the signed stamp by 42 / 147 / 751 ms at p10 / p50 / p90 (E37).
+The creation-time matcher searches around a plausible signed timestamp for an increase at
+the signed price and side. Evidence version 2 qualifies a candidate only when one native
+increase fits, no other screened order competes for it, the fills have compatible
+transaction evidence and the relevant book interval is covered. The shifted search and
+the actual search share a denominator. Review the number of observable orders, both rates
+and the number of markets before interpreting a wallet. The 98% versus 4.6% result in
+E39 and the earlier 93% result in E37 came from the same wallet-hour with earlier matchers.
 
-A matched order is then followed forward. Its fills are known from chain and timed by the print
-that carries their transaction hash. If the remainder leaves the level in one exact decrease that
-prints do not explain, the order is `cancelled` (cancel and replace look the same). Anything else
-is `unknown`. On the E39 wallet-hour: 141 filled, 123 partly filled then cancelled, 76 unknown, 2
-proven wrong matches.
+Signed amounts can establish a full fill. A public change to zero can bound the lifetime of a
+resting hypothesis. An anonymous reduction, including one exactly equal to a remainder, cannot
+identify which account cancelled. A timestamped book increase is a conditional placement.
+The walkthrough's separate fill-anchored study handles wallets whose signed clocks fail.
+[Layer 2 evidence and reproduction](WALLET-INSPECTION.md)
 
 The fingerprint estimate: if a wallet uses a few fixed sizes, the tool counts unmatched bid
 increases of those sizes in the wallet's tokens and compares them with the rate in control tokens.
@@ -251,8 +250,8 @@ What a chunk edge costs (the manifest shows the counts per unit):
   miss: in the test, five such orders out of 37 moved the ratio from 1.0 to 0.86 and failed the
   bracket gate.
 - A quiet stretch across the edge is not counted in token-hours.
-- A cancel is claimed by one candidate within a wallet batch; two wallets in different batches
-  can both claim the same one. Within a batch, wallets are served in address order.
+- Fingerprint candidates and decreases are anonymous. A zero-sized level bounds the end of a
+  continuous displayed quote. Individual withdrawals need owner-specific evidence.
 
 **Timer.** With `--last-hours N` the command keeps `LAB/reconstruct/_pending.json`: the ranges
 that have not finished. Each firing adds the newest range, then runs ranges oldest first until
@@ -292,8 +291,9 @@ or `NO GATE`.
    range; below 1 (a cap, or an incomplete tape) its chain fills are a lower bound.
 2. **matched / observable, placebo rate.** If the match rate is not far above the placebo rate,
    nothing to the right means anything: the stamps are not validated.
-3. **rest ms p50 (filled / cancelled).** How long its filled orders rested. These are orders that
-   traded; only filled orders are on chain, so this bounds cadence from above (E36).
+3. **rest ms p50.** Read the reported placements, known ends, upper bounds and censored counts
+   together. The sample contains filled orders. Its median cannot establish typical life or cadence
+   across the wallet’s unfilled quotes.
 4. **fill ratio (chance share).** An estimate. The chance share is the part of the candidate
    quotes expected with no involvement of the wallet. Check `sizes_stable` and remember that
    identity precision is not measured in a cohort run.
@@ -322,7 +322,7 @@ records the full fit interval in `evidence.fit_range`.
 
 Use `doppel-fidelity --reconstruct-manifest` with a separate reconstruction covering the exact
 holdout and the frozen draft genome. The holdout must begin at or after the fit interval ends.
-Fidelity compares simulated fills against the verified order tape and removes the wallet's
-identified resting orders using the placement rows. A verdict requires an independent
+Fidelity compares simulated fills against the verified order tape. Its book adjustment uses only
+placement rows with current evidence qualification. The public book still lacks the owner's order ID. A verdict requires an independent
 `--coverage-receipt` confirming the wallet, the exact UTC interval and the order-tape checksum.
 Otherwise the result is inconclusive. Orders that never filled remain anonymous.
