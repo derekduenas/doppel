@@ -454,3 +454,17 @@ def test_params_are_frozen_and_reject_invalid_values():
     for value in (b'{"b":{"size":false}}', b'{"a":{"timer_s":0}}', b'{"d":{"levels_c":[0,0]}}', b'{"x":{}}'):
         with pytest.raises(ValueError):
             ak.policy_overrides(value)
+
+
+def test_selected_parameter_uses_the_matching_interval():
+    side = {"model": "skew", "rule": {"offset_c": 3, "skew_c_per_contract": 0.05},
+            "offset_c": {"ci95": [-4, -2]}, "skew_c_per_contract": {"ci95": [0.04, 0.06]}}
+    assert ak.selected_parameter(side, "offset_c") == (3, None)
+    assert ak.selected_parameter(side, "skew_c_per_contract") == (0.05, [0.04, 0.06])
+    side["selected_parameters"] = {"offset_c": {"value": 3, "ci95": [2.9, 3.1]}}
+    assert ak.selected_parameter(side, "offset_c") == (3, [2.9, 3.1])
+    side = {"model": "const", "rule": {"skew_c_per_contract": 0}, "skew_c_per_contract": {"ci95": [2, 3]}}
+    assert ak.selected_parameter(side, "skew_c_per_contract") == (0, None)
+    cell = ak._timing_cell(3, {"status": "ESTIMATED", "value": 2, "ci95": [1, 4], "upper_bound": 2.5},
+                           {"status": "ESTIMATED"})
+    assert cell["category"] == "wrongly_confident" and cell["bound_holds"] is False
