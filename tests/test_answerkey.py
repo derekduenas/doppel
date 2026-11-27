@@ -351,6 +351,14 @@ def test_end_to_end_scorecard(tape, tmp_path):
     # the tools ran on the public directory only and found the subject's orders
     a = card["strategies"]["a"]
     assert a["tools"]["exit"]["ordermatch"] == 0 and a["tools"]["exit"]["profile"] == 0
+    maker = out / "midpoint_maker"
+    train = (maker / "public/train-orders.jsonl").read_bytes().splitlines()
+    all_orders = (maker / "public/orders.jsonl").read_bytes().splitlines()
+    split = card["range"][1]
+    assert 0 < len(train) < len(all_orders)
+    assert train == [line for line in all_orders if orjson.loads(line)["block_ts"] < split]
+    train_match = orjson.loads((maker / "tools/ordermatch-train/ordermatch.json").read_bytes())
+    assert (train_match["params"]["from"], train_match["params"]["to"]) == (T0, split)
     assert a["pipeline"]["ordermatch_matched"] > 0
     assert a["pipeline"]["ordermatch_match_rate"] >= 0.9
     assert set(card["hidden_and_decoy"]) == {"random_taker", "hidden_signal"}
@@ -378,7 +386,7 @@ def test_categories():
 
 def test_fidelity_and_timing_cells_score_what_the_tools_state():
     exp = ak.EXPECT
-    t = {"sizes": [20.0], "offset_c_p50": {"bid": -3.0, "ask": 3.0}, "repost_gap_s_p50": 1.0, "cancel_life_ms_p50": 900.0,
+    t = {"sizes": [20.0], "skew_c_per_contract": 0.075, "offset_c_p50": {"bid": -3.0, "ask": 3.0}, "repost_gap_s_p50": 1.0, "cancel_life_ms_p50": 900.0,
          "fill_ratio": 0.2, "taker_share_of_shares": 0.0, "unfilled_cancel_life_ms_p50": 900.0,
          "rest_ms_p50": {"filled": None, "cancelled_after_fill": None}}
     led = {"obligations": {"placement_cadence": {"status": "ESTIMATED"}, "cancel_replace": {"status": "ESTIMATED"}}}
@@ -395,6 +403,7 @@ def test_fidelity_and_timing_cells_score_what_the_tools_state():
     # a stated interval or bound that excludes the truth is a confident error, whatever the status says
     c = cells(est | {"value": 3.0, "ci95": [2.5, 3.5]}, {"value": 500.0, "status": "UPPER_BOUND", "upper_bound": 600.0})
     assert c["cadence"]["category"] == c["cancel_rule"]["category"] == "wrongly_confident"
+    assert c["skew"]["truth"] == 0.075
     c = cells({"value": 3.0, "status": "UNKNOWN"}, None)  # evidence shown, nothing stated
     assert c["cadence"]["category"] == c["cancel_rule"]["category"] == "missed"
     # ladder: "ladder" is a claim, "no_ladder_seen" is hedged, anything else is unknown
@@ -418,3 +427,28 @@ def test_tool_rss_is_read_in_megabytes(tmp_path):
     rc, mb = ak.run_tool("profile", ["--help"], tmp_path / "log")
     assert rc == 0 and 5 < mb < 1500, mb
     assert os.path.getsize(tmp_path / "log") > 0
+
+
+def test_confidence_denominator_and_failed_tool_admission():
+    cells = {"one": ak._cell(1, 0.98, "hedged", True, False),
+             "two": ak._cell(1, 0.95, "hedged", True, False),
+             "three": ak._cell(1, 1, "claim", True)}
+    counts = ak.totals({"fixture": cells})
+    assert counts["confident_claims"] == 3
+    assert counts["categories"]["wrongly_confident"] == 2
+    assert counts["false_confidence_rate"] == 0.6667
+    for name in ("hidden_signal", "random_taker"):
+        with pytest.raises(ValueError, match="without its rule-fit report"):
+            ak.score(name, {}, {"exit": {"rulefit": 1}, "rulefit": None})
+        with pytest.raises(ValueError, match="ordermatch exited"):
+            ak.score(name, {}, {"exit": {"ordermatch": 1}, "rulefit": {"explained_by_observed_inputs": {"verdict": False}}})
+    assert ak.documented_no_draft({"genome": {"status": "not_emitted", "reasons": ["side unmeasured"]},
+                                   "explained_by_observed_inputs": {"verdict": None}})
+    assert not ak.documented_no_draft({"explained_by_observed_inputs": {"verdict": False}})
+
+
+def test_params_are_frozen_and_reject_invalid_values():
+    assert ak.policy_overrides(b'{"b":{"k_c_per_contract":0.075}}') == {"b": {"k_c_per_contract": 0.075}}
+    for value in (b'{"b":{"size":false}}', b'{"a":{"timer_s":0}}', b'{"d":{"levels_c":[0,0]}}', b'{"x":{}}'):
+        with pytest.raises(ValueError):
+            ak.policy_overrides(value)

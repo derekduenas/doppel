@@ -775,7 +775,12 @@ def write_public(sim: Sim, root: Path, stream: str, tokens: Path, pub: Path, hol
             (pub / "tape" / d.name).symlink_to(d.resolve(), target_is_directory=True)
     cond = {t: m.removeprefix("0x") for t, m in sim.book.market_of.items()}
     rows = ordertape_rows(sim, cond)
-    (pub / "orders.jsonl").write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in rows))
+    with (pub / "orders.jsonl").open("wb") as full, (pub / "train-orders.jsonl").open("wb") as train:
+        for row in rows:
+            line = orjson.dumps(row) + b"\n"
+            full.write(line)
+            if row["block_ts"] < hold[0]:
+                train.write(line)
     g = SegmentWriter(pub / "goldsky", "goldsky_activity")
     rs = goldsky_rows(sim)
     for i in range(0, max(len(rs), 1), 500):
@@ -839,6 +844,7 @@ def truth_summary(sim: Sim, pol: Policy) -> dict:
             pnl += f[2] * (pay - o.price)
     ratio = len(filled_mk) / len(mk) if mk else None
     return {"orders": len(sim.orders), "landed": len(landed), "maker_landed": len(mk),
+            "skew_c_per_contract": pol.params.get("k_c_per_contract", None if pol.taker else 0.0),
             "maker_filled": len(filled_mk), "fill_ratio": ratio,
             "status": dict(Counter(o.status.split(":")[0] if not o.status.startswith("rejected") else o.status
                                    for o in sim.orders)),
@@ -896,6 +902,8 @@ def _cell(truth, rec, status: str, ok: bool | None, ci_cover: bool | None = None
     elif truth is None:
         cat = "correctly_unknown" if status == "unknown" or rec is None else (
             "wrongly_confident" if status == "claim" else "wrong")
+    elif ci_cover is False and rec is not None:
+        cat = "wrongly_confident"
     elif status == "unknown" or rec is None:
         cat = "missed"
     elif ok:
@@ -926,11 +934,11 @@ def _timing_cell(truth, q: dict | None, ob: dict | None) -> dict:
     q = q or {}
     st = q.get("status")
     v = q.get("value") if st in ("ESTIMATED", "UPPER_BOUND") else None
-    cover = _covers(q.get("ci95"), truth)
+    cover = _covers(q.get("ci95"), truth) if v is not None else None
     ub = q.get("upper_bound")
     holds = None if ub is None or truth is None else truth <= ub
-    if cover is None and st == "UPPER_BOUND":
-        cover = holds
+    if st == "UPPER_BOUND" and holds is not None:
+        cover = holds if cover is None else cover and holds
     return _cell(truth, v, _status(ob) if v is not None else "unknown", _ratio_ok(v, truth), cover,
                  tool="rulefit+profile", stated=st, method=q.get("method"), interval=q.get("ci95"),
                  upper_bound=ub, bound_holds=holds, bias=q.get("bias"))
@@ -941,6 +949,11 @@ def score(name: str, t: dict, tools: dict) -> dict:
     e = EXPECT[name]
     led = (tools.get("profile") or {}).get("obligations") or {}
     rf = tools.get("rulefit") or {}
+    if not rf:
+        raise ValueError("cannot score a subject without its rule-fit report")
+    for step, rc in tools.get("exit", {}).items():
+        if rc and not (step == "rulefit" and rc == 1 and not tools.get("genome") and documented_no_draft(rf)):
+            raise ValueError(f"cannot score a subject after {step} exited {rc}")
     fid = tools.get("fidelity")
     maker = e["ref"] is not None
     cells: dict[str, dict] = {}
@@ -972,20 +985,21 @@ def score(name: str, t: dict, tools: dict) -> dict:
         tv = t["offset_c_p50"][s]
         okk.append(v is not None and abs(v - tv) <= TOL_OFFSET_C)
         cover.append(_covers(o.get("ci95"), tv))
-    cv = None if not cover or None in cover else all(cover)
+    cv = False if False in cover else None if not cover or None in cover else True
     cells["price_offset"] = _cell({s: t["offset_c_p50"][s] for s in sides} if maker else None,
                                   offs if have else None, "claim" if have else "unknown",
                                   bool(okk) and all(okk), cv, tool="rulefit")
     sk, skc, sko = {}, [], []
+    true_skew = t["skew_c_per_contract"]
     for s in sides:
         r = (pr.get(s) or {}).get("rule") or {}
         k = (pr.get(s) or {}).get("skew_c_per_contract") or {}
         v = r.get("skew_c_per_contract")
         sk[s] = v
-        sko.append(v is not None and e["skew"] is not None and abs(v - e["skew"]) <= max(TOL_SKEW, 0.5 * abs(e["skew"])))
-        skc.append(_covers(k.get("ci95"), e["skew"]))
-    cv = None if not skc or None in skc else all(skc)
-    cells["skew"] = _cell(e["skew"], sk if have else None, "claim" if have else "unknown",
+        sko.append(v is not None and true_skew is not None and abs(v - true_skew) <= max(TOL_SKEW, 0.5 * abs(true_skew)))
+        skc.append(_covers(k.get("ci95"), true_skew))
+    cv = False if False in skc else None if not skc or None in skc else True
+    cells["skew"] = _cell(true_skew, sk if have else None, "claim" if have else "unknown",
                           bool(sko) and all(sko), cv, tool="rulefit")
     # cadence and quote life: rulefit's corrected estimates, status from the profile ledger
     tm = rf.get("timing_rule") or {}
@@ -1018,12 +1032,12 @@ def score(name: str, t: dict, tools: dict) -> dict:
               by_gate=by_gate, state=state)
     if exp is not NA and state == "gate_inconclusive":
         c["category"] = "gate_inconclusive"   # the data could not test it: neither right nor wrong
-    elif exp is False and said is None:
+    elif exp is False and state == "not_run" and (rf.get("explained_by_observed_inputs") or {}).get("verdict") is False:
         c["category"] = "correctly_unknown"
     cells["fidelity_verdict"] = c
     emitted = bool(tools.get("genome"))
     ex = rf.get("explained_by_observed_inputs") or {}
-    rec = ex["verdict"] if "verdict" in ex else emitted   # what rulefit states; a genome only when it states yes
+    rec = ex.get("verdict")
     cells["explained_by_observed_inputs"] = _cell(
         e["explained"], rec, "claim" if dec == "PASS" else "hedged", rec == e["explained"],
         tool="rulefit+fidelity", genome_emitted=emitted, fidelity=dec, fidelity_state=state,
@@ -1036,7 +1050,9 @@ def totals(rows: dict[str, dict]) -> dict:
     scored = sum(c["truth"] is not None and c["truth"] != NA and c["category"] != "gate_inconclusive"
                  for r in rows.values() for c in r.values())
     fid = Counter(r["fidelity_verdict"].get("state", "?") for r in rows.values() if "fidelity_verdict" in r)
-    claims = sum(c["status"] == "claim" and c["category"] not in ("not_scored",) for r in rows.values() for c in r.values())
+    claims = sum(c["category"] not in ("not_scored", "gate_inconclusive") and c["recovered"] is not None
+                 and (c["status"] == "claim" or c["ci_covers_truth"] is not None)
+                 for r in rows.values() for c in r.values())
     cov = [c["ci_covers_truth"] for r in rows.values() for c in r.values() if c["ci_covers_truth"] is not None]
     return {"categories": dict(cats), "cells_with_true_value": scored, "confident_claims": claims,
             "fidelity_states": dict(fid),
@@ -1064,7 +1080,8 @@ def markdown(card: dict) -> str:
               f"{t['confident_claims']} confident claims); CI coverage {t['ci_coverage']} over {t['ci_cells']} cells", "",
           f"fidelity: {t.get('fidelity_states')} (not_run = rulefit emitted no genome; gate_inconclusive = a data gate "
           f"stopped it, which is not a verdict); holdout window starts {card.get('holdout_window_starts')}"
-          + ("" if card.get("fidelity_readable", True) else " < 30: NO fidelity cell of this run can be read"), ""]
+          + (" < 30: NO fidelity cell of this run can be read" if card["holdout_window_starts"] < MIN_FIDELITY_STARTS
+             else "" if card["fidelity_readable"] else ": no subject reached a fidelity verdict"), ""]
     wc = [f"{s}.{o}" for s, row in card["cells"].items() for o in OBLIGATIONS if row[o]["category"] == "wrongly_confident"]
     L += ["wrongly confident cells: " + (", ".join(wc) or "none"), ""]
     for k, v in card.get("hidden_and_decoy", {}).items():
@@ -1092,6 +1109,12 @@ def _load(p: Path):
     return orjson.loads(p.read_bytes()) if p.exists() else None
 
 
+def documented_no_draft(report: dict) -> bool:
+    genome = report.get("genome") or {}
+    return (genome.get("status") == "not_emitted" and bool(genome.get("reasons"))
+            and "verdict" in (report.get("explained_by_observed_inputs") or {}))
+
+
 def run_tools(pub: Path, out: Path, wallet: str, t_from: int, split: int, t_to: int) -> dict:
     """The five tools on ``pub`` only. Returns their parsed outputs, exit codes and peak RSS."""
     tape, orders = str(pub / "tape"), str(pub / "orders.jsonl")
@@ -1099,32 +1122,46 @@ def run_tools(pub: Path, out: Path, wallet: str, t_from: int, split: int, t_to: 
     om = out / "ordermatch"
     info: dict = {"exit": {}, "rss_mb": {}}
 
-    def go(mod, args):
-        rc, mb = run_tool(mod, args, out / f"{mod}.log")
-        info["exit"][mod], info["rss_mb"][mod] = rc, mb
-        return rc
+    def go(mod, args, *, name=None):
+        step = name or mod
+        rc, mb = run_tool(mod, args, out / f"{step}.log")
+        info["exit"][step], info["rss_mb"][step] = rc, mb
+        (out / "tool-status.json").write_bytes(orjson.dumps(info))
+        if rc and not (mod == "rulefit" and rc == 1):
+            raise ValueError(f"{step} exited {rc}, see {out / (step + '.log')}")
 
     go("ordermatch", ["--data", tape, "--orders", orders, "--wallet", wallet, *span, "--out", str(om)])
     go("orderreplay", ["--data", tape, "--ordermatch-dir", str(om), *span, "--orders", orders,
                        "--out", str(out / "orderreplay")])
     go("profile", ["--orders", orders, "--ordermatch", str(om / "ordermatch.json"), "--wallet", wallet,
                    "--out", str(out / "profile")])
+    train_om = out / "ordermatch-train"
+    train_orders = str(pub / "train-orders.jsonl")
+    go("ordermatch", ["--data", tape, "--orders", train_orders, "--wallet", wallet, "--from", str(t_from),
+                      "--to", str(split), "--out", str(train_om)], name="ordermatch-train")
     brti = ["--brti-lab", tape] if (pub / "tape" / "ref_brti_raw").exists() else []
-    go("rulefit", ["--data", tape, "--ordermatch-dir", str(om), "--orders", orders, "--wallet", wallet,
+    go("rulefit", ["--data", tape, "--ordermatch-dir", str(train_om), "--orders", train_orders, "--wallet", wallet,
                    "--from", str(t_from), "--to", str(split), "--tokens", str(pub / "lab" / "tokens.jsonl"),
                    *brti, "--out", str(out / "rulefit")])
     g = out / "rulefit" / "genome.json"
+    report = _load(out / "rulefit" / "fit_report.json")
+    if not report or "verdict" not in (report.get("explained_by_observed_inputs") or {}):
+        raise ValueError(f"rulefit did not produce a completed result; see {out / 'rulefit.log'}")
+    if info["exit"]["rulefit"] and (g.exists() or not documented_no_draft(report)):
+        raise ValueError(f"unexpected rulefit exit for this report; see {out / 'rulefit.log'}")
     if g.exists():
         go("fidelity", ["--data", tape, "--lab", str(pub / "lab"), "--genome", str(g), "--wallet", wallet,
                         "--orders", orders, "--ordermatch-dir", str(om), "--coverage-receipt",
                         str(pub / "coverage_receipt.json"), "--from", str(split), "--to", str(t_to),
                         "--out", str(out / "fidelity")])
+    fidelity = _load(out / "fidelity" / "fidelity.json")
+    if g.exists() and (not fidelity or (fidelity.get("verdict") or {}).get("decision") not in ("PASS","FAIL","INCONCLUSIVE")):
+        raise ValueError(f"missing fidelity result for emitted genome; see {out / 'fidelity.log'}")
     return info | {
         "ordermatch": ((_load(om / "ordermatch.json") or {}).get("wallets") or {}).get(wallet),
         "orderreplay": _load(out / "orderreplay" / "orderreplay.json"),
         "profile": _load(out / "profile" / f"{wallet}.ledger.json"),
-        "rulefit": _load(out / "rulefit" / "fit_report.json"),
-        "genome": _load(g), "fidelity": _load(out / "fidelity" / "fidelity.json")}
+        "rulefit": report, "genome": _load(g), "fidelity": fidelity}
 
 
 def violation_causes(sim: Sim, tdir: Path) -> dict:
@@ -1182,8 +1219,7 @@ def run_strategy(key: str, root: Path, tokens: Path, stream: str, t_from: int, s
         fair = Fair(root, t_from, t_to)
     sim = Sim(pol, wallet, wins, fair, seed)
     d = out / pol.name
-    if d.exists():
-        shutil.rmtree(d)
+    d.mkdir(parents=True, exist_ok=False)
     pub = d / "public"
     t0, c0 = time.time(), time.process_time()
     sim.run(root, stream, pub / "tape", t_from, t_to)
@@ -1201,15 +1237,50 @@ def run_strategy(key: str, root: Path, tokens: Path, stream: str, t_from: int, s
     (d / "truth" / "truth.json").write_bytes(orjson.dumps(
         {"policy": pol.name, "params": pol.params, "wallet": wallet, "summary": truth, "sim_stats": dict(sim.stats),
          "hidden_signal_by_up_token": signal}, option=orjson.OPT_INDENT_2))
-    res: dict = {"policy": pol.name, "wallet": wallet, "truth": truth, "sim_s": sim_s,
+    res: dict = {"policy": pol.name, "params": pol.params, "wallet": wallet, "truth": truth, "sim_s": sim_s,
+                 "train_visible_maker_orders": sum(o.kind == "maker" and any(math.ceil(f[0] / 1000) + 1 < split
+                                                      for f in o.fills) for o in sim.orders),
                  "sim_cpu_s": round(time.process_time() - c0, 1), "rss_mb_after_sim": rss_sim}
     if tools:
+        if not truth["fills"]:
+            raise ValueError(f"{pol.name} produced zero fills; the trial cannot score this subject")
         tl = run_tools(pub, d / "tools", wallet, t_from, split, t_to)
         res["tools"] = {k: tl[k] for k in ("exit", "rss_mb")}
         res["cells"] = score(pol.name, truth, tl)
         res["pipeline"] = pipeline_checks(sim, tl, d / "tools")
         res["fidelity_reason"] = ((tl.get("fidelity") or {}).get("verdict") or {}).get("reason")
     return res
+
+
+def policy_overrides(raw: bytes) -> dict:
+    """Validate a frozen subject configuration before any simulation starts."""
+    doc = orjson.loads(raw)
+    if not isinstance(doc, dict) or set(doc) - POLICIES.keys():
+        raise ValueError("policy parameters must be keyed by subject a through f")
+    for key, fields in doc.items():
+        defaults = POLICIES[key].params
+        if not isinstance(fields, dict) or set(fields) - defaults.keys():
+            raise ValueError(f"unrecognized parameters for subject {key}")
+        for name, value in fields.items():
+            if isinstance(defaults[name], list):
+                if not isinstance(value, list) or not value:
+                    raise ValueError(f"{key}.{name} must be a nonempty list")
+                numbers = value
+            else:
+                numbers = [value]
+            if any(type(x) not in (int, float) or not math.isfinite(x) or x < 0 for x in numbers):
+                raise ValueError(f"{key}.{name} requires finite nonnegative numbers")
+            if name == "levels_c":
+                if len(set(numbers)) != len(numbers) or len(numbers) < 2 or any(x != int(x) or x >= 100 for x in numbers):
+                    raise ValueError("ladder requires distinct integer levels in [0,100)")
+            elif name == "accuracy":
+                if not 0.5 < numbers[0] <= 1:
+                    raise ValueError("hidden-signal accuracy must be above chance and at most one")
+            elif name != "k_c_per_contract" and any(x <= 0 for x in numbers):
+                raise ValueError(f"{key}.{name} must be positive")
+            if key == "b" and name == "move_c" and value != defaults[name]:
+                raise ValueError("the fair maker requotes on a one-cent target change")
+    return doc
 
 
 def main(argv=None) -> int:
@@ -1226,11 +1297,21 @@ def main(argv=None) -> int:
                                               "gate and the scorecard says so")
     ap.add_argument("--strategies", default="a,b,c,d,e,f")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--policy-params", type=Path, help="frozen JSON object of parameter overrides by subject")
     ap.add_argument("--no-tools", action="store_true", help="simulate and write evidence only")
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args(argv)
     split = a.split or (a.t_from + (a.t_to - a.t_from) // 2) // 60 * 60
-    a.out.mkdir(parents=True, exist_ok=True)
+    keys = a.strategies.split(",")
+    if not a.t_from < split < a.t_to or len(keys) != len(set(keys)) or set(keys) - POLICIES.keys():
+        ap.error("specify a split inside the range and unique subject keys a through f")
+    if a.out.exists() and (not a.out.is_dir() or any(a.out.iterdir())):
+        ap.error("the run requires a fresh output directory")
+    raw_params = a.policy_params.read_bytes() if a.policy_params else b"{}"
+    try:
+        params = policy_overrides(raw_params)
+    except ValueError as exc:
+        ap.error(str(exc))
     length = LEN.get(a.stream.rsplit("_", 1)[-1], 300)
     starts = max(0, a.t_to // length - -(-split // length))   # whole windows inside the holdout
     if starts < MIN_FIDELITY_STARTS and not a.no_tools:
@@ -1238,19 +1319,22 @@ def main(argv=None) -> int:
               f">= {MIN_FIDELITY_STARTS} comparable window starts, so every fidelity verdict will be INCONCLUSIVE by "
               f"gate. Use a range with >= {MIN_FIDELITY_STARTS * length / 3600:g} h after --split.", file=sys.stderr)
     res: dict = {}
-    for k in a.strategies.split(","):
-        params = None
-        if k == "e" and "a" in res:   # the decoy trades at (a)'s visible rate
-            t = res["a"]["truth"]
-            params = {"rate_per_s": max(t["maker_filled"], 1) / (a.t_to - a.t_from)}
-        res[k] = run_strategy(k, a.data, a.tokens, a.stream, a.t_from, split, a.t_to, a.out, a.seed, params,
+    for k in keys:
+        subject_params = dict(params.get(k, {}))
+        if k == "e" and "a" in res and "rate_per_s" not in subject_params:
+            subject_params["rate_per_s"] = max(res["a"]["train_visible_maker_orders"], 1) / (split - a.t_from)
+        res[k] = run_strategy(k, a.data, a.tokens, a.stream, a.t_from, split, a.t_to, a.out, a.seed, subject_params,
                               not a.no_tools)
         print(f"{k} {res[k]['policy']}: {res[k]['truth']['status']} sim {res[k]['sim_s']} s", file=sys.stderr)
     card = {"range": [a.t_from, split, a.t_to], "stream": a.stream, "seed": a.seed,
-            "holdout_window_starts": starts, "fidelity_readable": starts >= MIN_FIDELITY_STARTS,
+            "policy_params_sha256": hashlib.sha256(raw_params).hexdigest(), "scorecard_schema": 2,
+            "holdout_window_starts": starts, "fidelity_readable": False,
             "strategies": {k: {x: v for x, v in r.items() if x != "cells"} for k, r in res.items()}}
     if not a.no_tools:
         card["cells"] = {r["policy"]: r["cells"] for r in res.values()}
+        card["subjects_with_fidelity_verdict"] = [name for name, cells in card["cells"].items()
+                                                  if cells["fidelity_verdict"]["state"] in ("pass", "fail")]
+        card["fidelity_readable"] = starts >= MIN_FIDELITY_STARTS and bool(card["subjects_with_fidelity_verdict"])
         card["totals"] = totals(card["cells"])
         hd = {}
         for k, r in res.items():
