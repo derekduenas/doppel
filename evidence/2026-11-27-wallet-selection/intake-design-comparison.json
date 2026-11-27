@@ -1,0 +1,21 @@
+{
+  "designs": {
+    "interleaved": {
+      "also_candidates_in_v1": 67,
+      "candidates": 100,
+      "controls": 50,
+      "matched": 69,
+      "unmatched": 31
+    },
+    "lower-band": {
+      "also_candidates_in_v1": 100,
+      "candidates": 100,
+      "controls": 50,
+      "matched": 11,
+      "unmatched": 89
+    }
+  },
+  "registered_plan_sha256": "e235c99d177583e3c44156992cdd89985fc9c281e6b09fb335386ecb01d691d6",
+  "scan_sha256": "d13368be7ba0b379ab01a26eb46b91211e2d5b6a05dc1daad7a18284f3b44a89",
+  "scope": "Retrospective discovery-feature support only. No returns or new study."
+}

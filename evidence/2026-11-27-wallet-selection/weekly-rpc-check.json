@@ -1,0 +1,130 @@
+{
+  "schema": "weekly-polygon-rpc-check/1",
+  "started_utc": "2026-11-27T03:40:24.594532+00:00",
+  "source_host": "Apex",
+  "endpoints": {
+    "log_and_headers": "https://polygon-bor-rpc.publicnode.com",
+    "historical_state": "https://polygon.drpc.org"
+  },
+  "chain_id": {
+    "publicnode": 137,
+    "drpc": 137
+  },
+  "methods": [
+    "eth_chainId",
+    "eth_getBlockByNumber",
+    "eth_call (ERC-20 balanceOf)"
+  ],
+  "full_history_tested": false,
+  "log_scan_run": false,
+  "week_scored": false,
+  "requests_budget": 45,
+  "week_one_start_utc": "2026-11-27T03:30:00+00:00",
+  "historical_probe_target_utc": "2026-11-20T03:30:00+00:00",
+  "week_one_start": {
+    "target": 1795750200,
+    "target_utc": "2026-11-27T03:30:00+00:00",
+    "first_at_or_after": {
+      "number": 98029815,
+      "timestamp": 1795750200,
+      "timestamp_utc": "2026-11-27T03:30:00+00:00",
+      "hash": "0x2dca0cb567fb2fb899c7646644aaae2b866e4023eb79e1c7ca1374732b8302d5",
+      "parent_hash": "0x5de325e028471d91e1e0a6c304d9e271b08057fc912e73944531d2bd5e2a157a",
+      "source": "publicnode"
+    },
+    "predecessor": {
+      "number": 98029814,
+      "timestamp": 1795750199,
+      "timestamp_utc": "2026-11-27T03:29:59+00:00",
+      "hash": "0x5de325e028471d91e1e0a6c304d9e271b08057fc912e73944531d2bd5e2a157a",
+      "parent_hash": "0xd3a1d7c06049394949d1c42c75404f1cb687e17cca34d414118dc19711b2d01b",
+      "source": "publicnode"
+    }
+  },
+  "historical_boundary": {
+    "target": 1795145400,
+    "target_utc": "2026-11-20T03:30:00+00:00",
+    "first_at_or_after": {
+      "number": 97626621,
+      "timestamp": 1795145401,
+      "timestamp_utc": "2026-11-20T03:30:01+00:00",
+      "hash": "0xed3d95056af278e0d90b606a68c00f3b3978f1244de0cad096f5d193a44bf0df",
+      "parent_hash": "0x9602b3bb8f7a3da99faecbf1595887a7a07fed0395bdb57266f3d763de39f44a",
+      "source": "publicnode"
+    },
+    "predecessor": {
+      "number": 97626620,
+      "timestamp": 1795145399,
+      "timestamp_utc": "2026-11-20T03:29:59+00:00",
+      "hash": "0x9602b3bb8f7a3da99faecbf1595887a7a07fed0395bdb57266f3d763de39f44a",
+      "parent_hash": "0x56a485337f3d893d706c738ce7858ad0f027b0a85b224ab0224a95ea3a6e0d26",
+      "source": "publicnode"
+    }
+  },
+  "historical_balance_probes": [
+    {
+      "wallet_role": "candidate",
+      "wallet": "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c",
+      "collateral": "pUSD",
+      "contract": "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb",
+      "block": 97626620,
+      "attempts": [
+        {
+          "endpoint": "drpc",
+          "success": true,
+          "abi_bytes": 32,
+          "result_sha256": "852505d551424ec08acb2912d6a6227d3486488572a0ba996fe5dc7b3e6671b5"
+        }
+      ]
+    },
+    {
+      "wallet_role": "candidate",
+      "wallet": "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c",
+      "collateral": "USDC.e",
+      "contract": "0x2791bca1f2de4661ed88a30c99a7a9449aa84174",
+      "block": 97626620,
+      "attempts": [
+        {
+          "endpoint": "drpc",
+          "success": true,
+          "abi_bytes": 32,
+          "result_sha256": "c6c9ec3463416caed7476fefa681ede98acd29e988f8b494af7b517666cae591"
+        }
+      ]
+    },
+    {
+      "wallet_role": "control",
+      "wallet": "0x28cc505fb60501dbb2199a9662ba175919af904f",
+      "collateral": "pUSD",
+      "contract": "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb",
+      "block": 97626620,
+      "attempts": [
+        {
+          "endpoint": "drpc",
+          "success": true,
+          "abi_bytes": 32,
+          "result_sha256": "f1afa6e23cf8ec09bdfa3cc8810f00b415ddd9785d497c5844824635c497af04"
+        }
+      ]
+    },
+    {
+      "wallet_role": "control",
+      "wallet": "0x28cc505fb60501dbb2199a9662ba175919af904f",
+      "collateral": "USDC.e",
+      "contract": "0x2791bca1f2de4661ed88a30c99a7a9449aa84174",
+      "block": 97626620,
+      "attempts": [
+        {
+          "endpoint": "drpc",
+          "success": true,
+          "abi_bytes": 32,
+          "result_sha256": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "requests_used": 14,
+  "finished_utc": "2026-11-27T03:40:36.624537+00:00",
+  "scope": "Two collateral contracts and two wallets at one prior weekly boundary. This does not test every block, continuous log coverage, outcome-token balances or end-to-end reconciliation."
+}

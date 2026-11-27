@@ -75,6 +75,11 @@ cannot twin still earns.
 Stages 1–6 are built or in review. Stage 5 (the answer key) and the full stage-1 ledger are being
 built. Stages 0 and 7 are the next builds.
 
+**November 27 implementation update.** Stage 0 now has a review implementation and a
+prospectively frozen wallet-level comparison. The first real walkthrough wallet has one
+matched control and four weeks to observe. Cohort-wide PIT skill and the later
+strategy-identification stages remain open. [Layer 0 audit and evidence](WALLET-SELECTION.md)
+
 ## 5. Genome v2
 
 Rule fitting on real orders listed what today's genome format cannot say. v2 adds: quotes pegged to

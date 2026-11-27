@@ -1,0 +1,103 @@
+{
+  "schema": "wallet-selection-trade-proof/1",
+  "verified_utc": "2026-11-27T03:32:07Z",
+  "evidence_scope": "One candidate trade at its first event second in the original RTDS selection scan, checked against both sealed socket streams. Event and receive clocks precede the original cohort freeze.",
+  "scan_path": "/mnt/volume_nyc1_1793485122853/doppel/lab/scan/scan-v1-24h.json",
+  "scan_sha256": "d13368be7ba0b379ab01a26eb46b91211e2d5b6a05dc1daad7a18284f3b44a89",
+  "cohort_file_sha256": "1775c0998506abf721e27ed3cb0043b5816b2dde587462034e55a4622a396b54",
+  "cohort_frozen_tw": 1795716498610642583,
+  "members": {
+    "candidate": {
+      "wallet": "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c",
+      "eligible_notional_rank": 52,
+      "source_scan_fields": {
+        "fills": 4318,
+        "usd": 51791.97,
+        "n_windows": 221,
+        "assets": {
+          "btc": 4318
+        },
+        "horizons": {
+          "5m": 4318
+        },
+        "taker_share": 0.0,
+        "px_p50": 0.55,
+        "extreme_px_share": 0.1649,
+        "first": 1795629746,
+        "last": 1795716475
+      }
+    },
+    "control": {
+      "wallet": "0x28cc505fb60501dbb2199a9662ba175919af904f",
+      "eligible_notional_rank": 110,
+      "source_scan_fields": {
+        "fills": 1807,
+        "usd": 27492.14,
+        "n_windows": 222,
+        "assets": {
+          "btc": 1807
+        },
+        "horizons": {
+          "5m": 1807
+        },
+        "taker_share": 0.0,
+        "px_p50": 0.46,
+        "extreme_px_share": 0.1621,
+        "first": 1795629907,
+        "last": 1795716362
+      }
+    }
+  },
+  "segments": {
+    "rtds_a": {
+      "apex_path": "/var/backups/doppel-sealed-20261126/tape/rtds_a/20261125/18.dtape.zst",
+      "manifest_path": "/var/backups/doppel-sealed-20261126/tape/rtds_a/manifest.jsonl",
+      "sha256": "061a25175ea0bc31dfa5c5d3ab8dfa551958c3c3f710d7efbcec560b385d2437",
+      "compressed_bytes": 22276105,
+      "manifest_sha256_matches": true,
+      "complete_zstd_frames": 2617,
+      "records_crc_checked": 150531,
+      "closed_tw": 1795633201622639093
+    },
+    "rtds_b": {
+      "apex_path": "/var/backups/doppel-sealed-20261126/tape/rtds_b/20261125/18.dtape.zst",
+      "manifest_path": "/var/backups/doppel-sealed-20261126/tape/rtds_b/manifest.jsonl",
+      "sha256": "acb266ce9db69bedcd14ae21ab981691daa8c3d1455811c00980796863afd0e8",
+      "compressed_bytes": 22309260,
+      "manifest_sha256_matches": true,
+      "complete_zstd_frames": 2617,
+      "records_crc_checked": 150517,
+      "closed_tw": 1795633201709513161
+    }
+  },
+  "scan_first_event_second": 1795629746,
+  "exact_second_distinct_scan_keys": 1,
+  "observed_on_both_sockets": true,
+  "selected_trade": {
+    "transactionHash": "0x32aa9fa6cb2815070bc6e3a9d9d56163e24c3aa09a5ca78017f27fc977a2b6d8",
+    "proxyWallet": "0xF9B7876bA2c35370e0BEDB7f8Ee772dA722aa37c",
+    "eventSlug": "btc-updown-5m-1795629600",
+    "asset": "26573549377964720488352327783145014153434918240677129399684144995785340448937",
+    "side": "BUY",
+    "size": 60,
+    "price": 0.07,
+    "timestamp": 1795629746,
+    "outcomeIndex": 1,
+    "envelope_topic": "activity",
+    "envelope_type": "trades"
+  },
+  "socket_observations": {
+    "rtds_a": {
+      "seq": 5022,
+      "received_tw": 1795629746494786695,
+      "raw_crc32": 3148490624,
+      "raw_sha256": "78a0214e0b059921a03d5449d0986cf49788fa6257393c45e9c090886ccc6a60"
+    },
+    "rtds_b": {
+      "seq": 4961,
+      "received_tw": 1795629746384458913,
+      "raw_crc32": 906339451,
+      "raw_sha256": "a49540d03d81731bddeafbf511197956259eda874bfc092f55c7a02776459a6d"
+    }
+  }
+}
