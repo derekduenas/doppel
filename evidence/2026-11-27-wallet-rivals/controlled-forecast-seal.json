@@ -1,0 +1,15 @@
+{
+  "registration_sha256": "ce5ac05f279af0588879e4054ca78d7145dec22de055958cff825e4b04ac6c44",
+  "generator_sha256": "f55c3df4c9914bb3410accb4b92c841c150ea01c02f256b645c809bc8579f64d",
+  "predictor_sha256": "b44789bf0396c776e05b8ef9bda7749a9b13014f95966c71cdc063ae634dc038",
+  "splits": {
+    "dev": {
+      "public_sha256": "8dd6d99c3b005e0cabd2a58b6d4ab26b4e310230e9a437f65fe30935c81ae7d5",
+      "predictions_sha256": "7e4bebdcacf0b45a110b0a9487c0e948064d563d1b65a157193930ed6902a0cf"
+    },
+    "eval": {
+      "public_sha256": "641461b602cbdeb84577bd3f146c7f3716f5ed23dd829bf22b92acacf0f73998",
+      "predictions_sha256": "b8a6c3a39fc1e5c56d39094fa915afb6b19133c01b478982825a1a15020500ad"
+    }
+  }
+}
