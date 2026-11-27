@@ -15,8 +15,7 @@ Clocks and look-ahead (read before trusting any number)
   but reached us after d does not exist at d.
 * RTDS rows are deduplicated across the two sockets and keep their EARLIEST receive time. A key
   (tx, wallet, token, side, size, price) seen m times on one socket is kept max-over-sockets m
-  times, so genuine same-size fills inside one transaction survive (``scan.iter_fills`` collapses
-  them; this module does not).
+  times, so genuine same-size fills inside one transaction survive, as in the wallet activity scan.
 * Informedness as of T uses only windows that ENDED before ``T - EMBARGO_S``, and inside each such
   window only taker rows received by ``end + EMBARGO_S`` (< T). Outcomes come from ``TokenMap``
   payouts. An Up/Down outcome is fixed at window end; the embargo covers resolution latency.
