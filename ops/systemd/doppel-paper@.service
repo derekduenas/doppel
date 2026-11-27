@@ -1,0 +1,43 @@
+# DOPPEL paper runtime for one sealed genome (instance = genome name). FILE ONLY: not installed.
+# The lead installs it through ops/deploy.sh after review. Paper only: the unit has no network, no
+# credentials and no market-data group, so it cannot reach any venue even by mistake. It reads the
+# tape read-only and writes only its own journal directory.
+#   genome:  /mnt/volume_nyc1_1793485122853/doppel/paper/%i/genome.json  (copy of the sealed genome)
+#   journal: /mnt/volume_nyc1_1793485122853/doppel/paper/%i/              (journal.jsonl, checkpoints/)
+#   halt:    touch .../paper/%i/KILL (this genome) or .../paper/KILL (every paper run)
+# First start needs --from-now once (a new journal); later starts resume the journal. Use
+#   systemctl edit doppel-paper@NAME  to add --from-now for the very first start only.
+[Unit]
+Description=DOPPEL paper runtime (genome %i) on the live tape, no orders
+After=doppel-tape.service
+
+[Service]
+Type=simple
+User=doppel
+WorkingDirectory=/opt/doppel
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/doppel/.venv/bin/python -m doppel.paper run \
+  --genome /mnt/volume_nyc1_1793485122853/doppel/paper/%i/genome.json \
+  --data /mnt/volume_nyc1_1793485122853/doppel/tape \
+  --journal /mnt/volume_nyc1_1793485122853/doppel/paper/%i \
+  --kill-file /mnt/volume_nyc1_1793485122853/doppel/paper/%i/KILL \
+  --kill-file /mnt/volume_nyc1_1793485122853/doppel/paper/KILL
+# An invalid genome (2) or a journal that fails recovery (3) must not restart-loop.
+Restart=on-failure
+RestartPreventExitStatus=2 3
+RestartSec=10
+CPUQuota=50%
+MemoryHigh=512M
+MemoryMax=1G
+Nice=10
+NoNewPrivileges=true
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/mnt/volume_nyc1_1793485122853/doppel/tape
+ReadWritePaths=/mnt/volume_nyc1_1793485122853/doppel/paper/%i
+
+[Install]
+WantedBy=multi-user.target
