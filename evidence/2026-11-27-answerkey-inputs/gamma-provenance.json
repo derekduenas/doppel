@@ -1,0 +1,519 @@
+{
+  "from_epoch": 1795672800,
+  "markets": [
+    {
+      "closed_time": "2026-11-26 06:05:15+00",
+      "event_start_time": "2026-11-26T06:00:00Z",
+      "market_id": "7337831",
+      "sha256_response": "2bbb999ca0f2a35b0d649ad139a537bd66c932c9c8919c30ec5204e26d4ee085",
+      "slug": "btc-updown-5m-1795672800"
+    },
+    {
+      "closed_time": "2026-11-26 06:10:22+00",
+      "event_start_time": "2026-11-26T06:05:00Z",
+      "market_id": "7337944",
+      "sha256_response": "2ffbe75343439cfcd360cf0cff016641e8573422603347f389531a3a623422fa",
+      "slug": "btc-updown-5m-1795673100"
+    },
+    {
+      "closed_time": "2026-11-26 06:15:18+00",
+      "event_start_time": "2026-11-26T06:10:00Z",
+      "market_id": "7337960",
+      "sha256_response": "ba6fe8e9af30f1b8d00c840f248cfa18d200e743053b36adbb7b260e857e3fd9",
+      "slug": "btc-updown-5m-1795673400"
+    },
+    {
+      "closed_time": "2026-11-26 06:20:15+00",
+      "event_start_time": "2026-11-26T06:15:00Z",
+      "market_id": "7337970",
+      "sha256_response": "dc537294db753ec3a664478a9abcae79869de0ab83c2f29a14eb2cea6e579e7f",
+      "slug": "btc-updown-5m-1795673700"
+    },
+    {
+      "closed_time": "2026-11-26 06:25:45+00",
+      "event_start_time": "2026-11-26T06:20:00Z",
+      "market_id": "7337984",
+      "sha256_response": "b1afe15e0d321bd6bc041946fc5dd6257f1f7d40e00693648ed9b50ab1d83864",
+      "slug": "btc-updown-5m-1795674000"
+    },
+    {
+      "closed_time": "2026-11-26 06:30:22+00",
+      "event_start_time": "2026-11-26T06:25:00Z",
+      "market_id": "7338004",
+      "sha256_response": "f83802b1424a5bf38cffe2f4c465c6f8eac0c86e025af2fbf4eddbce7632a0fa",
+      "slug": "btc-updown-5m-1795674300"
+    },
+    {
+      "closed_time": "2026-11-26 06:35:16+00",
+      "event_start_time": "2026-11-26T06:30:00Z",
+      "market_id": "7338016",
+      "sha256_response": "215db67889ec13c6473fe6c8d8b315ea37dba2a8a4e90c7a16d5fa833808e0d7",
+      "slug": "btc-updown-5m-1795674600"
+    },
+    {
+      "closed_time": "2026-11-26 06:40:21+00",
+      "event_start_time": "2026-11-26T06:35:00Z",
+      "market_id": "7338108",
+      "sha256_response": "a4b9ee8d4e68503b6dfaaf4e80472a29cbc7b683bb7fefbea69095364965671d",
+      "slug": "btc-updown-5m-1795674900"
+    },
+    {
+      "closed_time": "2026-11-26 06:45:16+00",
+      "event_start_time": "2026-11-26T06:40:00Z",
+      "market_id": "7338393",
+      "sha256_response": "d414887f53a5c2da2694cf6102d6a1b33f4155ca3a035c0a02afbe65bb592fab",
+      "slug": "btc-updown-5m-1795675200"
+    },
+    {
+      "closed_time": "2026-11-26 06:50:45+00",
+      "event_start_time": "2026-11-26T06:45:00Z",
+      "market_id": "7338441",
+      "sha256_response": "3c54012159bace0697318a58fae0c0e42fbb02c54fc69d72b287b760b5502d0f",
+      "slug": "btc-updown-5m-1795675500"
+    },
+    {
+      "closed_time": "2026-11-26 06:55:15+00",
+      "event_start_time": "2026-11-26T06:50:00Z",
+      "market_id": "7338514",
+      "sha256_response": "02ef5a1b120776ed9051bb1e6842f5818bcdd50052b7783c3da9a3d2ca42995a",
+      "slug": "btc-updown-5m-1795675800"
+    },
+    {
+      "closed_time": "2026-11-26 07:00:16+00",
+      "event_start_time": "2026-11-26T06:55:00Z",
+      "market_id": "7338822",
+      "sha256_response": "6bb5e30c28f618f151da5cb2a634f3a2197cdd4ce44142f9c36571c101301672",
+      "slug": "btc-updown-5m-1795676100"
+    },
+    {
+      "closed_time": "2026-11-26 07:05:15+00",
+      "event_start_time": "2026-11-26T07:00:00Z",
+      "market_id": "7338870",
+      "sha256_response": "27f6d249cbb57f08f02ac527815d32c3b92cdef0c3ebdf4e382247636623df1e",
+      "slug": "btc-updown-5m-1795676400"
+    },
+    {
+      "closed_time": "2026-11-26 07:10:18+00",
+      "event_start_time": "2026-11-26T07:05:00Z",
+      "market_id": "7338940",
+      "sha256_response": "d1c79cea1a2f85e94847b30e126331539a73934d32bdd296123893d4d1b3d562",
+      "slug": "btc-updown-5m-1795676700"
+    },
+    {
+      "closed_time": "2026-11-26 07:15:16+00",
+      "event_start_time": "2026-11-26T07:10:00Z",
+      "market_id": "7338969",
+      "sha256_response": "bdbb06c956e01e183c985a0ea6eed909dcd8c240e61a224820094aaf174d1bea",
+      "slug": "btc-updown-5m-1795677000"
+    },
+    {
+      "closed_time": "2026-11-26 07:20:21+00",
+      "event_start_time": "2026-11-26T07:15:00Z",
+      "market_id": "7338981",
+      "sha256_response": "35973f764561832dcaef8b3e7d154163bc1eda22c02744b2c00d991887a9db82",
+      "slug": "btc-updown-5m-1795677300"
+    },
+    {
+      "closed_time": "2026-11-26 07:25:21+00",
+      "event_start_time": "2026-11-26T07:20:00Z",
+      "market_id": "7339031",
+      "sha256_response": "649dfb6aad6511c5cbca2d9c40189e6ab4ca3c99f9312ccb2f487820871d1e9b",
+      "slug": "btc-updown-5m-1795677600"
+    },
+    {
+      "closed_time": "2026-11-26 07:30:18+00",
+      "event_start_time": "2026-11-26T07:25:00Z",
+      "market_id": "7339048",
+      "sha256_response": "0a685f89c0e580642dd3593fc973291c10e3e04b2919f8adc95e03aeb29b715e",
+      "slug": "btc-updown-5m-1795677900"
+    },
+    {
+      "closed_time": "2026-11-26 07:35:45+00",
+      "event_start_time": "2026-11-26T07:30:00Z",
+      "market_id": "7339059",
+      "sha256_response": "8b006b5af3f98da26e9cf0a94d5ce5fe5c16eaae89e23e02317cef6b03a2de71",
+      "slug": "btc-updown-5m-1795678200"
+    },
+    {
+      "closed_time": "2026-11-26 07:40:21+00",
+      "event_start_time": "2026-11-26T07:35:00Z",
+      "market_id": "7339078",
+      "sha256_response": "f11098bdb5eeb412e65cd35023156168ceccb251bbe3b6e30abe1b471cf3a1aa",
+      "slug": "btc-updown-5m-1795678500"
+    },
+    {
+      "closed_time": "2026-11-26 07:45:15+00",
+      "event_start_time": "2026-11-26T07:40:00Z",
+      "market_id": "7339115",
+      "sha256_response": "0fb9e6bb5a993eef4647c51905fbe24ed0486af0c915a7e09db5f4556bbd77af",
+      "slug": "btc-updown-5m-1795678800"
+    },
+    {
+      "closed_time": "2026-11-26 07:50:15+00",
+      "event_start_time": "2026-11-26T07:45:00Z",
+      "market_id": "7339131",
+      "sha256_response": "687002ba5faa4803387fb5ac737f6c98ee5cba3fd843f237060edf59f5a71a2f",
+      "slug": "btc-updown-5m-1795679100"
+    },
+    {
+      "closed_time": "2026-11-26 07:55:18+00",
+      "event_start_time": "2026-11-26T07:50:00Z",
+      "market_id": "7339206",
+      "sha256_response": "7d8b4deeb80a891d353b4d82a4ab9cb35f8d932dceb601c7b125c3972831c634",
+      "slug": "btc-updown-5m-1795679400"
+    },
+    {
+      "closed_time": "2026-11-26 08:00:21+00",
+      "event_start_time": "2026-11-26T07:55:00Z",
+      "market_id": "7339221",
+      "sha256_response": "7c435b7e8d2a3f7d33fa8388072e3065eda8979ff7b1867a996f8af9fcac3a36",
+      "slug": "btc-updown-5m-1795679700"
+    },
+    {
+      "closed_time": "2026-11-26 08:05:46+00",
+      "event_start_time": "2026-11-26T08:00:00Z",
+      "market_id": "7339240",
+      "sha256_response": "795febda2f88de440546ea1dd02df689c76376487bf941bff895ff2435f7b3f8",
+      "slug": "btc-updown-5m-1795680000"
+    },
+    {
+      "closed_time": "2026-11-26 08:10:28+00",
+      "event_start_time": "2026-11-26T08:05:00Z",
+      "market_id": "7339294",
+      "sha256_response": "30a85aa43b45063440e8410826870ff6b8a33651d1f1bc0bdd92fc6c11d1852b",
+      "slug": "btc-updown-5m-1795680300"
+    },
+    {
+      "closed_time": "2026-11-26 08:15:21+00",
+      "event_start_time": "2026-11-26T08:10:00Z",
+      "market_id": "7339314",
+      "sha256_response": "03c1760bd6dce5db70b530ccf9effe2eb739e1dee0cc1a292df0e2f6c162d8f3",
+      "slug": "btc-updown-5m-1795680600"
+    },
+    {
+      "closed_time": "2026-11-26 08:20:46+00",
+      "event_start_time": "2026-11-26T08:15:00Z",
+      "market_id": "7339364",
+      "sha256_response": "3d21e1504fde6454bc2f7222f36260277125fdd703cd1d2e7a8b31768040be16",
+      "slug": "btc-updown-5m-1795680900"
+    },
+    {
+      "closed_time": "2026-11-26 08:25:13+00",
+      "event_start_time": "2026-11-26T08:20:00Z",
+      "market_id": "7339441",
+      "sha256_response": "365f8e82905676bd6b5a00d239be284c648158edc5dcf31c4c3efd110212350f",
+      "slug": "btc-updown-5m-1795681200"
+    },
+    {
+      "closed_time": "2026-11-26 08:30:18+00",
+      "event_start_time": "2026-11-26T08:25:00Z",
+      "market_id": "7339454",
+      "sha256_response": "66427bda373f2d8e0b8ae83dc2896ef32d0019344fe09040251ddac29ff55a70",
+      "slug": "btc-updown-5m-1795681500"
+    },
+    {
+      "closed_time": "2026-11-26 08:35:28+00",
+      "event_start_time": "2026-11-26T08:30:00Z",
+      "market_id": "7339509",
+      "sha256_response": "7e11197e3a2c3cca7611e392acc6a0b8f1b13c57662f835d480f83618a1d0537",
+      "slug": "btc-updown-5m-1795681800"
+    },
+    {
+      "closed_time": "2026-11-26 08:40:16+00",
+      "event_start_time": "2026-11-26T08:35:00Z",
+      "market_id": "7339541",
+      "sha256_response": "c5d55021ef0b1b391e8e1e18fb050863b2c0426cc130f6055f1c616f69ebcf13",
+      "slug": "btc-updown-5m-1795682100"
+    },
+    {
+      "closed_time": "2026-11-26 08:45:18+00",
+      "event_start_time": "2026-11-26T08:40:00Z",
+      "market_id": "7339782",
+      "sha256_response": "50f4d76451f82e57fe94b06912d06d29fc70ee75fea0c1c8b36b86f6bc022fca",
+      "slug": "btc-updown-5m-1795682400"
+    },
+    {
+      "closed_time": "2026-11-26 08:50:16+00",
+      "event_start_time": "2026-11-26T08:45:00Z",
+      "market_id": "7339788",
+      "sha256_response": "73ab222b7b984affba4227d4d3ee92410b260718d96e7b86b7f43a3270b412d8",
+      "slug": "btc-updown-5m-1795682700"
+    },
+    {
+      "closed_time": "2026-11-26 08:55:13+00",
+      "event_start_time": "2026-11-26T08:50:00Z",
+      "market_id": "7339863",
+      "sha256_response": "862161a7c3d05c131b0e673923d1e3b87cfed7632432bc30bc3c91efe60e4f66",
+      "slug": "btc-updown-5m-1795683000"
+    },
+    {
+      "closed_time": "2026-11-26 09:00:30+00",
+      "event_start_time": "2026-11-26T08:55:00Z",
+      "market_id": "7340002",
+      "sha256_response": "9dccb4027d3355fff245dd96a1574f040aa2d8eb1e8ce320b986871c8f21f4c8",
+      "slug": "btc-updown-5m-1795683300"
+    },
+    {
+      "closed_time": "2026-11-26 09:05:18+00",
+      "event_start_time": "2026-11-26T09:00:00Z",
+      "market_id": "7340068",
+      "sha256_response": "0a327e1d78c9b63da71415ce82da38f044d16d03a7af016eb513d5eba46cf01e",
+      "slug": "btc-updown-5m-1795683600"
+    },
+    {
+      "closed_time": "2026-11-26 09:10:45+00",
+      "event_start_time": "2026-11-26T09:05:00Z",
+      "market_id": "7340140",
+      "sha256_response": "45660250560f75ce9f2e533975da375a2c8ec25e000c377a8002ab736697f96b",
+      "slug": "btc-updown-5m-1795683900"
+    },
+    {
+      "closed_time": "2026-11-26 09:15:18+00",
+      "event_start_time": "2026-11-26T09:10:00Z",
+      "market_id": "7340193",
+      "sha256_response": "2265d14535eb4bdf740e3c037942a4166d26ab70bcdad19c965053aa5cb00b86",
+      "slug": "btc-updown-5m-1795684200"
+    },
+    {
+      "closed_time": "2026-11-26 09:20:16+00",
+      "event_start_time": "2026-11-26T09:15:00Z",
+      "market_id": "7340201",
+      "sha256_response": "382dc13c561556a74968154f0996f5846eec899119ce085c12a986b68335ec48",
+      "slug": "btc-updown-5m-1795684500"
+    },
+    {
+      "closed_time": "2026-11-26 09:25:45+00",
+      "event_start_time": "2026-11-26T09:20:00Z",
+      "market_id": "7340222",
+      "sha256_response": "6558c344a8ce6e4ef6460bcf43ebdfa538f385f1bf7905b06e78ffc0dd2c79ed",
+      "slug": "btc-updown-5m-1795684800"
+    },
+    {
+      "closed_time": "2026-11-26 09:30:22+00",
+      "event_start_time": "2026-11-26T09:25:00Z",
+      "market_id": "7340303",
+      "sha256_response": "c3cf2c1bbcfc667874b5c1b3be739fe4212afa1dd787a65cf4a84b8b722ae129",
+      "slug": "btc-updown-5m-1795685100"
+    },
+    {
+      "closed_time": "2026-11-26 09:35:18+00",
+      "event_start_time": "2026-11-26T09:30:00Z",
+      "market_id": "7340313",
+      "sha256_response": "c783a0312d0950fd737dddbe5468dfb3b4033486b3120dd5bd3e037dcf92ea82",
+      "slug": "btc-updown-5m-1795685400"
+    },
+    {
+      "closed_time": "2026-11-26 09:40:21+00",
+      "event_start_time": "2026-11-26T09:35:00Z",
+      "market_id": "7340335",
+      "sha256_response": "e3a2fad492db86d8a3b76350a57a5943e0baaf01d6ccbdda77b993b097938d2d",
+      "slug": "btc-updown-5m-1795685700"
+    },
+    {
+      "closed_time": "2026-11-26 09:45:16+00",
+      "event_start_time": "2026-11-26T09:40:00Z",
+      "market_id": "7340732",
+      "sha256_response": "a3f5b96dd4d117eb0353924298491ec7889b2741c7a842c08ea3d268aed98ca2",
+      "slug": "btc-updown-5m-1795686000"
+    },
+    {
+      "closed_time": "2026-11-26 09:50:17+00",
+      "event_start_time": "2026-11-26T09:45:00Z",
+      "market_id": "7340882",
+      "sha256_response": "5b6d434a4ea3e11349280cad9f93770e003b0b9f667acb8f448107fa1354c07a",
+      "slug": "btc-updown-5m-1795686300"
+    },
+    {
+      "closed_time": "2026-11-26 09:55:16+00",
+      "event_start_time": "2026-11-26T09:50:00Z",
+      "market_id": "7340929",
+      "sha256_response": "42595345755720c474aea6eb2d80e33992a8de1cb19fac523ca44b1e580f5ca3",
+      "slug": "btc-updown-5m-1795686600"
+    },
+    {
+      "closed_time": "2026-11-26 10:00:22+00",
+      "event_start_time": "2026-11-26T09:55:00Z",
+      "market_id": "7341239",
+      "sha256_response": "3e8d04966a8b6dea36641d52c539269719ddfabb676a4a87c84d23a2b11fc23b",
+      "slug": "btc-updown-5m-1795686900"
+    },
+    {
+      "closed_time": "2026-11-26 10:05:22+00",
+      "event_start_time": "2026-11-26T10:00:00Z",
+      "market_id": "7341258",
+      "sha256_response": "9adb1684a27e5105e6b27feee56e188f56bc75351556777308b9b1fa54ec13a8",
+      "slug": "btc-updown-5m-1795687200"
+    },
+    {
+      "closed_time": "2026-11-26 10:10:20+00",
+      "event_start_time": "2026-11-26T10:05:00Z",
+      "market_id": "7341343",
+      "sha256_response": "f71026187bc4559494518f7430726145ba3e8b2570e39205b043512467a7917a",
+      "slug": "btc-updown-5m-1795687500"
+    },
+    {
+      "closed_time": "2026-11-26 10:15:17+00",
+      "event_start_time": "2026-11-26T10:10:00Z",
+      "market_id": "7341411",
+      "sha256_response": "e9b43bddf133cda51a0651a0bd821464348abecd0cdc88230d44f5556d061af5",
+      "slug": "btc-updown-5m-1795687800"
+    },
+    {
+      "closed_time": "2026-11-26 10:20:22+00",
+      "event_start_time": "2026-11-26T10:15:00Z",
+      "market_id": "7341427",
+      "sha256_response": "73ee4db3c9279f572905fded9f9558d840cb6f713e5b5620cdf6e87a0ae5414e",
+      "slug": "btc-updown-5m-1795688100"
+    },
+    {
+      "closed_time": "2026-11-26 10:25:14+00",
+      "event_start_time": "2026-11-26T10:20:00Z",
+      "market_id": "7341501",
+      "sha256_response": "a039df0fe936a521e73ac3185e9eb7f2254f29f1c156675efb178d84e3e65d88",
+      "slug": "btc-updown-5m-1795688400"
+    },
+    {
+      "closed_time": "2026-11-26 10:30:17+00",
+      "event_start_time": "2026-11-26T10:25:00Z",
+      "market_id": "7341606",
+      "sha256_response": "182a8761bf22da2203777f955db8e9de67a479b87aafec82e32309cd1fc5f9df",
+      "slug": "btc-updown-5m-1795688700"
+    },
+    {
+      "closed_time": "2026-11-26 10:35:17+00",
+      "event_start_time": "2026-11-26T10:30:00Z",
+      "market_id": "7341649",
+      "sha256_response": "e54dbcf1e72419870032506fa3b3bc9f6e82c6c59c6b073dfa64a2da9153fbb0",
+      "slug": "btc-updown-5m-1795689000"
+    },
+    {
+      "closed_time": "2026-11-26 10:40:14+00",
+      "event_start_time": "2026-11-26T10:35:00Z",
+      "market_id": "7341675",
+      "sha256_response": "e5165028043c7603d7e62167c47aa50ceeb47e8d279ccb78ff2cdd5e876824e9",
+      "slug": "btc-updown-5m-1795689300"
+    },
+    {
+      "closed_time": "2026-11-26 10:45:16+00",
+      "event_start_time": "2026-11-26T10:40:00Z",
+      "market_id": "7342055",
+      "sha256_response": "b2da43ae679bce3fd576bf639dac7289b1f588fe4b6c97c10daa8a945944ad1c",
+      "slug": "btc-updown-5m-1795689600"
+    },
+    {
+      "closed_time": "2026-11-26 10:50:22+00",
+      "event_start_time": "2026-11-26T10:45:00Z",
+      "market_id": "7342193",
+      "sha256_response": "dd3d6b833342ecb5fabdd2c110553e361965874001e60975477c0479987341cd",
+      "slug": "btc-updown-5m-1795689900"
+    },
+    {
+      "closed_time": "2026-11-26 10:55:20+00",
+      "event_start_time": "2026-11-26T10:50:00Z",
+      "market_id": "7342257",
+      "sha256_response": "febadbb94ee69c14b7042a6107bf47fb26aca90e69a128eb43a5c619beb0a32a",
+      "slug": "btc-updown-5m-1795690200"
+    },
+    {
+      "closed_time": "2026-11-26 11:00:20+00",
+      "event_start_time": "2026-11-26T10:55:00Z",
+      "market_id": "7342286",
+      "sha256_response": "523e8c8e846dd8e12addb554f9312c878524969485c9fd3590b62f388f81d2c9",
+      "slug": "btc-updown-5m-1795690500"
+    },
+    {
+      "closed_time": "2026-11-26 11:05:17+00",
+      "event_start_time": "2026-11-26T11:00:00Z",
+      "market_id": "7342301",
+      "sha256_response": "63053988386166ada0f9efa32e07e32c3026c2eedd5efcd07e31d4586bf53983",
+      "slug": "btc-updown-5m-1795690800"
+    },
+    {
+      "closed_time": "2026-11-26 11:10:17+00",
+      "event_start_time": "2026-11-26T11:05:00Z",
+      "market_id": "7342354",
+      "sha256_response": "59d434ee92c61131afe3c1d038bb83cb7ac150a69ea636b4d15af07757a32628",
+      "slug": "btc-updown-5m-1795691100"
+    },
+    {
+      "closed_time": "2026-11-26 11:15:29+00",
+      "event_start_time": "2026-11-26T11:10:00Z",
+      "market_id": "7342383",
+      "sha256_response": "ff9c19e63040fd71d3b4e95218b396e1da9965c980d9fe06c7cf0f8dddff4db8",
+      "slug": "btc-updown-5m-1795691400"
+    },
+    {
+      "closed_time": "2026-11-26 11:20:20+00",
+      "event_start_time": "2026-11-26T11:15:00Z",
+      "market_id": "7342502",
+      "sha256_response": "37dedfcbe87fd6f2de2ff0e564731905dbd0dd2236d9923a6bd7e7f5593dbf86",
+      "slug": "btc-updown-5m-1795691700"
+    },
+    {
+      "closed_time": "2026-11-26 11:25:17+00",
+      "event_start_time": "2026-11-26T11:20:00Z",
+      "market_id": "7342544",
+      "sha256_response": "9da90ff2972589df6deb5570f6efb7aabb4d5307737232a23649b2a7ef010701",
+      "slug": "btc-updown-5m-1795692000"
+    },
+    {
+      "closed_time": "2026-11-26 11:30:44+00",
+      "event_start_time": "2026-11-26T11:25:00Z",
+      "market_id": "7342558",
+      "sha256_response": "79df26cb86344a50a8e5b9139bdfca6608e35e963ed6f3393a774c73b0d1fb6b",
+      "slug": "btc-updown-5m-1795692300"
+    },
+    {
+      "closed_time": "2026-11-26 11:35:16+00",
+      "event_start_time": "2026-11-26T11:30:00Z",
+      "market_id": "7342619",
+      "sha256_response": "38ef015dd914d82142b28b8a9da23c96a92968c710f3c910d7116439e165edc3",
+      "slug": "btc-updown-5m-1795692600"
+    },
+    {
+      "closed_time": "2026-11-26 11:40:20+00",
+      "event_start_time": "2026-11-26T11:35:00Z",
+      "market_id": "7342629",
+      "sha256_response": "071b38980428eb94d8188a65613855c078daf7210d30cc67da7db5d6d3316a84",
+      "slug": "btc-updown-5m-1795692900"
+    },
+    {
+      "closed_time": "2026-11-26 11:45:17+00",
+      "event_start_time": "2026-11-26T11:40:00Z",
+      "market_id": "7342916",
+      "sha256_response": "0badad21c4841b1feb557a4678790de2edbde7cb75b64dd30de9f8e05c7ff90c",
+      "slug": "btc-updown-5m-1795693200"
+    },
+    {
+      "closed_time": "2026-11-26 11:50:16+00",
+      "event_start_time": "2026-11-26T11:45:00Z",
+      "market_id": "7343091",
+      "sha256_response": "01d3f3ef77dcce6a32fde17ce3ad1c4cdd5c33e466b46d9f15d1a8fd63f19d7b",
+      "slug": "btc-updown-5m-1795693500"
+    },
+    {
+      "closed_time": "2026-11-26 11:55:30+00",
+      "event_start_time": "2026-11-26T11:50:00Z",
+      "market_id": "7343141",
+      "sha256_response": "9f4f99a79a83b3fe01b06f2e0d6acb789fab4e7e96f3410ffeca024d526ab9ba",
+      "slug": "btc-updown-5m-1795693800"
+    },
+    {
+      "closed_time": "2026-11-26 12:00:22+00",
+      "event_start_time": "2026-11-26T11:55:00Z",
+      "market_id": "7343161",
+      "sha256_response": "5c136f8a309185d7045b2b29950c953fa41241486e0ada831fe355b1d2e736d4",
+      "slug": "btc-updown-5m-1795694100"
+    }
+  ],
+  "resolution_policy": "Closed market with UMA status resolved. Up and Down have complementary binary outcome prices.",
+  "retrieved_end_utc": "2026-11-27T02:36:47.870831+00:00",
+  "retrieved_start_utc": "2026-11-27T02:36:23.948229+00:00",
+  "scope": "Answer-key laboratory only",
+  "source_url_template": "https://gamma-api.polymarket.com/markets/slug/{slug}",
+  "stream": "clob_btc_5m",
+  "through_epoch_exclusive": 1795694400,
+  "token_map_file": "tokens.jsonl",
+  "tokens_sha256": "7f4e995fa7f11f9a2f326170967076161016272dd0b60e6795f7108ca03e3809",
+  "verified_markets": 72
+}
