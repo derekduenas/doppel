@@ -23,22 +23,29 @@ def top_of_book(levels: dict | None) -> tuple | None:
 
 
 class _ReceivedBook:
-    def __init__(self, flow_tokens: set[str]):
+    def __init__(self, flow_tokens: set[str], cancel_tokens: set[str]):
         self.book = IntlBook(strict_clocks=True)
         self.depth: dict[str, tuple] = {}  # latest receipt, venue ms, packet sequence and span object
         self.since: dict[str, int] = {}
         self.flow_tokens = flow_tokens
         self.flow: dict[str, deque[Print]] = defaultdict(deque)
         self.first_market: dict[str, tuple[str, int]] = {}
+        self.cancel_tokens = cancel_tokens
+        self.cancel_tw = None
+        self.cancel_prior: dict[str, tuple[bool, dict]] = {}
 
     def reset(self):
         self.book.reset()
         self.depth.clear()
         self.since.clear()
         self.flow.clear()
+        self.cancel_prior.clear()
 
     def record(self, rec: dict):
         tw = rec["tw"]
+        if self.cancel_tokens and tw != self.cancel_tw:
+            self.cancel_tw = tw
+            self.cancel_prior.clear()
         for msg, items in self.book.feed_messages(rec):
             if not msg:  # feed_messages resets the decoder on control and malformed payloads.
                 self.reset()
@@ -57,7 +64,7 @@ class _ReceivedBook:
             if kind in ("book", "price_change"):
                 ts = msg.get("timestamp")
                 valid_clock = type(ts) is int or (isinstance(ts, str) and ts.isascii() and ts.isdecimal())
-                if not valid_clock or int(ts) <= 0:
+                if not valid_clock or ts is None or int(ts) <= 0:
                     self.reset()
                     yield msg, [Reset(tw, "invalid_depth_timestamp")]
                     continue
@@ -68,12 +75,16 @@ class _ReceivedBook:
                     old = self.depth.get(asset)
                     if not self.book.known(asset):
                         reversed_depth |= old is not None
+                        self.cancel_prior.pop(asset, None)
                         self.depth.pop(asset, None)
                         self.since.pop(asset, None)
                         self.flow.pop(asset, None)
                         continue
                     span = self.book.spans[asset][-1]
                     reversed_depth |= old is not None and old[3] is not span
+                    if asset in self.cancel_tokens and (asset not in self.cancel_prior or (old and old[3] is not span)):
+                        was_fresh = old is not None and old[3] is span and tw - old[0] <= DEPTH_AGE_NS
+                        self.cancel_prior[asset] = (was_fresh, {})
                     if old is None or old[3] is not span or tw - old[0] > DEPTH_AGE_NS:
                         self.since[asset] = tw
                         self.flow.pop(asset, None)
@@ -84,7 +95,9 @@ class _ReceivedBook:
                 if reversed_depth:
                     items = [*items, Reset(tw, "asset_venue_time_reversal")]
             for it in items:
-                if isinstance(it, Print):
+                if isinstance(it, LevelEvent) and it.asset in self.cancel_prior:
+                    self.cancel_prior[it.asset][1].setdefault((it.price, it.side), it.old_size)
+                elif isinstance(it, Print):
                     if it.market:
                         self.first_market.setdefault(it.asset, (it.market, tw))
                     if it.asset in self.flow_tokens:
@@ -93,6 +106,14 @@ class _ReceivedBook:
                             prints.popleft()
                         prints.append(it)
             yield msg, items
+
+    def before_cancel(self, asset):
+        known, before = self.cancel_prior[asset]
+        if not known:
+            return None
+        # Undo every change to this token in the entire receipt-time group, including
+        # preceding embedded messages and separate envelopes stamped at the same instant.
+        return top_of_book(self.book.levels[asset] | before)
 
     def observe(self, asset, cutoff):
         mark = self.depth.get(asset)
@@ -134,7 +155,7 @@ def scan(root: Path, stream: str, t_from: int, t_to: int, queries: list[tuple],
     """
     qs = sorted(queries, key=lambda q: q[0])
     levels = query_levels or {}
-    observed = _ReceivedBook({tok for _, tok, _ in qs} if details else set())
+    observed = _ReceivedBook({tok for _, tok, _ in qs} if details else set(), {key[0] for key in cancels})
     state, detail, state_integrity, grid, grid_integrity = {}, {}, {}, {}, {}
     at_cancel, cancel_diff, fill_tw = {}, {}, {}
     fill_prints = defaultdict(list)
@@ -195,12 +216,13 @@ def scan(root: Path, stream: str, t_from: int, t_to: int, queries: list[tuple],
                             if abs(dec - c[1]) <= max(0.02, 0.02 * c[1])
                             and abs(dec - c[1]) < cancel_diff.get(c[0], math.inf)]
                     if near:
-                        lv = dict(observed.book.levels.get(it.asset) or {})
-                        for e in reversed(items):
-                            if isinstance(e, LevelEvent) and e.asset == it.asset:
-                                lv[(e.price, e.side)] = e.old_size
+                        top = observed.before_cancel(it.asset)
                         for key, remaining in near:
-                            at_cancel[key], cancel_diff[key] = top_of_book(lv), abs(dec - remaining)
+                            cancel_diff[key] = abs(dec - remaining)
+                            if top is None:
+                                at_cancel.pop(key, None)
+                            else:
+                                at_cancel[key] = top
         prev_tw = tw
     before(t_to * NS - 1, "right_censored")
     mates = observed.book.mates()

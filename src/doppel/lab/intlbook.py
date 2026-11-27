@@ -32,6 +32,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+import math
 from pathlib import Path
 
 import orjson
@@ -124,6 +125,14 @@ class IntlBook:
             del self.levels[asset]
             self.clock_counts["reset:asset_venue_time_reversal"] += 1
 
+    def _level(self, row: dict, side: str) -> tuple[tuple[float, str], float]:
+        price, size = px(row["price"]), float(row["size"])
+        if self.strict_clocks and (side not in ("BUY", "SELL") or not 0 <= price <= 1
+                                   or not math.isfinite(size) or size < 0
+                                   or isinstance(row["price"], bool) or isinstance(row["size"], bool)):
+            raise ValueError("invalid CLOB price, size or side")
+        return (price, side), size
+
     def apply(self, m: dict, tw_ns: int) -> list[LevelEvent | Print]:
         """One decoded market-channel message."""
         et = m.get("event_type")
@@ -143,8 +152,12 @@ class IntlBook:
         if et == "book":
             a = m["asset_id"]
             self._check_depth_time(a, ms)
-            new = {(px(lv["price"]), side): float(lv["size"])
-                   for side, key in (("BUY", "bids"), ("SELL", "asks")) for lv in m.get(key) or []}
+            if self.strict_clocks and (not a or not isinstance(m.get("bids"), list) or not isinstance(m.get("asks"), list)):
+                raise ValueError("incomplete book snapshot")
+            new = dict(self._level(lv, side)
+                       for side, key in (("BUY", "bids"), ("SELL", "asks")) for lv in m.get(key) or [])
+            if self.strict_clocks and len(new) != len(m["bids"]) + len(m["asks"]):
+                raise ValueError("duplicate book level")
             new = {k: v for k, v in new.items() if v > 0}
             old = self.levels.get(a)
             if old is None:
@@ -158,15 +171,19 @@ class IntlBook:
             self.market_of[a] = mk
             self._seen(a, ms)
         elif et == "price_change":
+            if self.strict_clocks and not isinstance(m.get("price_changes"), list):
+                raise ValueError("missing price changes")
             for ch in m.get("price_changes") or []:
                 a = ch.get("asset_id")
+                if self.strict_clocks and not a:
+                    raise ValueError("missing changed token")
                 self._check_depth_time(a, ms)
                 lv = self.levels.get(a)
                 if lv is None:
                     self.dropped += 1
                     continue
-                k = (px(ch["price"]), str(ch["side"]))
-                o, n = lv.get(k, 0.0), float(ch["size"])
+                k, n = self._level(ch, str(ch["side"]))
+                o = lv.get(k, 0.0)
                 if n > 0:
                     lv[k] = n
                 else:
@@ -176,11 +193,14 @@ class IntlBook:
                     out.append(LevelEvent(ms, tw_ns, a, k[0], k[1], o, n, "price_change", mk))
         elif et == "last_trade_price" and m.get("asset_id"):
             a = m["asset_id"]
+            (price, side), size = self._level(m, str(m.get("side")))
+            if self.strict_clocks and size == 0:
+                raise ValueError("zero print size")
             if mk:
                 self.market_of.setdefault(a, mk)
             if not self.strict_clocks and a in self.levels:
                 self._seen(a, ms)
-            out.append(Print(ms, tw_ns, a, px(m["price"]), float(m["size"]), str(m.get("side")),
+            out.append(Print(ms, tw_ns, a, price, size, side,
                              str(m.get("transaction_hash") or ""), mk))
         return out
 
@@ -210,7 +230,19 @@ class IntlBook:
                 self.reset()
                 yield {}, [Reset(int(rec["tw"]), "unknown_message")]
             elif isinstance(m, dict):
-                yield m, self.apply(m, int(rec["tw"]))
+                try:
+                    items = self.apply(m, int(rec["tw"]))
+                except (KeyError, ValueError, TypeError, OverflowError, AttributeError):
+                    if not self.strict_clocks:
+                        raise
+                    if m.get("event_type") == "last_trade_price":
+                        self.clock_counts["malformed_prints"] += 1
+                        yield m, []
+                    else:
+                        self.reset()
+                        yield {}, [Reset(int(rec["tw"]), "malformed_message")]
+                else:
+                    yield m, items
 
     def feed(self, rec: dict) -> list[Item]:
         """One tape record (data frame or ctl). Returns what it produced, in order."""
