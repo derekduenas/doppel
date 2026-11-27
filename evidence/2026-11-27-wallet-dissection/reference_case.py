@@ -102,12 +102,14 @@ def report(root, ledger_path):
     for state in asof.values():
         r = state["reference"]
         received = {}
-        for second in range(r["volatility_first_second"], r["volatility_last_second"] + 1):
-            offset = second - ref.raw_t0
-            stamp = ref.rcv[offset]
-            if math.isfinite(ref.raw[offset]) and stamp <= r["decision_second"]:
-                received[second] = float(stamp)
-        if len(received) != r["raw_seconds_known"]:
+        if ref.raw is not None and ref.rcv is not None and "volatility_first_second" in r:
+            for second in range(r["volatility_first_second"], r["volatility_last_second"] + 1):
+                offset = second - ref.raw_t0
+                if 0 <= offset < min(len(ref.raw), len(ref.rcv)):
+                    stamp = ref.rcv[offset]
+                    if math.isfinite(ref.raw[offset]) and stamp <= r["decision_second"]:
+                        received[second] = float(stamp)
+        if len(received) != r.get("raw_seconds_known", 0):
             raise ValueError("raw-source receipt counts differ from the reference model")
         delays = [v - k for k, v in received.items()]
         r["raw_receipt_basis"] = ("upstream_perelman_only" if not any(files["ref_brti_live"]["selected_files"].values())

@@ -35,8 +35,8 @@ def public_context(root, cutoff_marks, start):
     reports = {}
     for stream, key in (("kalshi_books", kalshi), ("pmus_books", pm), ("spot_coinbase", "BTC-USD")):
         p, seal = sealed(root, stream, start)
-        prior = None
-        out = {}
+        prior: dict | None = None
+        out: dict[str, dict | None] = {}
         for rec in read_segment(p, verify=True, strict=True):
             tw = rec["tw"]
             for name, mark in cutoff_marks.items():
