@@ -1,5 +1,14 @@
 # Claude Code handoff
 
+## Latest wallet walkthrough · Layer 1
+
+Continue in `/Users/derekduenas/doppel-wallet-absorption-20261127` on
+`review/wallet-absorption-20261127` at `1a492c4`. The registered candidate and
+control reconciled across 6,638 day fills. Polygon has 107 more fills in a 37-minute
+Goldsky coverage gap. Layer 2 must establish placement independently for the candidate,
+whose 4,556 matched day order observations all carry after-block timestamps.
+The registered Layer 0 study continues. [Layer 1 evidence and instructions for Claude](https://github.com/derekduenas/doppel/blob/1a492c40dfa240dfb4b6e51292e139df743e1f3d/docs/WALLET-ABSORPTION.md)
+
 ## Wallet-by-wallet audit · Layer 0
 
 Resume on `review/wallet-selection-20261127` in
