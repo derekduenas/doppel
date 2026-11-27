@@ -299,6 +299,8 @@ def scan(chain: Chain, wallet: str, b0: int, b1: int, chunk: int) -> dict:
                (sorted(EXCHANGES), [T_FILLED, None, wt])]
     logs: dict[tuple[str, int], dict] = {}
     at_index: dict[tuple[int, int], str] = {}
+    timestamps: dict[int, int] = {}
+    hashes: dict[int, str] = {}
     nxt, error = b0, None
     while nxt <= b1:
         hi = min(nxt + chunk - 1, b1)
@@ -322,9 +324,22 @@ def scan(chain: Chain, wallet: str, b0: int, b1: int, chunk: int) -> dict:
                     key = (lg["transactionHash"].lower(), int(lg["logIndex"], 16))
                     if key[1] < 0 or at_index.setdefault((block, key[1]), key[0]) != key[0]:
                         raise RpcError("conflicting_log_index")
+                    if "blockTimestamp" in lg:
+                        tag = lg["blockTimestamp"]
+                        if not isinstance(tag, str) or not re.fullmatch(r"0x(?:0|[1-9a-fA-F][0-9a-fA-F]{0,15})", tag):
+                            raise RpcError("invalid_log_block_timestamp")
+                        stamp = int(tag, 16)
+                        if timestamps.setdefault(block, stamp) != stamp:
+                            raise RpcError("conflicting_log_block_timestamp")
+                    if "blockHash" in lg:
+                        digest = lg["blockHash"]
+                        if not isinstance(digest, str) or not re.fullmatch(r"0x[0-9a-fA-F]{64}", digest):
+                            raise RpcError("invalid_log_block_hash")
+                        if hashes.setdefault(block, digest.lower()) != digest.lower():
+                            raise RpcError("conflicting_log_block_hash")
                     old = logs.get(key)
                     if old is not None and any(old.get(k) != lg.get(k) for k in
-                            ("blockNumber", "blockHash", "address", "topics", "data")):
+                            ("blockNumber", "address", "topics", "data")):
                         raise RpcError("conflicting_log")
                     if old is None:
                         if ts[0].lower() == T_FILLED:
@@ -340,6 +355,7 @@ def scan(chain: Chain, wallet: str, b0: int, b1: int, chunk: int) -> dict:
             break
         nxt = hi + 1
     return {"logs": [logs[k] for k in sorted(logs, key=lambda k: (int(logs[k]["blockNumber"], 16), k[1]))],
+            "timestamps": timestamps, "hashes": hashes,
             "next_block": nxt if nxt <= b1 else None, "complete": nxt > b1, "error": error}
 
 
@@ -421,7 +437,8 @@ def _ts_fn(known: dict[int, int]) -> Callable[[int], float]:
 def reconstruct(wallet: str, fills: list[dict], legs: list[dict], filled: list[dict],
                 receipts: dict[str, dict | None], start: dict[str, int] | None,
                 end: dict[str, int] | None, pairs: dict[str, tuple[str, int]],
-                block_ts: dict[int, int], window: tuple[int, int], *, times: tuple[int, int] | None = None) -> dict:
+                block_ts: dict[int, int], window: tuple[int, int], *, times: tuple[int, int] | None = None,
+                log_times: dict[int, int] | None = None, time_conflict: bool = False) -> dict:
     """Pure core: positions, cash, pairing and reconciliation of one wallet (see module doc)."""
     b0, b1 = window
     pairs = dict(pairs)  # inferences from one wallet's receipts are local to that reconstruction
@@ -429,8 +446,22 @@ def reconstruct(wallet: str, fills: list[dict], legs: list[dict], filled: list[d
     by_tx: dict[str, list[dict]] = defaultdict(list)
     for lg in legs:
         by_tx[lg["tx"]].append(lg)
-    known_ts = dict(block_ts) | {int(f["block_number"]): int(f["block_timestamp"]) for f in fills}
-    ts = _ts_fn(known_ts)
+    known_ts = dict(block_ts)
+    for n, stamp in (log_times or {}).items():
+        if known_ts.setdefault(n, stamp) != stamp:
+            time_conflict = True
+    for fill in fills:
+        n, stamp = int(fill["block_number"]), int(fill["block_timestamp"])
+        if known_ts.setdefault(n, stamp) != stamp:
+            time_conflict = True
+    ordered = [stamp for n, stamp in sorted(known_ts.items())]
+    if any(later < earlier for earlier, later in zip(ordered, ordered[1:])):
+        time_conflict = True
+    if times and any(not times[0] <= stamp < times[1] for stamp in ordered):
+        time_conflict = True
+    # A partial run can lack all actual headers. Its fallback bounds are diagnostic only.
+    fallback = {b0: times[0], b1: times[1]} if times else {}
+    ts = _ts_fn(fallback | known_ts)
 
     # Bind each public fill to its particular on-chain OrderFilled, including in-block order.
     ch_keys = [(o["tx"], o["order_id"], o["block"], o["side"], o["token"], o["shares"], o["usdc"], o["fee"])
@@ -636,7 +667,15 @@ def reconstruct(wallet: str, fills: list[dict], legs: list[dict], filled: list[d
         causes.append("unclassified_chain_txs")
 
     pairing = _pairing(events, open_, pairs, ts, times or (ts(b0), ts(b1)))
-    pairing["interpolated_event_blocks"] = len({e["block"] for e in events if e["shares"] and e["block"] not in known_ts})
+    event_blocks = {e["block"] for e in events if e["shares"]}
+    pairing["interpolated_event_blocks"] = len(event_blocks - known_ts.keys())
+    pairing["log_timestamp_event_blocks"] = len(event_blocks.intersection(log_times or {}))
+    pairing["event_time_anchors_consistent"] = not time_conflict
+    if time_conflict:
+        causes.append("block_time_evidence_disagrees")
+        for market in pairing["markets"].values():
+            for field in ("longest_one_sided_s", "paired_share_s", "one_sided_share_s"):
+                market[field] = None
     to_f = lambda x: round(x / U, 6)  # noqa: E731
     out_tokens = {}
     for t, s in tok.items():
@@ -792,6 +831,7 @@ def identities(chain: Chain | None, wallet: str, orders: Path | None, block: int
               "complete" if len(claims) == len(wanted) else "partial" if claims else "unknown")
     out: dict = {"trading_account": wallet, "signers": dict(Counter(s for s, _ in claims)),
                  "sig_types": dict(Counter(str(k) for _, k in claims)), "is_contract": None,
+                 "code_kind": "unknown", "delegation_target": None,
                  "safe_owners": None, "signer_coverage": {"status": status, "chain_orders": len(wanted),
                  "verified_orders": len(claims), "conflicting_orders": conflicts}}
     if invalid_tape:
@@ -800,7 +840,13 @@ def identities(chain: Chain | None, wallet: str, orders: Path | None, block: int
         try:
             code = chain.get("eth_getCode", [wallet, hex(block)])
             if isinstance(code, str) and re.fullmatch(r"0x(?:[a-fA-F0-9]{2})*", code):
-                out["is_contract"] = code != "0x"
+                code = code.lower()
+                if re.fullmatch(r"0xef0100[0-9a-f]{40}", code):
+                    out["code_kind"], out["is_contract"] = "delegated_eoa", False
+                    out["delegation_target"] = "0x" + code[8:]
+                else:
+                    out["is_contract"] = code != "0x"
+                    out["code_kind"] = "contract_bytecode" if out["is_contract"] else "empty"
             if out["is_contract"] and "2" in out["sig_types"]:
                 raw = chain.call(wallet, SEL_GET_OWNERS, block)
                 if isinstance(raw, str) and re.fullmatch(r"0x(?:[a-fA-F0-9]{64}){3,}", raw):
@@ -863,9 +909,33 @@ def absorb_wallet(chain: Chain, wallet: str, fills: list[dict], window: tuple[in
     except (BudgetExhausted, EndpointsDown, RpcError) as e:
         err = err or type(e).__name__
         start = end = None
-    if not bts:
-        bts = {b0: times[0], b1: times[1]}
-    res = reconstruct(wallet, fills, legs, filled, receipts, start, end, pairs, bts, window, times=times)
+    # Read existing block headers found during the CLI's block search or earlier wallet runs.
+    # Comparing those headers costs no extra RPC per fill or transfer.
+    headers = dict(bts)
+    conflict = sc["error"] in {"invalid_log_block_timestamp", "conflicting_log_block_timestamp",
+                               "invalid_log_block_hash", "conflicting_log_block_hash"}
+    for key, header in chain.mem.items():
+        if not key.startswith('["eth_getBlockByNumber",['):
+            continue
+        requested = orjson.loads(key)[1]
+        if not isinstance(requested, list) or len(requested) != 2 or requested[1] is not False:
+            continue
+        tag = requested[0]
+        if not isinstance(tag, str) or not re.fullmatch(r"0x(?:0|[1-9a-f][0-9a-f]*)", tag):
+            continue
+        n = int(tag, 16)
+        if b0 <= n <= b1:
+            try:
+                headers[n] = chain.block_ts(n)
+            except RpcError:
+                conflict = True
+                continue
+            if n in sc["hashes"] and "hash" in header:
+                digest = header["hash"]
+                if not isinstance(digest, str) or digest.lower() != sc["hashes"][n]:
+                    conflict = True
+    res = reconstruct(wallet, fills, legs, filled, receipts, start, end, pairs, headers, window, times=times,
+                      log_times=sc["timestamps"], time_conflict=conflict)
     bounds_ok = bool(boundaries and boundaries[b0 - 1] < times[0] <= bts[b0]
                      and bts[b0] <= bts[b1] < times[1] <= boundaries[b1 + 1])
     causes = res.pop("causes")

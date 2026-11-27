@@ -1,4 +1,5 @@
 from doppel.lab import absorb, ordertape
+import pytest
 
 
 WALLET, SIGNER, OTHER = ("0x" + c * 40 for c in "abc")
@@ -31,3 +32,19 @@ def test_absent_identity_evidence_preserves_unknowns():
     data = absorb.identities(NoCode(), WALLET, None, 5, first_block=1, filled=[], scan_complete=False)
     assert data["is_contract"] is None
     assert data["signer_coverage"]["status"] == "chain_scan_incomplete"
+
+
+@pytest.mark.parametrize(("code", "kind", "contract", "delegate"), [
+    ("0xef0100" + "AB" * 20, "delegated_eoa", False, "0x" + "ab" * 20),
+    ("0x363d3d", "contract_bytecode", True, None),
+    ("0x", "empty", False, None),
+    (None, "unknown", None, None),
+])
+def test_historical_bytecode_preserves_delegated_account_identity(code, kind, contract, delegate):
+    class AtBlock:
+        def get(self, method, params):
+            assert method == "eth_getCode" and params == [WALLET, "0x5"]
+            return code
+
+    doc = absorb.identities(AtBlock(), WALLET, None, 5, first_block=1, filled=[], scan_complete=True)
+    assert (doc["code_kind"], doc["is_contract"], doc["delegation_target"]) == (kind, contract, delegate)
