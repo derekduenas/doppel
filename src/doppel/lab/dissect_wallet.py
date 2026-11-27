@@ -5,6 +5,7 @@ import argparse
 from collections import Counter
 import hashlib
 from pathlib import Path
+import re
 import tempfile
 
 import orjson
@@ -20,21 +21,33 @@ NS = 1_000_000_000
 def source_files(tape: Path, doc: dict):
     start, end = doc["window_time"]
     stream = doc["stream"]
+    if end <= start or not re.fullmatch(r"clob_[a-z0-9]+_(?:5|15)m", stream):
+        raise ValueError("invalid inspected book scope")
+    manifest = tape / stream / "manifest.jsonl"
+    sealed = {r["file"]: r for line in manifest.read_bytes().splitlines() if line and (r := orjson.loads(line))} if manifest.exists() else {}
     files = {r["file"]: r for r in doc["source_segments"]}
     if len(files) != len(doc["source_segments"]):
         raise ValueError("duplicate sealed segment")
     missing = set(doc["missing_segments"])
     checked = {}
+    actual_missing = set()
     for hour in range(start - start % 3600, end, 3600):
         path = segment_path(tape, stream, hour * NS)
         key = path.relative_to(tape).as_posix()
         if key in files:
             seal = files[key]
+            original = sealed.get(path.relative_to(tape / stream).as_posix()) or {}
+            if (original.get("sha256"), original.get("bytes")) != (seal["sha256"], seal["bytes"]):
+                raise ValueError(f"book has no matching recorder seal: {key}")
             if not path.is_file() or path.stat().st_size != seal["bytes"] or digest(path) != seal["sha256"]:
                 raise ValueError(f"book differs from the inspected source: {key}")
             checked[path] = path.stat()
-        elif path.relative_to(tape / stream).as_posix() not in missing or path.exists():
+        elif path.exists():
             raise ValueError(f"book coverage differs from inspection: {key}")
+        else:
+            actual_missing.add(path.relative_to(tape / stream).as_posix())
+    if missing != actual_missing:
+        raise ValueError("missing book coverage differs from inspection")
     if set(files) != {p.relative_to(tape).as_posix() for p in checked}:
         raise ValueError("unexpected book sources in inspection")
     return checked
