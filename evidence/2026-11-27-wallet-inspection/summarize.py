@@ -36,10 +36,11 @@ def wallet_rows(rows, tokens, capture_gaps):
         return any(lo < (second - 120) * 10**9 and (second + 120) * 10**9 < hi for lo, hi in capture_gaps)
 
     families = Counter(tokens.get(r["token"], "unknown") for r in rows)
+    offsets = [(r["created_ms"] - 1000 * r["block_ts"]) / 1000 for r in rows if type(r["created_ms"]) is int]
     return {"conditions": len({r["market"] for r in rows}), "unique_signed_orders": len(rows),
             "orders_by_retrospective_market_family": dict(families),
             "missing_prints_with_block_window_inside_capture_gap": sum(in_gap(r) for r in missing_print),
-            "signed_to_block_seconds": quartiles([(r["created_ms"] - 1000 * r["block_ts"]) / 1000 for r in rows]),
+            "signed_minus_first_block_seconds": quartiles(offsets), "orders_without_numeric_clock": len(rows) - len(offsets),
             "fully_filled_by_observed_trades": sum(r["fully_filled_by_observed_trades"] for r in rows),
             "paired_sole_by_arm": {k: seen[k] for k in ("both", "actual_only", "placebo_only", "neither")},
             "paired_sole_against_all_observed_orders":
