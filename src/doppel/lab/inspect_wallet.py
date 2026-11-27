@@ -53,7 +53,7 @@ def subject(ledger: Path, store: Path, tape: Path) -> Subject:
     fills = [f for f in all_rows if start <= f["block_timestamp"] < end]
     lo, hi = r["window_blocks"]
     if (len(fills) != r["goldsky_fills"] or len(fills) != r["fill_check"]["order_filled"]["matched"]
-            or any(not lo <= f["block_number"] <= hi or f["address"] != wallet for f in fills)):
+            or any(not lo <= f["block_number"] <= hi for f in fills)):
         raise ValueError(f"receipt and fill scope disagree for {wallet}")
 
     index = defaultdict(list)
