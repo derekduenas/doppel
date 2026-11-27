@@ -1,5 +1,17 @@
 # Claude Code handoff
 
+## Wallet-by-wallet audit · Layer 4
+
+Resume on `review/wallet-rivals-20261127` in `/Users/derekduenas/doppel-wallet-rivals-20261127`.
+The [Layer 4 report](WALLET-RIVALS.md) records the sealed forecasts, controlled and historical
+comparisons, and the rule fitter's train-only candidate changes. On twelve controlled markets,
+both positive rules were recovered and the random control abstained. On twelve real markets
+neither wallet had independently attributed posting or skip labels. Of 360 observations, 267
+had usable books. Silence beat both rules on the execution endpoint. Neither wallet has an
+identified strategy. Retained, independently verified receipts and commands are in the report.
+The next blueprint layer is the reserved three-seed answer-key exam. Apex recorder capacity
+remains below reserve and Rust cutover requires a passing RTDS comparison.
+
 ## Wallet-by-wallet audit · Layer 3
 
 Resume on `review/wallet-dissection-20261127` in `/Users/derekduenas/doppel-wallet-dissection-20261127`. The two registered wallets have 33 located execution contexts across 35 signed maker orders. The candidate’s first 60-share Down buy has two anonymous posting hypotheses. The touch stayed at 7¢ / 8¢ while depth changed. The 22:35 UTC market had zero candidate fills and nine control fills, with independently visible books at 22 of 30 scheduled cutoffs. Both real rulefit runs abstained. Read the [Layer 3 report and reproduction instructions](WALLET-DISSECTION.md) before registering Layer 4 rivals and reserving a separately labelled holdout. Apex storage is below both reserves and recorder cutover failed the two RTDS checks.

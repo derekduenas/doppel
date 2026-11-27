@@ -100,6 +100,12 @@ inventory and its posting identity remain unknown at decision time. The Layer 4 
 a prespecified comparison on independently labelled, held-out cases.
 [Layer 3 walkthrough](WALLET-DISSECTION.md)
 
+Stage 4 recovered two prespecified posting rules on independently labelled controlled
+markets and abstained on the random policy. The historical comparison on twelve markets
+yielded zero independently attributed posting or skip labels for both registered wallets.
+Both real strategies remain unidentified. Stage 5 is the reserved full answer-key exam on
+recorded books. [Layer 4 audit and handoff](WALLET-RIVALS.md)
+
 ## 5. Genome v2
 
 Rule fitting on real orders listed what today's genome format cannot say. v2 adds: quotes pegged to

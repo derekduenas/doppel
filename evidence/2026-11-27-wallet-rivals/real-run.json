@@ -1,0 +1,25 @@
+{
+  "schema": "rival-historical-run/1",
+  "source_commit": "37e0854",
+  "forecast_seal_commit": "f91a167",
+  "apex_root": "/var/backups/doppel-sealed-20261126/research/wallet-rivals.FsyLZq",
+  "sha256": {
+    "real/predictions.json": "d889568818cdb87bb61035355b6aeb25d42afd24fa0c91136e948efe46938d21",
+    "real-repeat/public.json": "b2fe68d802434c39e5fb288c287fbbb7f12b3a6480479ff741866bf6961436c2",
+    "real-repeat/public-source.json": "636c423103883f4775707e3ceb3646ea5270d91e0d05f2c6c5d914df0a5cb23a",
+    "real-repeat/labels.json": "0cd67a0fd80fd30b82a35bf19c39a60f9710756d3a1264f23db32bca0e7216e2",
+    "real-repeat/label-source.json": "9a81d9f3c8bb93b0c092a5fc9661c7cc6ac58db86c299bbae24cb03d889f0988",
+    "real-repeat/scores.json": "964bcf4e9c8cd20cd0e2b3810565a0300d013b183e8e7f71300bde6ebe9bd4cf",
+    "release.SRNTxF/verification.json": "d3f184b0736c485754050c7c437faecefd0d070b7e8b768c0d8ee672f30635f9"
+  },
+  "public_repeated_byte_identically": true,
+  "independent_score_and_source_checks_passed": true,
+  "scheduled_markets": 12,
+  "eligible_books": 267,
+  "scheduled_cells": 360,
+  "eligible_owner_action_labels_per_wallet": 0,
+  "storage_bytes_available": {
+    "hot_tape": 6059872256,
+    "root_archive": 26405154816
+  }
+}
