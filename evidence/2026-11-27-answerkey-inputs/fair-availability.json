@@ -1,0 +1,47 @@
+{
+  "checked_utc": "2026-11-27T02:43:06.423382+00:00",
+  "checks": {
+    "/mnt/volume_nyc1_1793485122853/doppel/tape": {
+      "missing_all_offsets": [],
+      "nonempty_holdout_windows": 36,
+      "nonempty_train_windows": 36,
+      "source_presence": {
+        "ref_brti_raw": true,
+        "ref_prices": true
+      },
+      "valid_per_offset": {
+        "0": 71,
+        "150": 71,
+        "270": 72,
+        "30": 70
+      }
+    },
+    "/var/backups/doppel-sealed-20261126/tape": {
+      "missing_all_offsets": [],
+      "nonempty_holdout_windows": 36,
+      "nonempty_train_windows": 36,
+      "source_presence": {
+        "ref_brti_raw": true,
+        "ref_prices": true
+      },
+      "valid_per_offset": {
+        "0": 71,
+        "150": 71,
+        "270": 72,
+        "30": 70
+      }
+    }
+  },
+  "sampled_offsets_seconds": [
+    0,
+    30,
+    150,
+    270
+  ],
+  "source": "3dee8bbc7610ea26162de3f4bbb9c3d4af2297e1",
+  "train_holdout_epoch": [
+    1795672800,
+    1795683600,
+    1795694400
+  ]
+}
