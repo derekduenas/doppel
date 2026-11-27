@@ -214,13 +214,16 @@ class Pool:
         self.requests = 0
         self._lock = threading.Lock()
 
-    def _reserve(self, avoid: str | None) -> _Endpoint:
+    def _reserve(self, avoid: str | None, allowed: frozenset[str] | None) -> _Endpoint:
         with self._lock:
             if self.max_requests is not None and self.requests >= self.max_requests:
                 raise BudgetExhausted
-            if all(e.benches >= self.give_up for e in self.eps):
+            eligible = self.eps if allowed is None else [e for e in self.eps if e.url in allowed]
+            if not eligible:
+                raise ValueError("no configured RPC endpoint for this method")
+            if all(e.benches >= self.give_up for e in eligible):
                 raise EndpointsDown
-            e = min([e for e in self.eps if e.url != avoid] or self.eps,
+            e = min([e for e in eligible if e.url != avoid] or eligible,
                     key=lambda e: max(e.next_t, e.bench_until))
             t = max(self.now(), e.next_t, e.bench_until)
             e.next_t = t + 1.0 / self.rate
@@ -231,11 +234,12 @@ class Pool:
             self.sleep(wait)
         return e
 
-    def call(self, method: str, params: list, avoid: str | None = None) -> tuple[object, str]:
+    def call(self, method: str, params: list, avoid: str | None = None, *,
+             allowed: frozenset[str] | None = None) -> tuple[object, str]:
         """(result, url of the endpoint that answered). ``avoid`` skips one endpoint if another exists."""
         last = RpcError("no_attempt")
         for _ in range(self.attempts):
-            e = self._reserve(avoid)
+            e = self._reserve(avoid, allowed)
             try:
                 res = self.transport(e.url, method, params)
             except Exception as x:  # anything from the transport is that endpoint's failure

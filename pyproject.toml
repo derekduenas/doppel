@@ -49,6 +49,7 @@ doppel-structural = "doppel.lab.structural:main"
 doppel-bridge = "doppel.lab.bridge:main"
 doppel-desk = "doppel.desk.cli:main"
 doppel-answerkey = "doppel.lab.answerkey:main"
+doppel-absorb = "doppel.lab.absorb:main"
 
 [dependency-groups]
 dev = [
