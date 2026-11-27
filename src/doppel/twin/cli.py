@@ -97,6 +97,8 @@ def main(argv=None) -> int:
     ap.add_argument("--latency-ms", type=float, default=250.0)
     ap.add_argument("--brti-delay-s", type=int, default=SimConfig().brti_delay_s)
     ap.add_argument("--fair-lag-s", type=int, default=0)
+    ap.add_argument("--opening", choices=("published", "received_raw"), default="published",
+                    help="opening price rule (docs/decisions/2026-11-27-opening-price-protocol.md)")
     ap.add_argument("--depth-levels", type=int, default=10)
     ap.add_argument("--block", type=int, default=12, help="bootstrap block length in windows")
     ap.add_argument("--boot", type=int, default=2000)
@@ -130,6 +132,7 @@ def main(argv=None) -> int:
             print(f"unknown horizon {h}", file=sys.stderr)
             return 2
     cfg = SimConfig(latency_ms=a.latency_ms, brti_delay_s=a.brti_delay_s, fair_lag_s=a.fair_lag_s,
+                    opening=a.opening,
                     depth_levels=a.depth_levels, min_trade_coverage=a.min_trade_coverage,
                     skip_unidentified=a.skip_unidentified)
     meta: dict = {}

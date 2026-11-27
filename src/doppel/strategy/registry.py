@@ -17,6 +17,11 @@ edge. The registry makes the search itself part of the record:
   binding). An early pass needs family e-Holm across every registered variant. These events are
   statistical only: the commercial hurdle and owner authorization stay separate, and the
   end-of-window ``result`` path is unchanged. ``sequential_ledger(family)`` summarises them.
+* ``bind_protocol`` (kind ``protocol``) binds a named evaluation protocol (name, version, parameters
+  and their digest, evaluator code hash) to a registered genome or to every genome registered in a
+  family so far, listed explicitly. Only before the earliest covered evaluation window closes; one
+  binding per genome (re-binding the same target to the same protocol is a no-op). A binding result
+  or early event for a bound genome must come from that exact protocol.
 * ``verify`` re-checks the chain: each line carries ``prev`` = sha256 of the previous line's bytes
   and ``hash`` = sha256 of its own canonical JSON without ``hash``; every stored genome must still
   hash to its id. ``head`` is the last line's hash, to anchor externally (an attacker who rewrites
@@ -103,6 +108,42 @@ def git_sha(cwd: Path | None = None) -> dict:
         return {"sha": sha or None, "dirty": dirty}
     except (OSError, subprocess.SubprocessError):
         return {"sha": None, "dirty": None}
+
+
+def protocol_digest(params: dict) -> str:
+    """sha256 of an evaluation protocol's parameters (canonical JSON)."""
+    return _sha(_canon(params))
+
+
+PROTOCOL_KEYS = ("name", "version", "params_sha256", "code_sha256")
+
+
+def protocol_matches(bound: dict, evaluation: dict | None) -> bool:
+    """Did an evaluation (``replay_snapshot`` evidence) run exactly the bound protocol?"""
+    if not isinstance(evaluation, dict):
+        return False
+    ran = {**(evaluation.get("protocol") or {}), "code_sha256": evaluation.get("code_sha256")}
+    return all(ran.get(k) == bound.get(k) for k in PROTOCOL_KEYS)
+
+
+def _protocol_problems(protocol) -> list[str]:
+    if not isinstance(protocol, dict):
+        return ["protocol is not an object"]
+    errs = []
+    if not isinstance(protocol.get("name"), str) or not protocol["name"]:
+        errs.append("protocol name missing")
+    if type(protocol.get("version")) is not int:
+        errs.append("protocol version must be an integer")
+    for k in ("params_sha256", "code_sha256"):
+        v = protocol.get(k)
+        if not (isinstance(v, str) and len(v) == 64 and all(c in "0123456789abcdef" for c in v)):
+            errs.append(f"protocol {k} must be a sha256 hex digest")
+    params = protocol.get("params")
+    if not isinstance(params, dict):
+        errs.append("protocol params missing")
+    elif protocol_digest(params) != protocol.get("params_sha256"):
+        errs.append("protocol params do not hash to params_sha256")
+    return errs
 
 
 def holm(pvals: list[float]) -> list[float]:
@@ -249,6 +290,10 @@ class Registry:
                 if (vd.get("p_source") != "twin-replay" or not isinstance(actual, dict)
                         or any(actual.get(k) != v for k, v in protocol.items())):
                     raise RegistryError("result does not match the preregistered evaluation protocol")
+            bound = _binding(recs, genome_id)
+            if bound is not None and not nonbinding and not protocol_matches(bound, vd.get("evaluation")):
+                raise RegistryError(f"genome is bound to evaluation protocol {bound['name']} v{bound['version']}: "
+                                    "this result was not produced by it")
             if not manual:
                 w = reg["eval_window"]
                 if data_range != (w["start_s"], w["end_s"]):
@@ -260,6 +305,51 @@ class Registry:
                     "family": reg["family"], "binding": (not nonbinding) and prior == 0,
                     "data_range": list(data_range) if data_range else None, "verdict": vd}
         return self._append(build)
+
+    # -- evaluation protocol binding
+    def protocol_binding(self, genome_id: str) -> dict | None:
+        """The protocol bound to ``genome_id`` (None = unbound)."""
+        return _binding(self.records(), genome_id)
+
+    def plan_protocol_binding(self, protocol: dict, *, family: str | None = None,
+                              genome_id: str | None = None) -> dict:
+        """The ``protocol`` record ``bind_protocol`` would append now (without seq/prev/hash), or
+        the existing identical record (it carries ``hash``). Writes nothing."""
+        return self._protocol_record(self.records(), protocol, family, genome_id)
+
+    def bind_protocol(self, protocol: dict, *, family: str | None = None,
+                      genome_id: str | None = None) -> dict:
+        """Append a ``protocol`` record binding ``protocol`` to a family or one genome."""
+        return self._append(lambda recs: self._protocol_record(recs, protocol, family, genome_id))
+
+    def _protocol_record(self, recs: list[dict], protocol: dict, family: str | None,
+                         genome_id: str | None) -> dict:
+        if (family is None) == (genome_id is None):
+            raise RegistryError("bind exactly one of a family or a genome id")
+        errs = _protocol_problems(protocol)
+        if errs:
+            raise RegistryError("; ".join(errs))
+        protocol = orjson.loads(orjson.dumps({k: protocol[k] for k in (*PROTOCOL_KEYS, "params")}))
+        regs = [r for r in recs if r["kind"] == "register"
+                and (r["family"] == family if family is not None else r["genome_id"] == genome_id)]
+        if not regs:
+            raise RegistryError(f"no registered genome for {'family ' + str(family) if family else genome_id}")
+        target = {"family": family} if family is not None else {"genome_id": genome_id}
+        ids = [r["genome_id"] for r in regs]
+        for r in recs:
+            if (r["kind"] == "protocol" and r["target"] == target and r["protocol"] == protocol
+                    and r["genome_ids"] == ids):
+                return r    # idempotent: this exact binding already exists
+        taken = [g for g in ids if _binding(recs, g) is not None]
+        if taken:
+            raise RegistryError(f"already bound to an evaluation protocol: {', '.join(g[:12] for g in taken)} "
+                                "(a binding is never replaced)")
+        now = self._now()
+        closes = min(r["eval_window"]["end_s"] for r in regs)
+        if now >= closes:
+            raise RegistryError(f"evaluation window closed {iso(closes)}: a protocol binds only before then")
+        return {"kind": "protocol", "tw": int(now * 1e9), "target": target, "family": regs[0]["family"],
+                "genome_ids": ids, "closes_s": closes, "protocol": protocol}
 
     # -- ledger
     def ledger(self, family: str, alpha: float = ALPHA) -> dict:
@@ -316,6 +406,10 @@ class Registry:
             m = self._monitor(recs, genome_id, results, alpha, now, source, previous=mine[-1] if mine else None)
             if (results.get("twin") or {}).get("diagnostic"):
                 raise RegistryError("twin run is DIAGNOSTIC (relaxed data gates): not evidence, not recorded")
+            bound = _binding(recs, genome_id)
+            if bound is not None and not protocol_matches(bound, (source or {}).get("evaluation")):
+                raise RegistryError(f"genome is bound to evaluation protocol {bound['name']} v{bound['version']}: "
+                                    "this monitoring run was not produced by it")
             if m["stats"]["n_blocks"] < 1:
                 raise RegistryError(f"no complete block of {m['params']['block']} windows inside the "
                                     "evaluation window yet")
@@ -444,6 +538,7 @@ class Registry:
         prev = GENESIS
         regs: dict[str, dict] = {}
         seen_early: set[str] = set()
+        bound: set[str] = set()
         parts = data.split(b"\n")
         for i, ln in enumerate(parts):
             if not ln:
@@ -486,11 +581,43 @@ class Registry:
                     errs.append(f"line {i}: result recorded before the evaluation window closed")
             elif kind in SEQ_KINDS:
                 errs.extend(_verify_seq(i, r, regs.get(gid), seen_early))
+            elif kind == "protocol":
+                errs.extend(_verify_protocol(i, r, regs, bound))
             else:
                 errs.append(f"line {i}: unknown kind {kind!r}")
             prev = _sha(ln)
         return errs
 
+
+
+def _binding(recs: list[dict], genome_id: str) -> dict | None:
+    for r in recs:
+        if r["kind"] == "protocol" and genome_id in r["genome_ids"]:
+            return r["protocol"]
+    return None
+
+
+def _verify_protocol(i: int, r: dict, regs: dict[str, dict], bound: set[str]) -> list[str]:
+    """Checks for one protocol binding line (updates ``bound``)."""
+    errs = [f"line {i}: {e}" for e in _protocol_problems(r.get("protocol"))]
+    ids, target = r.get("genome_ids"), r.get("target") or {}
+    if not isinstance(ids, list) or not ids:
+        return [*errs, f"line {i}: protocol binding covers no genome"]
+    covered = [regs.get(str(g)) for g in ids]
+    if any(c is None for c in covered):
+        return [*errs, f"line {i}: protocol binding for a genome not registered before it"]
+    if "family" in target:
+        expected = [g for g, reg in regs.items() if reg["family"] == target["family"]]
+    else:
+        expected = [target.get("genome_id")]
+    if ids != expected:
+        errs.append(f"line {i}: protocol binding genomes differ from its target {target}")
+    if any(r.get("tw", 0) >= c["eval_window"]["end_s"] * 1e9 for c in covered if c is not None):
+        errs.append(f"line {i}: protocol bound after an evaluation window closed")
+    if any(str(g) in bound for g in ids):
+        errs.append(f"line {i}: genome bound to an evaluation protocol twice")
+    bound.update(map(str, ids))
+    return errs
 
 
 def _verify_seq(i: int, r: dict, reg: dict | None, seen_early: set[str]) -> list[str]:
