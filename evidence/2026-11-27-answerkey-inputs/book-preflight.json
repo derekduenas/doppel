@@ -1,0 +1,35 @@
+{
+  "baseline_hot_root": "/mnt/volume_nyc1_1793485122853/doppel/tape",
+  "checked_utc": "2026-11-27T02:45:04.525612+00:00",
+  "elapsed_s": 158.303176,
+  "holdout": {
+    "book_pairs": 36,
+    "expected": 36,
+    "mapped": 36,
+    "resolved": 36
+  },
+  "hot_manifest_match": true,
+  "preflight_module_sha256": "cd255db2e515947e8b687532fa399313db8f1b6ee8d091bf36d62635746ffe47",
+  "range": [
+    1795672800,
+    1795683600,
+    1795694400
+  ],
+  "segment_sha256": {
+    "20261126/06.dtape.zst": "6f32f771011ac3c96dfda1ca615bf7d660ccae9d28077fbbd99bc3cc4048a398",
+    "20261126/07.dtape.zst": "44207aafd4579a90489abbcd0e1c4421ad17fbeddbc886f7f0006d411331a749",
+    "20261126/08.dtape.zst": "bdd5184849ec69d3fded6717f5acff8876c69011770786bd0bce35676605e671",
+    "20261126/09.dtape.zst": "439be5cb5e82304fa2bd5827120752e814cc3845b305b4a711be5fb6da6f7f1b",
+    "20261126/10.dtape.zst": "d039678d81326687943d22ffce1fc57af00264dc3d9989279b148c913e8bdd18",
+    "20261126/11.dtape.zst": "4c7b7a6bc2df62e9da4ce8c1c9427570a429d0d1d73cc210c4990d479c365a1c"
+  },
+  "stream": "clob_btc_5m",
+  "tokens_sha256": "7f4e995fa7f11f9a2f326170967076161016272dd0b60e6795f7108ca03e3809",
+  "train": {
+    "book_pairs": 36,
+    "expected": 36,
+    "mapped": 36,
+    "resolved": 36
+  },
+  "verified_archive": "/var/backups/doppel-sealed-20261126/tape"
+}

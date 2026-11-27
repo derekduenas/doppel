@@ -881,12 +881,12 @@ def truth_copy(t: dict) -> str | None:
 NA = "n/a"   # no defined answer: not scored
 # per policy: what is true by construction (the measured parts come from truth_summary)
 EXPECT = {
-    "midpoint_maker": {"ref": "mid", "skew": 0.0, "ladder": False, "explained": True, "expressible": NA},
-    "fair_maker": {"ref": "fair", "skew": 0.05, "ladder": False, "explained": True, "expressible": True},
-    "complete_set": {"ref": "touch", "skew": 0.0, "ladder": False, "explained": True, "expressible": NA},
-    "touch_ladder": {"ref": "touch", "skew": 0.0, "ladder": True, "explained": True, "expressible": NA},
-    "random_taker": {"ref": None, "skew": None, "ladder": None, "explained": False, "expressible": False},
-    "hidden_signal": {"ref": "touch", "skew": 0.0, "ladder": False, "explained": False, "expressible": False},
+    "midpoint_maker": {"ref": "mid", "ladder": False, "explained": True, "expressible": NA},
+    "fair_maker": {"ref": "fair", "ladder": False, "explained": True, "expressible": True},
+    "complete_set": {"ref": "touch", "ladder": False, "explained": True, "expressible": NA},
+    "touch_ladder": {"ref": "touch", "ladder": True, "explained": True, "expressible": NA},
+    "random_taker": {"ref": None, "ladder": None, "explained": False, "expressible": False},
+    "hidden_signal": {"ref": "touch", "ladder": False, "explained": False, "expressible": False},
 }
 OBLIGATIONS = ("size_rule", "price_reference", "price_offset", "skew", "cadence", "cancel_rule", "ladder",
                "fill_footprint", "copyability", "fidelity_verdict", "explained_by_observed_inputs")
@@ -1159,9 +1159,9 @@ def run_tools(pub: Path, out: Path, wallet: str, t_from: int, split: int, t_to: 
     if g.exists() and (not fidelity or (fidelity.get("verdict") or {}).get("decision") not in ("PASS","FAIL","INCONCLUSIVE")):
         raise ValueError(f"missing fidelity result for emitted genome; see {out / 'fidelity.log'}")
     return info | {
-        "ordermatch": ((_load(om / "ordermatch.json") or {}).get("wallets") or {}).get(wallet),
-        "orderreplay": _load(out / "orderreplay" / "orderreplay.json"),
-        "profile": _load(out / "profile" / f"{wallet}.ledger.json"),
+        "ordermatch": orjson.loads((om / "ordermatch.json").read_bytes())["wallets"][wallet],
+        "orderreplay": orjson.loads((out / "orderreplay" / "orderreplay.json").read_bytes()),
+        "profile": orjson.loads((out / "profile" / f"{wallet}.ledger.json").read_bytes()),
         "rulefit": report, "genome": _load(g), "fidelity": fidelity}
 
 
