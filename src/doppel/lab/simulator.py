@@ -59,7 +59,9 @@ import hashlib
 import math
 import os
 import resource
+import shutil
 import sys
+import tempfile
 import time
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
@@ -82,6 +84,9 @@ RESERVED_SEEDS = frozenset({271031, 271067, 271091})   # docs/ANSWERKEY.md exam 
 DECISIONS = ("market", "timing", "side", "price", "size", "exit")
 NULL_CLASS = ("null", "random_taker")
 FLAG_ID, FLAG_PARTIAL = 0.5, 0.8
+EDGE = 0.02          # an interval end this close to a prior bound (share of the prior range) is truncated
+RIDGE = 1.0          # ridge penalty of the local-linear regression adjustment (standardized statistics)
+CAL_MIN_N, CAL_COVER = 10, 0.9   # IDENTIFIED needs >= CAL_MIN_N narrow self-check cells covered >= CAL_COVER
 MISSING_Z = 3.0
 PPC_PAD = 0.5
 
@@ -117,6 +122,17 @@ class Prior:
     def t(self, x: float) -> float:
         """Width space: log for a log-uniform prior."""
         return math.log(x) if self.kind == "loguniform" else float(x)
+
+    def to_u(self, x: float) -> float:
+        """Unbounded coordinate (logit of the position in the prior range) for the regression adjustment."""
+        q = (self.t(x) - self.t(self.lo)) / (self.t(self.hi) - self.t(self.lo))
+        q = min(max(q, 1e-6), 1 - 1e-6)
+        return math.log(q / (1 - q))
+
+    def from_u(self, u: float) -> float:
+        q = 1 / (1 + math.exp(-u))
+        v = self.t(self.lo) + q * (self.t(self.hi) - self.t(self.lo))
+        return math.exp(v) if self.kind == "loguniform" else v
 
     def index(self, v) -> int:
         key = tuple(v) if isinstance(v, list) else v
@@ -518,14 +534,17 @@ def _one(task: tuple) -> dict:
 
 
 def build_table(root: Path, tokens: Path, stream: str, t_from: int, t_to: int, families: dict, n: int, seed: int,
-                workers: int = 1) -> list[dict]:
-    """``n`` prior draws per family, each simulated once. Deterministic for a seed, whatever ``workers``."""
+                workers: int = 1, start: int = 0) -> list[dict]:
+    """Prior draws ``start``..``n - 1`` of each family, each simulated once. Deterministic for a seed,
+    whatever ``workers``; rows ``0..m`` are the same for every ``n > m``, so a table can be extended."""
     _check_seed(seed)
     tasks = []
     for fname, fam in families.items():
         rng = np.random.default_rng(derive_seed(seed, "prior", fname))
         for i in range(n):
-            tasks.append((fname, i, fam.draw(rng), derive_seed(seed, "candidate", fname, i), families))
+            p = fam.draw(rng)
+            if i >= start:
+                tasks.append((fname, i, p, derive_seed(seed, "candidate", fname, i), families))
     need_fair = any(f.key == "b" for f in families.values())
     args = (str(root), stream, str(tokens), t_from, t_to, need_fair)
     if workers <= 1:
@@ -591,16 +610,50 @@ def credible_set(prior: Prior, vals: list) -> list:
     return [list(v) if isinstance(v, tuple) else v for v in out]
 
 
-def param_summary(prior: Prior, post: list, ref: list[float]) -> dict:
-    w = _width(prior, post)
+def wquantile(v: np.ndarray, w: np.ndarray, q: float) -> float:
+    o = np.argsort(v, kind="stable")
+    c = np.cumsum(w[o])
+    return float(np.interp(q * c[-1], c - w[o] / 2, v[o]))
+
+
+def adjust(prior: Prior, vals: list, Z: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """Local-linear regression adjustment (Beaumont, Zhang and Balding 2002), in the prior's logit
+    coordinate, ridge-penalized: theta* = theta - beta (s - s_obs)."""
+    y = np.array([prior.to_u(v) for v in vals])
+    A = np.hstack([np.ones((len(y), 1)), Z])
+    pen = np.diag([0.0] + [RIDGE] * Z.shape[1])
+    beta = np.linalg.solve(A.T @ (A * w[:, None]) + pen, A.T @ (w * y))
+    return np.array([prior.from_u(u) for u in y - Z @ beta[1:]])
+
+
+def param_summary(prior: Prior, post: list, ref: list[float], adj: np.ndarray | None = None,
+                  w: np.ndarray | None = None, calibrated: bool = False) -> dict:
+    """Posterior summary. The primary interval is the rejection one; the regression-adjusted interval
+    (``adjusted``) is reported beside it. On the development table the adjusted intervals under-covered
+    (table self-check 0.84 vs 0.92 at 300 draws per family), so they never set the flag.
+    IDENTIFIED needs a narrow primary interval, no prior-edge truncation and a passing table self-check."""
     ref_w = float(np.median(ref)) if ref else NAN
-    ratio = w / ref_w if ref_w > 0 else 1.0
-    flag = "IDENTIFIED" if ratio <= FLAG_ID else "PARTIAL" if ratio <= FLAG_PARTIAL else "UNIDENTIFIED"
     if prior.kind == "choice":
         cs = credible_set(prior, post)
-        return {"map": cs[0], "credible_set_90": cs, "width_ratio": round(ratio, 3), "flag": flag}
-    return {"median": float(np.median(post)), "ci90": [float(np.quantile(post, 0.05)), float(np.quantile(post, 0.95))],
-            "width_ratio": round(ratio, 3), "flag": flag}
+        ratio = len(cs) / ref_w if ref_w > 0 else 1.0
+        out: dict = {"map": cs[0], "credible_set_90": cs}
+        edge = False
+    else:
+        lo, hi = float(np.quantile(post, 0.05)), float(np.quantile(post, 0.95))
+        span = prior.t(prior.hi) - prior.t(prior.lo)
+        ratio = (prior.t(hi) - prior.t(lo)) / ref_w if ref_w > 0 else 1.0
+        edge = prior.t(lo) <= prior.t(prior.lo) + EDGE * span or prior.t(hi) >= prior.t(prior.hi) - EDGE * span
+        out = {"median": float(np.median(post)), "ci90": [lo, hi]}
+        if adj is not None:
+            ww = np.ones(len(adj)) if w is None else w
+            out["adjusted"] = {"median": wquantile(adj, ww, 0.5),
+                               "ci90": [wquantile(adj, ww, 0.05), wquantile(adj, ww, 0.95)]}
+    narrow = ratio <= FLAG_ID and not edge
+    flag = ("IDENTIFIED" if narrow and calibrated else "PARTIAL" if ratio <= FLAG_PARTIAL
+            else "UNIDENTIFIED")
+    caps = [c for c, on in (("prior_edge", ratio <= FLAG_ID and edge),
+                            ("self_check", narrow and not calibrated)) if on]
+    return out | {"width_ratio": round(ratio, 3), "narrow": narrow, "capped_by": caps, "flag": flag}
 
 
 def covers(prior: Prior, summary: dict, truth) -> bool:
@@ -632,7 +685,7 @@ def pnl_weights(fam: Family, rows: list[dict]) -> dict:
 
 
 def infer(meta: dict, table: list[dict], x_obs: dict, families: dict | None = None, accept: float = 0.1,
-          seed: int = 1) -> dict:
+          seed: int = 1, calib: dict | None = None) -> dict:
     """Rejection ABC of one observed footprint against the reference table (see module docstring)."""
     families = families or FAMILIES
     rng = np.random.default_rng(_check_seed(seed))
@@ -683,12 +736,21 @@ def infer(meta: dict, table: list[dict], x_obs: dict, families: dict | None = No
             if not col.min() - PPC_PAD * sc[jf] <= x[jf] <= col.max() + PPC_PAD * sc[jf]:
                 misfit.append(name)
         ref_rows = [table[i] for i in ix]
+        # regression adjustment inputs: standardized (capped) statistic differences, Epanechnikov weights
+        Z = np.clip((A - x) / sc, -MISSING_Z, MISSING_Z)
+        Z = np.where(np.isfinite(A) & np.isfinite(x), Z, 0.0)
+        h = float(dd[order].max()) * (1 + 1e-6) or 1.0
+        wk = np.maximum(1 - (dd[order] / h) ** 2, 1e-9)
         params = {}
         for name, prior in fam.prior.items():
             post = [r["params"][name] for r in acc]
             ref = [_width(prior, [ref_rows[i]["params"][name] for i in rng.choice(len(ref_rows), k, replace=False)])
                    for _ in range(200)]
-            params[name] = param_summary(prior, post, ref)
+            ok = bool(calib and (calib.get(f"{f}.{name}") or {}).get("eligible"))
+            if prior.kind == "choice":
+                params[name] = param_summary(prior, post, ref, calibrated=ok)
+            else:
+                params[name] = param_summary(prior, post, ref, adjust(prior, post, Z, wk), wk, ok)
         out["families"][f] = {"prob": round(float(probs[j]), 4),
                               "prob_ci90": [round(float(np.quantile(dir_draws[:, j], q)), 4) for q in (0.05, 0.95)],
                               "d_knn": round(D_obs, 4), "adequacy_p": round(p_adeq, 4), "misfit": misfit,
@@ -796,6 +858,7 @@ def harness_totals(subjects: list[dict]) -> dict:
     cov = sum(c["covered"] for c in cells)
     ident = [c for c in cells if c["flag"] == "IDENTIFIED"]
     wrong = [c for c in ident if not c["covered"]]
+    narrow = [c for c in cells if c["summary"]["narrow"]]   # narrow and untruncated, before the self-check
     rule = [s for s in subjects if s["true_family"] not in NULL_CLASS + ("hidden_signal",)]
     sel = sum(s["explained"] and s["best"] == s["true_family"] for s in rule)
     hidden = [s for s in subjects if s["true_family"] == "hidden_signal"]
@@ -804,7 +867,12 @@ def harness_totals(subjects: list[dict]) -> dict:
             "coverage_ci95": wilson(cov, len(cells)),
             "identified": len(ident), "false_confidence": len(wrong),
             "false_confidence_rate": round(len(wrong) / len(ident), 4) if ident else None,
+            "narrow": len(narrow), "narrow_wrong": sum(not c["covered"] for c in narrow),
+            "wrong_cells": [{"subject": s["seed"], "family": s["true_family"], "param": k, "truth": c["truth"],
+                             "summary": c["summary"]} for s in subjects for k, c in s["cells"].items()
+                            if c["flag"] == "IDENTIFIED" and not c["covered"]],
             "rule_subjects": len(rule), "rule_explained": sum(s["explained"] for s in rule),
+            "explained_by_wrong_family": sum(s["explained"] and s["best"] != s["true_family"] for s in subjects),
             "family_selection_accuracy": round(sel / len(rule), 4) if rule else None,
             "family_selection_ci95": wilson(sel, len(rule)),
             "hidden_signal": [{"explained": s["explained"], "verdict": s["verdict"], "reasons": s["reasons"]}
@@ -813,8 +881,11 @@ def harness_totals(subjects: list[dict]) -> dict:
             "decoys_unexplained": sum(not s["explained"] for s in decoy), "decoys": len(decoy)}
 
 
-def loo_coverage(meta: dict, table: list[dict], families: dict, per_family: int, accept: float, seed: int) -> dict:
-    """Simulation-based calibration on the table itself: each held-out row is a pseudo-subject."""
+def calibrate(table: list[dict], families: dict, per_family: int, accept: float, seed: int) -> dict:
+    """Table self-check (simulation-based calibration): each of ``per_family`` held-out rows per rule
+    family is a pseudo-subject inferred against the rest of the table. A parameter is ELIGIBLE for
+    IDENTIFIED only if, over the held-out rows where its interval was narrow and untruncated, at least
+    CAL_MIN_N cells were seen and their truth was covered at least CAL_COVER of the time."""
     rng = np.random.default_rng(_check_seed(seed))
     cells: list[dict] = []
     for f, fam in families.items():
@@ -823,34 +894,43 @@ def loo_coverage(meta: dict, table: list[dict], families: dict, per_family: int,
         ix = [i for i, r in enumerate(table) if r["family"] == f]
         for i in rng.choice(ix, min(per_family, len(ix)), replace=False):
             rest = table[:i] + table[i + 1:]
-            res = infer(meta, rest, dict(zip(FEATURES, table[i]["x"])), families, accept, seed)
+            res = infer({}, rest, dict(zip(FEATURES, table[i]["x"])), families, accept, seed)
             if not res["explained"]:
                 cells.append({"family": f, "explained": False})
                 continue
             for name, prior in fam.prior.items():
-                s = res["families"][f]["params"][name]
-                cells.append({"family": f, "explained": True, "param": name, "flag": s["flag"],
-                              "covered": covers(prior, s, table[i]["params"][name])})
+                sm = res["families"][f]["params"][name]
+                truth = table[i]["params"][name]
+                cells.append({"family": f, "explained": True, "param": name, "narrow": sm["narrow"],
+                              "covered": covers(prior, sm, truth),
+                              "covered_adjusted": covers(prior, sm.get("adjusted", sm), truth)})
     sc = [c for c in cells if c["explained"]]
-    cov = sum(c["covered"] for c in sc)
-    ident = [c for c in sc if c["flag"] == "IDENTIFIED"]
-    return {"cells": len(sc), "coverage": round(cov / len(sc), 4) if sc else None, "coverage_ci95": wilson(cov, len(sc)),
-            "identified": len(ident), "false_confidence": sum(not c["covered"] for c in ident),
-            "unexplained_pseudo_subjects": sum(not c["explained"] for c in cells),
-            "by_param": _by_param(sc)}
-
-
-def _by_param(cells: list[dict]) -> dict:
     g: dict[str, list] = defaultdict(list)
-    for c in cells:
+    for c in sc:
         g[f"{c['family']}.{c['param']}"].append(c)
-    return {k: {"n": len(v), "coverage": round(sum(c["covered"] for c in v) / len(v), 3),
-                "identified": sum(c["flag"] == "IDENTIFIED" for c in v)} for k, v in sorted(g.items())}
+    params = {}
+    for key, v in sorted(g.items()):
+        nar = [c for c in v if c["narrow"]]
+        cn = sum(c["covered"] for c in nar)
+        params[key] = {"n": len(v), "coverage": round(sum(c["covered"] for c in v) / len(v), 3),
+                       "coverage_adjusted": round(sum(c["covered_adjusted"] for c in v) / len(v), 3),
+                       "n_narrow": len(nar), "coverage_narrow": round(cn / len(nar), 3) if nar else None,
+                       "eligible": len(nar) >= CAL_MIN_N and cn >= CAL_COVER * len(nar)}
+    cov = sum(c["covered"] for c in sc)
+    return {"per_family": per_family, "seed": seed, "cells": len(sc),
+            "coverage": round(cov / len(sc), 4) if sc else None, "coverage_ci95": wilson(cov, len(sc)),
+            "coverage_adjusted": round(sum(c["covered_adjusted"] for c in sc) / len(sc), 4) if sc else None,
+            "unexplained_pseudo_subjects": sum(not c["explained"] for c in cells),
+            "eligible": [k for k, v in params.items() if v["eligible"]], "params": params}
 
 
 def validate(root: Path, tokens: Path, stream: str, t_from: int, t_to: int, out: Path, n: int, per_family: int,
              hidden: int, seed: int, workers: int, accept: float, table_path: Path | None = None,
-             families: dict | None = None, loo: int = 0) -> dict:
+             families: dict | None = None, calib_rows: int = 60, calib_path: Path | None = None,
+             work: Path | None = None) -> dict:
+    """Each subject's public evidence (its own copy of the tape) is written under ``work`` and kept; without
+    ``work`` it goes to a temporary directory and is deleted as soon as its footprint is read. ``out`` keeps
+    only the table, calibration, each subject's ``inference.json`` (with its footprint) and ``validation.json``."""
     _check_seed(seed)
     families = families or FAMILIES
     out.mkdir(parents=True, exist_ok=False)
@@ -867,8 +947,14 @@ def validate(root: Path, tokens: Path, stream: str, t_from: int, t_to: int, out:
     if any(f.key == "b" for f in families.values()):
         from .rulefit import Fair
         fair = Fair(root, t_from, t_to)
+    t_cal = time.time()
+    if calib_path is not None:
+        calib = orjson.loads(calib_path.read_bytes())
+    else:
+        calib = calibrate(table, families, calib_rows, accept, seed)
+        (out / "calibration.json").write_bytes(orjson.dumps(calib, option=orjson.OPT_INDENT_2))
+    calib_s = round(time.time() - t_cal, 1)
     reserved = exam_params()
-    subjects = []
     plan: list[tuple[str | None, dict, int]] = []
     for f, fam in families.items():
         rng = np.random.default_rng(derive_seed(seed, "subject-prior", f))
@@ -881,27 +967,76 @@ def validate(root: Path, tokens: Path, stream: str, t_from: int, t_to: int, out:
     for j in range(hidden):
         plan.append((None, {k: p.draw(rng) for k, p in HIDDEN_PRIOR.items()}, derive_seed(seed, "subject", "hidden", j)))
     t1 = time.time()
-    for j, (f, p, s) in enumerate(plan):
-        d = out / "subjects" / f"{j:03d}-{f or 'hidden_signal'}"
-        wallet = make_subject(families[f] if f else None, p, s, root, tokens, stream, t_from, t_to, d, fair)
-        pub = d / "public"
-        fp = observed_footprint(pub / "tape", stream, pub / "orders.jsonl", pub / "lab" / "tokens.jsonl", wallet,
-                                t_from, t_to)
-        res = infer(meta, table, fp["x"], families, accept, seed)
-        (d / "inference.json").write_bytes(orjson.dumps(res, option=orjson.OPT_SERIALIZE_NUMPY))
-        row = score_subject(f, p, res, families) | {"params": p, "seed": s, "n_fills": fp["n_fills"]}
-        subjects.append(row)
-        print(f"{j:03d} {f or 'hidden_signal'}: fills {fp['n_fills']} -> {res['verdict']}", file=sys.stderr)
-    card = {"meta": meta, "accept": accept, "table_rows": len(table), "table_s": table_s,
+    tmp = None if work is not None else tempfile.TemporaryDirectory(prefix="doppel-sim-")
+    wroot = work if tmp is None else Path(tmp.name)
+    assert wroot is not None
+    try:
+        subjects = _run_subjects(plan, families, root, tokens, stream, t_from, t_to, out, wroot, work is None, fair,
+                                 meta, table, accept, seed, calib)
+    finally:
+        if tmp is not None:
+            tmp.cleanup()
+    card = {"meta": meta, "run_seed": seed, "accept": accept, "table_rows": len(table), "table_s": table_s, "calib_s": calib_s,
+            "calibration": {k: v for k, v in calib.items() if k != "params"},
             "subjects_s": round(time.time() - t1, 1),
             "sim_s_median": float(np.median([r["sim_s"] for r in table])) if table else None,
             "totals": harness_totals(subjects), "subjects": subjects,
             "peak_rss_mb": {"self": _mb(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss),
                             "workers": _mb(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)}}
-    if loo:
-        card["table_loo"] = loo_coverage(meta, table, families, loo, accept, seed)
     (out / "validation.json").write_bytes(orjson.dumps(card, option=orjson.OPT_INDENT_2 | orjson.OPT_SERIALIZE_NUMPY))
     return card
+
+
+def _run_subjects(plan, families, root, tokens, stream, t_from, t_to, out, wroot, discard, fair, meta, table, accept,
+                  seed, calib) -> list[dict]:
+    subjects = []
+    for j, (f, p, s) in enumerate(plan):
+        name = f"{j:03d}-{f or 'hidden_signal'}"
+        d, w = out / "subjects" / name, wroot / name
+        d.mkdir(parents=True, exist_ok=True)
+        wallet = make_subject(families[f] if f else None, p, s, root, tokens, stream, t_from, t_to, w, fair)
+        pub = w / "public"
+        fp = observed_footprint(pub / "tape", stream, pub / "orders.jsonl", pub / "lab" / "tokens.jsonl", wallet,
+                                t_from, t_to)
+        if discard:
+            shutil.rmtree(w)
+        res = infer(meta, table, fp["x"], families, accept, seed, calib["params"])
+        (d / "inference.json").write_bytes(orjson.dumps(res, option=orjson.OPT_SERIALIZE_NUMPY))
+        row = score_subject(f, p, res, families) | {"params": p, "seed": s, "n_fills": fp["n_fills"]}
+        subjects.append(row)
+        print(f"{j:03d} {f or 'hidden_signal'}: fills {fp['n_fills']} -> {res['verdict']}", file=sys.stderr)
+    return subjects
+
+
+def rescore(table_path: Path, calib_path: Path, runs: list[tuple[Path, int | None]],
+            families: dict | None = None) -> dict:
+    """Re-infer the saved footprints of earlier ``validate`` runs (each subject's ``inference.json`` keeps its
+    footprint) under the current rule, table and calibration; no simulation. Needs only each run's
+    ``validation.json`` and ``subjects/*/inference.json``. ``runs`` pairs a run directory with its seed
+    (None: the card's ``run_seed``)."""
+    meta, table = read_table(table_path)
+    fams = families or {f: FAMILIES[f] for f in meta["families"] if f in FAMILIES}
+    calib = orjson.loads(calib_path.read_bytes())["params"]
+    out: dict = {"runs": {}}
+    pooled: list[dict] = []
+    for run, seed in runs:
+        card = orjson.loads((run / "validation.json").read_bytes())
+        seed = seed if seed is not None else card.get("run_seed")
+        if seed is None:
+            raise ValueError(f"{run}: the card has no run_seed; give it as DIR=SEED")
+        dirs = sorted(d for d in (run / "subjects").iterdir() if d.is_dir())
+        if len(dirs) != len(card["subjects"]):
+            raise ValueError(f"{run}: {len(dirs)} subject dirs for {len(card['subjects'])} card subjects")
+        subs = []
+        for d, s in zip(dirs, card["subjects"]):
+            x = orjson.loads((d / "inference.json").read_bytes())["features"]
+            res = infer(meta, table, x, fams, card["accept"], seed, calib)
+            tf = None if s["true_family"] == "hidden_signal" else s["true_family"]
+            subs.append(score_subject(tf, s["params"], res, fams) | {"seed": s["seed"], "n_fills": s["n_fills"]})
+        out["runs"][str(run)] = {"seed": seed, "totals": harness_totals(subs)}
+        pooled += subs
+    out["pooled"] = harness_totals(pooled)
+    return out
 
 
 def _mb(maxrss: int) -> float:
@@ -938,17 +1073,35 @@ def main(argv=None) -> int:
     v.add_argument("--hidden", type=int, default=3, help="hidden-signal subjects")
     v.add_argument("--accept", type=float, default=0.1)
     v.add_argument("--table", type=Path, help="reuse a reference table built on the same tape and range")
-    v.add_argument("--loo", type=int, default=0, help="table rows per family for leave-one-out calibration")
+    v.add_argument("--calib-rows", type=int, default=60, help="held-out table rows per family for the self-check")
+    v.add_argument("--calibration", type=Path, help="reuse a calibration.json made from the same table")
+    v.add_argument("--work", type=Path, help="keep each subject's public evidence (its own tape copy) here; by "
+                                             "default it goes to a temp dir and is deleted once its footprint is read")
+    r = sub.add_parser("rescore", help="re-infer saved validate runs under the current rule (no simulation)")
+    r.add_argument("--table", type=Path, required=True)
+    r.add_argument("--calibration", type=Path, required=True)
+    r.add_argument("runs", nargs="+", help="validate output dirs, each optionally DIR=SEED")
+    r.add_argument("--out", type=Path, help="write the rescore JSON here")
     i = sub.add_parser("infer")
     i.add_argument("--table", type=Path, required=True)
     i.add_argument("--tape", type=Path, required=True, help="tape root holding the wallet's public book")
     i.add_argument("--orders", type=Path, required=True, help="ordertape JSONL rows")
     i.add_argument("--tokens", type=Path, required=True)
     i.add_argument("--wallet", required=True)
+    i.add_argument("--calibration", type=Path, help="calibration.json of the same table; without it nothing is "
+                                                    "IDENTIFIED (at most PARTIAL)")
     i.add_argument("--accept", type=float, default=0.1)
     i.add_argument("--seed", type=int, default=1)
     i.add_argument("--out", type=Path, required=True)
     a = ap.parse_args(argv)
+    if a.cmd == "rescore":
+        runs: list[tuple[Path, int | None]] = [
+            (Path(x.rpartition("=")[0]), int(x.rpartition("=")[2])) if "=" in x else (Path(x), None) for x in a.runs]
+        rs = rescore(a.table, a.calibration, runs)
+        if a.out:
+            a.out.write_bytes(orjson.dumps(rs, option=orjson.OPT_INDENT_2 | orjson.OPT_SERIALIZE_NUMPY))
+        print(orjson.dumps(rs, option=orjson.OPT_INDENT_2 | orjson.OPT_SERIALIZE_NUMPY).decode())
+        return 0
     try:
         _check_seed(a.seed)
     except ValueError as exc:
@@ -969,13 +1122,15 @@ def main(argv=None) -> int:
         if a.out.exists():
             ap.error("the run requires a fresh output directory")
         card = validate(a.data, a.tokens, a.stream, a.t_from, a.t_to, a.out, a.n, a.per_family, a.hidden, a.seed,
-                        a.workers, a.accept, a.table, _families(a.families), a.loo)
+                        a.workers, a.accept, a.table, _families(a.families), a.calib_rows, a.calibration, a.work)
         print(orjson.dumps(card["totals"], option=orjson.OPT_INDENT_2).decode())
         return 0
     meta, table = read_table(a.table)
     fp = observed_footprint(a.tape, meta["stream"], a.orders, a.tokens, a.wallet, meta["from"], meta["to"])
     fams = {f: FAMILIES[f] for f in meta["families"] if f in FAMILIES}
-    res = infer(meta, table, fp["x"], fams, a.accept, a.seed) | {"n_fills": fp["n_fills"]}
+    calib = orjson.loads(a.calibration.read_bytes())["params"] if a.calibration else None
+    res = infer(meta, table, fp["x"], fams, a.accept, a.seed, calib) | {"n_fills": fp["n_fills"],
+                                                                         "calibrated": calib is not None}
     a.out.mkdir(parents=True, exist_ok=True)
     (a.out / "inference.json").write_bytes(orjson.dumps(res, option=orjson.OPT_INDENT_2 | orjson.OPT_SERIALIZE_NUMPY))
     print(res["verdict"])

@@ -131,3 +131,54 @@ def test_gates_band_and_cancel_age():
     near = Ctx(0, 10_000, w, {"U": (0.40, 0.42), "D": (0.58, 0.60)}, [old], 0.0, None, np.random.default_rng(0))
     acts = pol.decide(near)
     assert ("cancel", "o1") in acts and acts.count(("cancel", "o1")) == 1
+
+
+def test_regression_adjustment_removes_the_linear_dependence_on_the_statistics():
+    """theta depends linearly (in the logit coordinate) on a statistic: the adjusted particles collapse
+    onto the value at the observed statistic."""
+    import numpy as np
+
+    prior = S.U(0.0, 10.0)
+    rng = np.random.default_rng(3)
+    z = rng.uniform(-1, 1, 200)
+    vals = [prior.from_u(0.4 + 1.5 * v + rng.normal(0, 0.05)) for v in z]
+    adj = S.adjust(prior, vals, z[:, None], np.ones(200))
+    assert np.std(adj) < 0.2 * np.std(vals) and abs(np.median(adj) - prior.from_u(0.4)) < 0.1
+
+
+def test_identified_needs_a_narrow_untruncated_interval_and_a_passing_self_check():
+    import numpy as np
+
+    prior = S.U(0.0, 10.0)
+    ref = [9.0] * 10                      # a random subset of the prior spans ~9
+    mid = np.linspace(4.0, 5.0, 30)       # narrow, far from the bounds
+    edge = np.linspace(9.0, 10.0, 30)     # narrow, touching the upper bound
+    assert S.param_summary(prior, list(mid), ref, mid, None, True)["flag"] == "IDENTIFIED"
+    s = S.param_summary(prior, list(mid), ref, mid, None, False)
+    assert s["flag"] == "PARTIAL" and s["capped_by"] == ["self_check"] and s["narrow"]
+    s = S.param_summary(prior, list(edge), ref, edge, None, True)
+    assert s["flag"] == "PARTIAL" and s["capped_by"] == ["prior_edge"] and not s["narrow"]
+
+
+def test_self_check_reports_eligibility_per_parameter(table):
+    cal = S.calibrate(table, FAMS, 4, 0.2, 5)
+    assert set(cal["params"]) <= {"midpoint_maker.h_c", "midpoint_maker.dummy"}
+    for v in cal["params"].values():
+        assert v["eligible"] == (v["n_narrow"] >= S.CAL_MIN_N and v["coverage_narrow"] >= S.CAL_COVER)
+    assert not cal["params"].get("midpoint_maker.dummy", {}).get("eligible")
+
+
+def test_validate_discards_subject_tapes_unless_work_is_given_and_rescore_reproduces_it(tape, table, tmp_path):
+    meta = {"stream": STREAM, "from": T0, "to": T1, "seed": 5, "n": 50, "features": S.FEATURES,
+            "families": {f: {k: p.spec() for k, p in fam.prior.items()} for f, fam in FAMS.items()}}
+    S.write_table(tmp_path / "table.jsonl", table, meta)
+    kw = dict(n=50, per_family=1, hidden=1, seed=77, workers=1, accept=0.2, table_path=tmp_path / "table.jsonl",
+              families=FAMS, calib_rows=3)
+    card = S.validate(tape, tape / "tokens.jsonl", STREAM, T0, T1, tmp_path / "a", **kw)
+    assert not list((tmp_path / "a").rglob("public"))
+    assert len(list((tmp_path / "a" / "subjects").glob("*/inference.json"))) == len(card["subjects"]) == 3
+    S.validate(tape, tape / "tokens.jsonl", STREAM, T0, T1, tmp_path / "b", work=tmp_path / "w", **kw)
+    assert len(list((tmp_path / "w").glob("*/public/orders.jsonl"))) == 3
+    rs = S.rescore(tmp_path / "table.jsonl", tmp_path / "a" / "calibration.json", [(tmp_path / "a", None)], FAMS)
+    assert rs["runs"][str(tmp_path / "a")]["seed"] == 77
+    assert rs["pooled"] == card["totals"]
