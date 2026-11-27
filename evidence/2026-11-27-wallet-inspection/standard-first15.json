@@ -1,0 +1,164 @@
+{
+  "code_revision": "723ad93a7e743f91a6ca6d9d6b9b89bb785b975f",
+  "procedure": "standard_first15.py",
+  "resource_limits": {
+    "MemoryMax": "1G",
+    "MemorySwapMax": 0,
+    "Nice": 19,
+    "IOSchedulingClass": "idle"
+  },
+  "window": [
+    1795629600,
+    1795630500
+  ],
+  "order_source": "/var/backups/doppel-sealed-20261126/research/wallet-absorption.crsLww/first-orders",
+  "source_order_sha256": {
+    "_state/flush-000001.json": "f036e14358c32e29f43d1063fb2fae0bcfbe9c86a255e57bfd7515ed31131025",
+    "day=2026-11-25/part-000001.parquet": "5d6da3f9416e6418be3713970f5dffb2482f051dc9250e21c7b54be191770aa7"
+  },
+  "source_order_manifest_sha256": "d60083957ca6fec33781adee8b9e37c55b39159bae51276b3fc6ff1d83b15f47",
+  "tape_source": "/var/backups/doppel-sealed-20261126/tape",
+  "source_segment_sha256": {
+    "clob_btc_5m/20261125/18.dtape.zst": "9691cd2cc196e6d9e5a36dedf10eba79a9d4cfbacb3146aa6bcda53dc83de883"
+  },
+  "wallet_scope": {
+    "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": {
+      "layer1_sha256": "13c190f982c5d84fbfbd3f1a7f025e6ead0411254dedff464a6aa8d843c8543d",
+      "orders_with_maker_fills_by_fill_time": 17
+    },
+    "0x28cc505fb60501dbb2199a9662ba175919af904f": {
+      "layer1_sha256": "9c528de64e36fb2e44b5257f7f86018dae61a472a0de1ea90b3faf9632909952",
+      "orders_with_maker_fills_by_fill_time": 18
+    }
+  },
+  "focus": true,
+  "min_fp_orders": 1000000000,
+  "report": {
+    "params": {
+      "from": 1795629600,
+      "to": 1795630500,
+      "lo_ms": -300,
+      "hi_ms": 2500,
+      "size_tol": 0.02,
+      "size_tol_rel": 0.0,
+      "placebo_ms": 60000,
+      "print_win_ms": 1000,
+      "max_age_s": 600.0,
+      "streams": [
+        "clob_btc_5m"
+      ],
+      "placement_evidence_version": 2
+    },
+    "orders": {
+      "rows_not_verified": 209,
+      "rows_out_of_range": 31,
+      "maker_orders": 17
+    },
+    "tape": {
+      "reset:connect": 4,
+      "reset:subscribe": 4,
+      "reset:unsubscribe": 2,
+      "reset:disconnect": 3,
+      "price_change_unknown_state": 1363,
+      "reset:asset_venue_time_reversal": 104,
+      "level_keys": 1816,
+      "assets": 8,
+      "prints": 5204,
+      "integrity": "strict_segment_frames_and_crc",
+      "sealed_manifest_checked": false
+    },
+    "wallets": {
+      "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": {
+        "wallet": "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c",
+        "maker_orders": 0,
+        "observable": 0,
+        "matched": 0,
+        "match_rate": null,
+        "placebo_matched": 0,
+        "placebo_rate": null,
+        "match_rate_by_side": {},
+        "matched_all": 0,
+        "diagnostic_rows": 0,
+        "placement_evidence_counts": {},
+        "placebo_evidence_counts": {},
+        "sign_to_book_ms": null,
+        "tw_minus_created_ms": null,
+        "outcomes": {},
+        "cancelled_alone": 0,
+        "cancelled_no_prints_near": 0,
+        "cancelled_seen_as_price_change": 0,
+        "fill_before_placement": 0,
+        "fills": {
+          "n": 0,
+          "located_by_print": 0,
+          "print_at_level": 0,
+          "print_size_equal": 0
+        },
+        "rest_ms_known": {
+          "filled": null,
+          "cancelled": null
+        },
+        "rest_not_known": 0,
+        "rest_censored": 0,
+        "fingerprint": null
+      },
+      "0x28cc505fb60501dbb2199a9662ba175919af904f": {
+        "wallet": "0x28cc505fb60501dbb2199a9662ba175919af904f",
+        "maker_orders": 17,
+        "observable": 10,
+        "matched": 6,
+        "match_rate": 0.6,
+        "placebo_matched": 0,
+        "placebo_rate": 0.0,
+        "match_rate_by_side": {
+          "BUY": 0.6
+        },
+        "matched_all": 7,
+        "diagnostic_rows": 9,
+        "placement_evidence_counts": {
+          "no_candidate": 1,
+          "level_empty_before_fill": 2,
+          "coverage_incomplete": 5,
+          "ambiguous": 2,
+          "unique_candidate": 7
+        },
+        "placebo_evidence_counts": {
+          "no_candidate": 10
+        },
+        "sign_to_book_ms": {
+          "p10": 117.6,
+          "p50": 226.0,
+          "p90": 552.0,
+          "n": 7
+        },
+        "tw_minus_created_ms": {
+          "p10": 254.1,
+          "p50": 527.2,
+          "p90": 1616.6,
+          "n": 7
+        },
+        "outcomes": {
+          "unknown:level_zero": 7
+        },
+        "cancelled_alone": 0,
+        "cancelled_no_prints_near": 0,
+        "cancelled_seen_as_price_change": 0,
+        "fill_before_placement": 0,
+        "fills": {
+          "n": 16,
+          "located_by_print": 16,
+          "print_at_level": 15,
+          "print_size_equal": 12
+        },
+        "rest_ms_known": {
+          "filled": null,
+          "cancelled": null
+        },
+        "rest_not_known": 7,
+        "rest_censored": 0,
+        "fingerprint": null
+      }
+    }
+  },
+  "representative_rows": 16
+}
