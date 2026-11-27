@@ -47,7 +47,8 @@ def orow(oid, side, price, size, placed, end, outcome, filled, fills_at, token="
             "placed_venue_ms": MS + placed, "placed_tw_ns": (MS + placed) * 1_000_000,
             "end_ms": None if end is None else MS + end, "outcome": o, "reason": r, "filled": filled,
             "fills_at": [[tx, None if t is None else MS + t, sh] for tx, t, sh in fills_at],
-            "fill_before_placement": wrong}
+            "fill_before_placement": wrong, "placement_evidence": "unique_candidate",
+            "placement_candidates": 1, "rest_known": end is not None}
 
 
 def qrow(price, placed, end, size=97.0, outcome="cancelled", reason="exact_decrease"):
@@ -423,6 +424,17 @@ def test_old_ordermatch_rows_are_refused(tmp_path):
         run(tmp_path / "tape", tmp_path / "om", T0, T0 + 3600)
 
 
+def test_unqualified_receipts_and_upper_bound_lifetimes_cannot_score_the_twin(tmp_path):
+    write_tape(tmp_path / "tape", FRAMES)
+    write_dir(tmp_path / "om", [{k: v for k, v in ORDERS[0].items() if k != "placement_evidence"},
+                                ORDERS[1] | {"fill_before_placement": None},
+                                ORDERS[2] | {"rest_known": False}])
+    doc, rows = run(tmp_path / "tape", tmp_path / "om", T0, T0 + 3600)
+    assert len(rows) == 3 and doc["counts"]["unqualified_placements"] == 2
+    assert doc["counts"]["headline_orders"] == 0 and doc["conditional_on_real_fill"]["optimistic"]["n"] == 0
+    assert doc["adapter_gate"]["located_by_print"] == 1   # the qualified upper-bound order's fill is still observable
+
+
 def test_ambiguous_placement_keeps_bracket_violation_visible(tmp_path):
     frames = [
         book(0, "A", bids=[(0.5, 100)]),
@@ -433,24 +445,27 @@ def test_ambiguous_placement_keeps_bracket_violation_visible(tmp_path):
         trade(2400, "A", 0.5, 10, "SELL", "own"),
         pc(2401, "A", 0.5, 60, "BUY"),
         pc(2600, "A", 0.5, 110, "BUY"),  # same size too late to be this order
-        pc(3800, "A", 0.5, 70, "BUY"),
+        pc(3800, "A", 0.5, 0, "BUY"),
     ]
     tape_root = tmp_path / "tape"
     write_tape(tape_root, frames)
-    p = ordermatch.Params()
-    tape = ordermatch.build_tape(tape_root, ["clob_btc_5m"], T0, T0 + 3600, {"A"}, [], p)
-    order = ordermatch.Order("o1", "wallet", "A", "BUY", 0.5, 50.0, MS + 900, {"own": (10.0, T0 + 3)})
-    matches = ordermatch.match_placements([order], tape, p)
-    row = ordermatch.classify(order, *matches["o1"], tape, set(), p)
+    path = tmp_path / "orders.jsonl"
+    path.write_bytes(orjson.dumps({"order_id": "o1", "maker": "wallet", "token_id": "A", "side": "BUY",
+                                  "limit": 0.5, "size": 50.0, "created_ms": MS + 900, "role": "maker",
+                                  "maker_amount": 25_000_000, "taker_amount": 50_000_000,
+                                  "tx": "own", "fill_amount": 5_000_000, "block_ts": T0 + 3, "verified": True}))
+    _, (row,), _ = ordermatch.run(tape_root, path, T0, T0 + 3600, ["wallet"])
     assert row["placement_candidates"] == 2
     match_dir = tmp_path / "om"
     write_dir(match_dir, [row])
     doc, (out,) = run(tape_root, match_dir, T0, T0 + 3600)
     assert out["placement_candidates"] == 2 and out["pessimistic"]["filled"] == 40
     b = doc["bracket_violations"]
-    assert b["pessimistic_overfilled"] == 1
-    assert b["by_placement_evidence"]["multiple_candidates"] == {
-        "orders": 1, "pessimistic_overfilled": 1, "optimistic_underfilled": 0}
+    assert b["pessimistic_overfilled"] == doc["counts"]["headline_orders"] == 0
+    assert doc["counts"]["unqualified_placements"] == 1
+    assert out["placement_evidence"] == "ambiguous" and out["end_known"] is False
+    assert out["pessimistic"]["error"] == 30  # the hypothetical replay remains inspectable
+    assert "ambiguous" not in b["by_placement_evidence"]   # it has no known upper end to score
 
 
 def test_cli_after_ordermatch_end_to_end(tmp_path, capsys):
@@ -458,7 +473,8 @@ def test_cli_after_ordermatch_end_to_end(tmp_path, capsys):
     frames = [
         book(0, "A", bids=[(0.5, 100)], asks=[(0.6, 50)]),
         pc(1000, "A", 0.5, 150, "BUY"),             # the order: 50 behind 100
-        trade(2000, "A", 0.5, 120, "SELL", "0xa"),  # 100 queue + 20 of it
+        trade(2000, "A", 0.5, 100, "SELL", "other"),  # executed first against the older queue
+        trade(2000, "A", 0.5, 20, "SELL", "0xa"),     # its verified fill in a separate transaction
         pc(2000, "A", 0.5, 30, "BUY"),
         trade(3000, "A", 0.5, 30, "SELL", "0xb"),   # its last 30
         pc(3000, "A", 0.5, 0, "BUY"),
@@ -467,7 +483,7 @@ def test_cli_after_ordermatch_end_to_end(tmp_path, capsys):
     write_tape(tmp_path / "tape", frames)
     rows = [{"order_id": "o1", "maker": "0xw", "token_id": "A", "side": "BUY", "size": 50.0, "limit": 0.5,
              "maker_amount": 25_000_000, "taker_amount": 50_000_000, "fill_amount": round(sh * 0.5 * 1e6),
-             "created_ms": MS + 900, "role": "maker", "tx": tx, "block_ts": T0 + 4, "age_s": 3.1}
+             "created_ms": MS + 900, "role": "maker", "tx": tx, "block_ts": T0 + 4, "age_s": 3.1, "verified": True}
             for tx, sh in (("0xa", 20.0), ("0xb", 30.0))]
     (tmp_path / "orders.jsonl").write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in rows))
     span = ["--from", str(T0), "--to", str(T0 + 3600)]

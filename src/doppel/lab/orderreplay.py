@@ -58,7 +58,7 @@ DEFINITIONS (per order and queue mode; shares)
   0.02 (the twin filled beyond the real quantity). A twin fill AFTER the real order was gone
   cannot happen for ``filled`` / ``cancelled`` orders (the quote is cancelled then), so for them
   phantom = over-fill while the real order was live.
-- Headline set: outcome ``filled`` or ``cancelled`` and not cut short by a book reset.
+- The headline requires a qualified placement and a known end inside uninterrupted tape.
   ``unknown`` orders are reported apart: their chain fills are a lower bound and the quote may
   outlive the order, so their excess is only a POSSIBLE phantom. Orders with
   ``fill_before_placement`` (a proven wrong match) are not replayed.
@@ -76,9 +76,9 @@ DEFINITIONS (per order and queue mode; shares)
 - Twin fill source: ``trade`` or ``book_cross``. A real resting order keeps the opposite side
   from reaching its price, so ``book_cross`` fills should be ~0 here; any is a diagnostic (wrong
   match or lifetime), and the engine's book-cross rule is NOT validated by this replay.
-- Never-filled quotes (ESTIMATE): fingerprint candidates classified ``cancelled:exact_decrease``
-  are replayed the same way; real = 0, so any twin fill is a phantom. The candidates are not
-  identified as anyone's orders and "never filled" rests on ordermatch's cancel rule.
+- Never-filled quotes (ESTIMATE): an anonymous candidate with a cancellation-compatible level
+  disappearance is replayed through that upper bound assuming zero real fills. Identity, lifetime
+  and fill count are hypotheses. These rows contribute only to the candidate estimate.
   ``quotes.jsonl`` is read line by line into one small tuple per candidate; its quote object
   exists only while it is live. With ``run(reduce_quotes=True)`` a finished candidate is reduced
   to counts at once (total and per wallet, ``never_filled_by_wallet``) and no row is kept for
@@ -105,7 +105,7 @@ from ..twin.engine import DYING_GRACE_NS, MIN_QTY, Quote, WindowSim, _Stats
 from ..twin.tape import Book, Trade
 from .flow import _ts
 from .intlbook import BookObservation, IntlBook, LevelEvent, Print, Reset, px, replay_messages
-from .ordermatch import _q, _r
+from .ordermatch import _q, _r, qualified_placement
 from .tradeallocation import Allocation, load_allocations
 
 FOREVER = 1 << 62
@@ -193,6 +193,9 @@ class Spec:
     unresolved_live: int = 0
     wallet: str | None = None  # fingerprint candidates: whose list it is on
     placement_candidates: int | None = None
+    placement_evidence: str = "legacy_unqualified"
+    fill_before_placement: bool | None = None
+    rest_known: bool = False
     placed_record: int = -1
     expiry_tw_ns: int | None = None
     late_same_side_prints: int = 0
@@ -224,18 +227,23 @@ def load_specs(d: Path) -> tuple[list[Spec], dict[QuoteKey, list[tuple]], Counte
         if "fills_at" not in r:
             raise SystemExit("orders.jsonl has no 'fills_at' (written by an older doppel-ordermatch): "
                              "re-run doppel-ordermatch, then replay")
-        if r["fill_before_placement"]:
+        if r.get("fill_before_placement"):
             stats["orders_wrong_match_skipped"] += 1
             continue
         specs.append(Spec("order", r["order_id"], r["token_id"], r["side"], px(r["price"]),
                           float(r["size"]), r["placed_venue_ms"], r["placed_tw_ns"], r["end_ms"],
                           f"{r['outcome']}:{r['reason']}", float(r["filled"]), r["fills_at"],
-                          placement_candidates=r.get("placement_candidates")))
+                          placement_candidates=r.get("placement_candidates"),
+                          placement_evidence=r.get("placement_evidence") or "legacy_unqualified",
+                          fill_before_placement=r.get("fill_before_placement"),
+                          rest_known=r.get("rest_known") is True))
     qp = d / "quotes.jsonl"
     if qp.exists():
         for r in _lines(qp):
             stats["quotes"] += 1
-            if (r["outcome"], r["reason"]) != ("cancelled", "exact_decrease"):
+            legacy = (r["outcome"], r["reason"]) == ("cancelled", "exact_decrease")
+            bound = (r["outcome"], r["reason"]) == ("unknown", "level_zero") and r.get("cancel_compatible") is True
+            if not (legacy or bound) or r.get("end_ms") is None:
                 stats["quotes_not_cancelled_skipped"] += 1
                 continue
             quotes[(r["token_id"], px(r["price"]), "BUY", r["venue_ms"], r["tw_ns"])].append(
@@ -327,7 +335,7 @@ def replay_stream(root: Path, stream: str, t_from: int, t_to: int, pending: dict
                 if not qc:
                     del quotes[key]
                 s = Spec("quote", f"{e.asset}:{e.price}:{e.venue_ms}:{e.tw_ns}", e.asset, "BUY", e.price,
-                         size, e.venue_ms, e.tw_ns, end, "cancelled:exact_decrease", 0.0, wallet=wallet)
+                         size, e.venue_ms, e.tw_ns, end, "hypothetical:cancelled_without_fill", 0.0, wallet=wallet)
             if s is not None:
                 s.market, s.queue0 = e.market or e.asset, e.old_size
                 s.placed_record = record_no
@@ -435,9 +443,12 @@ def result(s: Spec) -> dict:
     located = [f[1] for f in s.fills_at if f[1] is not None]
     row: dict = {"kind": s.kind, "id": s.id, "token_id": s.token, "market": s.market, "side": s.side,
                  "price": s.price, "size": s.size, "outcome": s.outcome,
-                 "end_known": s.outcome.split(":")[0] in ("filled", "cancelled"),
+                 "end_known": s.rest_known and s.end_ms is not None
+                              and s.outcome.split(":")[0] in ("filled", "cancelled"),
                  "placed_ms": s.placed_ms, "end_ms": s.end_ms, "cut": s.cut,
                  "placement_candidates": s.placement_candidates,
+                 "placement_evidence": s.placement_evidence,
+                 "fill_before_placement": s.fill_before_placement,
                  "queue_ahead": s.queue0, "real_filled": round(s.real, 6),
                  "real_first_fill_ms": min(located, default=None),
                  "fills": len(s.fills_at), "fills_located": len(located),
@@ -520,7 +531,8 @@ def groups(rows: list[dict], mode: str) -> dict:
 
 
 def summarize(rows: list[dict], stats: Counter) -> dict:
-    orders = [r for r in rows if r["kind"] == "order"]
+    replayed = [r for r in rows if r["kind"] == "order"]
+    orders = [r for r in replayed if qualified_placement(r)]
     head = [r for r in orders if r["end_known"] and not r["cut"]]
     unk = [r for r in orders if not r["end_known"]]
     quotes = [r for r in rows if r["kind"] == "quote"]
@@ -535,18 +547,22 @@ def summarize(rows: list[dict], stats: Counter) -> dict:
                                              and r["real_first_fill_ms"] is not None])} for m in MODES}
     by_placement: dict[str, Counter] = defaultdict(Counter)
     by_prices: dict[str, Counter] = defaultdict(Counter)
-    for r in head:
-        n = r.get("placement_candidates")
-        key = "unknown" if not n else "one_candidate" if n == 1 else "multiple_candidates"
+    for r in replayed:
+        if r["end_ms"] is None or r["cut"]:
+            continue
+        key = r.get("placement_evidence") or "legacy_unqualified"
         values = dict(orders=1, pessimistic_overfilled=int(r["pessimistic"]["error"] > TOL),
                       optimistic_underfilled=int(r["optimistic"]["error"] < -TOL))
         by_placement[key].update(values)
+        if not qualified_placement(r) or not r["end_known"]:
+            continue
         complete = (r.get("unresolved_same_side_prints_while_live") == 0 and r["fills"] > 0
                     and r.get("fills_allocated_routed") == r["fills"] == r["fills_delivered"])
         by_prices["fully_allocated" if complete else "unresolved"].update(values)
     doc: dict = {
         "limit": LIMIT, "counts": dict(stats) | {
-            "orders_replayed": len(orders), "headline_orders": len(head),
+            "orders_replayed": len(replayed), "headline_orders": len(head),
+            "unqualified_placements": len(replayed) - len(orders),
             "known_end_cut_by_reset": sum(bool(r["end_known"] and r["cut"]) for r in orders),
             "cut_short": dict(Counter(r["cut"] for r in rows if r["cut"])),
             "twin_book_cross_fills": sum(v == "book_cross" for r in rows for _, _, v in r["pessimistic"]["fills"])},
@@ -569,8 +585,9 @@ def summarize(rows: list[dict], stats: Counter) -> dict:
             "optimistic_underfilled": cond["optimistic"]["underfilled"],
             "by_placement_evidence": {k: dict(v) for k, v in sorted(by_placement.items())},
             "by_price_evidence": {k: dict(v) for k, v in sorted(by_prices.items())},
-            "note": "the bracket assumes a correctly attributed placement, FIFO and price-level "
-                    "print sizes. A single candidate can still belong to another order."},
+            "note": "Placement-evidence groups include diagnostic simulations run to an observed boundary. "
+                    "The headline and price groups require a qualifying placement. A unique anonymous "
+                    "candidate can still belong to another order."},
         "pessimistic_breakdown": groups(head, "pessimistic"),
         "optimistic_by_outcome": groups(head, "optimistic")["by_outcome"],
         "end_unknown_orders": {m: agg(unk, m) for m in MODES} | {
@@ -584,14 +601,12 @@ def summarize(rows: list[dict], stats: Counter) -> dict:
             "quoted_shares": _r(sum(r["size"] for r in quotes)),
             "phantom_shares": _r(sum(r[m]["filled"] for r in quotes)),
             "by_twin_source": dict(Counter("+".join(r[m]["by_source"]) for r in quotes if r[m]["by_source"])),
-        } for m in MODES} | {"note": "ESTIMATE: fingerprint candidates ordermatch classified "
-                                     "cancelled:exact_decrease; not identified orders, and 'never "
-                                     "filled' rests on ordermatch's cancel rule"}
+        } for m in MODES} | {"note": NF_NOTE}
     return doc
 
 
-NF_NOTE = ("ESTIMATE: fingerprint candidates ordermatch classified cancelled:exact_decrease; not "
-           "identified orders, and 'never filled' rests on ordermatch's cancel rule")
+NF_NOTE = ("ESTIMATE: hypothetical anonymous quotes, assuming zero real fills and continued presence "
+           "until a cancellation-compatible level decrease. Their owners and actual lifetimes are unknown.")
 
 
 def nf_add(tally: dict[str, Any], s: Spec) -> None:

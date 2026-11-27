@@ -197,9 +197,10 @@ def test_end_to_end_all_four_steps(ran):
     # merged per-wallet book match: sums over the two chunks
     om = orjson.loads((out / "ordermatch" / "ordermatch.json").read_bytes())["wallets"][W1]
     assert (om["maker_orders"], om["observable"], om["matched"], om["placebo_matched"]) == (35, 35, 35, 0)
-    assert om["outcomes"] == {"filled:chain": 31, "cancelled:exact_decrease": 4} and len(om["chunks"]) == 2
+    assert om["outcomes"] == {"filled:chain": 31, "unknown:level_zero": 4} and len(om["chunks"]) == 2
     assert om["rest_ms_known"]["filled"] == {"p10": 300.0, "p50": 300.0, "p90": 300.0, "n": 31}
-    assert om["rest_ms_known"]["cancelled"]["p50"] == 600.0 and om["sign_to_book_ms"]["p50"] == 100.0
+    assert om["rest_ms_known"]["cancelled"] is None and om["rest_not_known"] == 4
+    assert om["diagnostic_rows"] == 0 and om["sign_to_book_ms"]["p50"] == 100.0
     fp = om["fingerprint"]
     assert fp["sizes"] == [50.0] and fp["sizes_stable"]
     # W2's two 50-share orders are unverified, so they are not "other_known": they count as candidates.
@@ -207,14 +208,14 @@ def test_end_to_end_all_four_steps(ran):
     assert (fp["total"]["own"], fp["total"]["other_known"], fp["total"]["candidates"], fp["total"]["control"]) == (
         32, 0, 3, 1)
     assert list(fp["sizes_by_chunk"]) == om["chunks"][:1]
-    assert fp["candidate_rest_ms_cancelled"] == {"p10": 300.0, "p50": 300.0, "p90": 300.0, "n": 1}
+    assert fp["candidate_rest_ms_cancelled"] is None
     assert sum(1 for _ in open(out / "wallets" / W1 / "orders.jsonl")) == 35
 
     # merged twin replay: alone at the level, so both queue modes reproduce the real fills
     rp = orjson.loads((out / "orderreplay" / "orderreplay.json").read_bytes())
     for m in orderreplay.MODES:
         d = rp["wallets"][W1]["conditional_on_real_fill"][m]
-        assert (d["n"], d["markets"], d["real_shares"], d["twin_shares"], d["ratio"]) == (35, 2, 1630.0, 1630.0, 1.0)
+        assert (d["n"], d["markets"], d["real_shares"], d["twin_shares"], d["ratio"]) == (31, 2, 1550.0, 1550.0, 1.0)
         assert d["ratio_ci95"] == [1.0, 1.0]
         assert rp["cohort"]["conditional_on_real_fill"][m]["ratio"] == 1.0
         assert rp["wallets"][W1]["never_filled_quotes_estimate"][m]["n"] == 1
@@ -245,6 +246,20 @@ def test_manifest_connects_reconstruction_to_rulefit_and_fidelity(ran, tmp_path)
     manifest = root / "lab" / "reconstruct" / "run1" / "manifest.json"
     files = read_reconstruction(manifest, W1, T0, T0 + 7200, exact=True)
     assert files.matched_orders.is_file() and files.summary.is_file() and files.orders.is_dir()
+    # A perfectly checksummed old summary can still contain legacy placement claims.
+    archive = tmp_path / "legacy"
+    legacy = orjson.loads(manifest.read_bytes())
+    old_summary = orjson.loads(files.summary.read_bytes())
+    del old_summary["params"]["placement_evidence_version"]
+    name = "ordermatch/ordermatch.json"
+    (archive / name).parent.mkdir(parents=True)
+    (archive / name).write_bytes(orjson.dumps(old_summary))
+    legacy["steps"]["ordermatch"]["outputs"][name]["sha256"] = reconstruct.sha_file(archive / name)
+    (archive / "wallets").symlink_to(manifest.parent / "wallets", target_is_directory=True)
+    (archive / "ordertape").symlink_to(files.orders, target_is_directory=True)
+    (archive / "manifest.json").write_bytes(orjson.dumps(legacy))
+    with pytest.raises(ValueError, match="regenerate legacy reconstruction"):
+        read_reconstruction(archive / "manifest.json", W1, T0, T0 + 7200)
     with pytest.raises(ValueError, match="untrusted"):
         read_reconstruction(manifest, W2, T0, T0 + 7200)
     with pytest.raises(ValueError, match="exact"):
@@ -754,6 +769,7 @@ def test_s3_this_file_and_its_constants_are_in_every_key(tmp_path, monkeypatch):
     assert man["steps"]["ordermatch"]["status"] == "ran" and _match(root)["wallets"][W1]["fingerprint"] is None
     assert {"twin/engine.py", "twin/features.py", "strategy/genome.py"} <= set(reconstruct.CODE["orderreplay"])
     assert all("lab/reconstruct.py" in fs for fs in reconstruct.CODE.values())
+    assert {"lab/tradeallocation.py", "lab/ordertape.py"} <= set(reconstruct.CODE["ordermatch"])
 
 
 def test_s4_a_kill_in_the_second_chunk_resumes_there(tmp_path, monkeypatch):

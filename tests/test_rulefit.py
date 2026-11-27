@@ -87,7 +87,8 @@ def world(seed=1, windows=6, candidates=0, ask_fn=None, observe_open=True):
                      "size": size, "created_ms": MS + ms - 150, "placed_venue_ms": MS + ms,
                      "placed_tw_ns": (MS + ms) * 1_000_000, "filled": 0.0, "remainder": size, "n_fills": 0,
                      "fills_at": [], "outcome": "cancelled", "reason": "exact_decrease", "end_ms": MS + ms + 1500,
-                     "rest_min_ms": 1500, "rest_max_ms": 1500, "fill_before_placement": False}
+                     "rest_min_ms": 1500, "rest_max_ms": 1500, "rest_known": True,
+                     "placement_evidence": "unique_candidate", "placement_candidates": 1, "fill_before_placement": False}
                 orders.append(o)
                 placed.append(o)
             for j in range(candidates):  # never-filled bids 3 c behind the best
@@ -524,7 +525,8 @@ def test_up_terms_mirror_the_down_token():
 def test_selection_refit_moves_the_rule_when_unfilled_quotes_sit_elsewhere(tmp_path):
     frames, orders, tape, quotes = world(seed=5, windows=4, candidates=2)
     doc = {"params": {"from": T0, "to": T0 + 3600},
-           "wallets": {W: {"fingerprint": {"total": {"identity_precision_upper": 0.8}}}}}
+           "wallets": {W: {"placement_evidence_counts": {"unique_candidate": len(orders)},
+                            "fingerprint": {"total": {"identity_precision_upper": 0.8}}}}}
     write(tmp_path, frames, orders, tape, quotes, doc, windows=4)
     _, rep, rows = fit(tmp_path)
     sel = rep["selection_check"]
@@ -685,7 +687,8 @@ def test_triggers_and_the_state_just_before_a_cancel(tmp_path):
                 "created_ms": MS + placed - 100, "placed_venue_ms": MS + placed, "placed_tw_ns": (MS + placed) * 1_000_000,
                 "filled": 0.0, "remainder": 100.0, "n_fills": 0, "fills_at": [], "outcome": "unknown",
                 "reason": "censored", "end_ms": None, "rest_min_ms": 0, "rest_max_ms": None,
-                "fill_before_placement": False} | kw
+                "fill_before_placement": False, "placement_evidence": "unique_candidate",
+                "placement_candidates": 1, "rest_known": kw.get("outcome") == "cancelled"} | kw
 
     frames = [book(1000, U, [(0.50, 500)], [(0.54, 400)], mk),
               pc(2000, U, 0.50, 600, "BUY", mk),      # a
@@ -1036,6 +1039,31 @@ def test_a_wallet_with_only_taker_fills_gets_a_report_and_exit_0(tmp_path):
     assert "no maker order" in rep["genome"]["reasons"][0] and "NO RULE FOUND" in (out / "rule.md").read_text()
     with pytest.raises(SystemExit, match="no order of .* could be put in a window"):
         main(cli + ["--wallet", "0x" + "9" * 40])
+
+
+def test_unqualified_maker_placements_retire_an_older_draft(tmp_path):
+    frames, orders, fills, _ = world(windows=1)
+    observed = {r["order_id"] for r in fills}
+    receipts = [o for o in orders if o["order_id"] in observed][:5]
+    del receipts[0]["placement_evidence"]
+    receipts[1]["placement_candidates"] = 2
+    receipts[2]["placement_evidence"] = "snapshot_only"
+    receipts[3]["side"] = "SELL"   # the file claims a unique add for a different signed side
+    receipts.append(receipts[4])
+    write(tmp_path, frames, receipts, [f | {"verified": True} for f in fills], windows=1)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "genome.json").write_text("{}")
+    (out / "decision_table.jsonl").write_text("older decisions")
+    genome, rep, rows = fit(tmp_path, out)
+    assert genome is None and rows == [] and rep["genome"]["status"] == "not_emitted"
+    assert rep["label"] == "insufficient maker placement evidence"
+    assert rep["inputs"]["counts"]["orders_unqualified_placement_dropped"] == 3
+    assert rep["inputs"]["counts"]["orders_not_verified_dropped"] == 1
+    assert rep["inputs"]["counts"]["orders_duplicate_receipt_dropped"] == 2
+    assert rep["explained_by_observed_inputs"]["verdict"] is None
+    assert not (out / "genome.json").exists() and (out / "decision_table.jsonl").read_bytes() == b""
+    assert "INSUFFICIENT MAKER PLACEMENT EVIDENCE" in (out / "rule.md").read_text()
 
 
 def test_a_laddering_wallet_is_flagged_even_when_each_level_fits_tightly(tmp_path):

@@ -111,6 +111,14 @@ def test_granularity_and_flags():
     assert fp["timestamp"]["flags"] == {"ok": 0.9, "zero": 0.1} and fp["salt"]["n"] == 180
 
 
+def test_earliest_fill_block_overrides_a_stale_valid_clock_flag():
+    order = row(0)
+    early = order | {"block_ts": order["created_ms"] // 1000 - 1, "age_s": 2, "ts_flag": None}
+    fp = fp_of([order, early])
+    assert fp["n_maker_orders"] == 1 and fp["n_maker_plausible_stamp"] == 0
+    assert fp["timestamp"]["flags"] == {"after_block": 1.0} and fp["timing"]["n"] == 0
+
+
 def test_size_rules_and_tick():
     rnd = random.Random(2)
     px = [round(rnd.uniform(0.1, 0.9), 2) for _ in range(200)]
@@ -202,6 +210,7 @@ def q(p50, n):
 def om_e39(**kw):
     """The E39 wallet-hour, as ordermatch.json reports a wallet."""
     d = {"wallet": W, "maker_orders": 340, "observable": 329, "matched": 323, "match_rate": 0.982,
+         "placement_evidence_counts": {"unique_candidate": 340},
          "placebo_matched": 15, "placebo_rate": 0.046, "matched_all": 340,
          "sign_to_book_ms": q(149, 340),
          "outcomes": {"filled:chain": 141, "cancelled:exact_decrease": 123, "unknown:level_below": 76},
@@ -309,6 +318,9 @@ def test_ledger_legacy_jsonl_is_marked_unflagged():
 def test_copyability_verdicts():
     fp = fp_of(maker_rows(200))
     assert copyability(fp, None)["verdict"] == "UNKNOWN"
+    old = om_e39()
+    del old["placement_evidence_counts"]
+    assert copyability(fp, old)["verdict"] == "UNKNOWN"
     assert copyability(fp, om_e39())["verdict"] == "FLICKER"
 
     def fpd(net, life=5000.0):

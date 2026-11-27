@@ -726,14 +726,17 @@ def om_row(oid, token, side, price, size, placed_s, end_s, outcome, fills, wrong
             "placed_venue_ms": int(placed_s * 1000), "placed_tw_ns": int(placed_s * NS),
             "end_ms": None if end_s is None else int(end_s * 1000), "outcome": outcome, "reason": "x",
             "fills_at": [[tx, None if t is None else int(t * 1000), sh] for tx, t, sh in fills],
-            "fill_before_placement": wrong}
+            "fill_before_placement": wrong, "placement_candidates": 1,
+            "placement_evidence": "unique_candidate", "rest_known": end_s is not None}
 
 
 def test_footprint_from_ordermatch_rows_and_what_stays_partial():
     wins = [IntlWindow("btc", "5m", T0 + 300 * i, f"U{i}", f"D{i}", 1.0) for i in range(5)]
     row = lambda i, oid, role="maker": {"tx": f"0x{oid}", "order_id": oid, "role": role, "maker": WALLET,  # noqa: E731
-                                        "token_id": f"U{i}"}
-    rows = [row(0, "a"), row(1, "b"), row(2, "c"), row(3, "d"), row(4, "t", "taker"),
+                                        "token_id": f"U{i}", "verified": True}
+    rows = [row(0, "a") | {"side": "BUY", "limit": .4, "size": 100},
+            row(1, "b") | {"token_id": "D1", "side": "BUY", "limit": .3, "size": 50},
+            row(2, "c"), row(3, "d"), row(4, "t", "taker"),
             {"tx": "0xz", "order_id": "z", "role": "maker", "maker": OTHER, "token_id": "U4"}]
     om = [om_row("a", "U0", "BUY", 0.40, 100, T0 + 5, T0 + 9, "cancelled", [("0xa", T0 + 6, 30.0)]),
           om_row("b", "D1", "BUY", 0.30, 50, T0 + 305, None, "unknown", [("0xb", T0 + 307, 10.0)]),
@@ -752,6 +755,22 @@ def test_footprint_from_ordermatch_rows_and_what_stays_partial():
     # without an ordermatch run nothing can be removed: every window with a maker fill is partial
     fp0, partial0 = F.footprint(rows, WALLET, wins, None)
     assert fp0.resting == {} and sorted(partial0) == [w.key for w in wins[:4]]
+
+
+def test_unqualified_or_duplicated_maker_placements_stay_in_the_holdout_book():
+    win = IntlWindow("btc", "5m", T0, "U", "D", 1.0)
+    signed = {"order_id": "o", "token_id": "U", "role": "maker", "maker": WALLET, "tx": "tx", "verified": True,
+              "limit": .5, "side": "BUY", "size": 10}
+    match = om_row("o", "U", "BUY", 0.5, 10, T0 + 1, T0 + 3, "filled", [("tx", T0 + 3, 10)])
+    for receipts in ([{k: v for k, v in match.items() if k != "placement_evidence"}],
+                     [match | {"placement_candidates": 2}], [match, match], [match | {"token_id": "D"}],
+                     [match | {"side": "SELL"}], [match | {"fills_at": [["other", (T0 + 3) * 1000, 10]]}],
+                     [match | {"placement_evidence": "chronology_conflict"}]):
+        fp, partial = F.footprint([signed], WALLET, [win], receipts)
+        assert fp.resting == {} and partial == {win.key: "order_not_located"}
+    fp, partial = F.footprint([signed], WALLET, [win], [match | {"rest_known": False, "end_ms": (T0 + 6) * 1000}])
+    assert fp.resting[win.key][0].end_ms == (T0 + 3) * 1000
+    assert partial == {win.key: "order_end_unknown"}
 
 
 def test_a_maker_genome_is_inconclusive_until_the_wallets_orders_are_out_of_the_book(tmp_path):

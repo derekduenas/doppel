@@ -8,6 +8,7 @@ from pathlib import Path
 
 import orjson
 
+from .ordermatch import PLACEMENT_EVIDENCE_VERSION
 from .ordertape import committed_parts
 
 
@@ -72,4 +73,8 @@ def read_reconstruction(path: Path, wallet: str, start: int, end: int, *, exact:
         raise ValueError("reconstruction order tape is missing or its checksum changed")
     own = _checked_file(root, f"wallets/{wallet}/orders.jsonl", row.get("outputs") or {})
     summary = _checked_file(root, "ordermatch/ordermatch.json", matched.get("outputs") or {})
+    match_doc = orjson.loads(summary.read_bytes())
+    if ((match_doc.get("params") or {}).get("placement_evidence_version") != PLACEMENT_EVIDENCE_VERSION
+            or "placement_evidence_counts" not in ((match_doc.get("wallets") or {}).get(wallet) or {})):
+        raise ValueError("regenerate legacy reconstruction with the current placement evidence version")
     return Reconstruction(orders, own, summary)

@@ -106,7 +106,7 @@ from .flow import _ts
 from .intlbook import px
 from .intltwin import Footprint, IntlWindow, Key, Resting, run_intl, windows_from_tokens
 from .ledger import TokenMap
-from .ordermatch import filled_shares
+from .ordermatch import filled_shares, qualified_placement
 from .ordertape import committed_parts
 
 TOL_PX = 0.01
@@ -332,15 +332,23 @@ def footprint(rows: list[dict], wallet: str, wins: list[IntlWindow], om_rows: li
     fp = Footprint(taker_txs={r["tx"] for r in rows if r["maker"].lower() == wallet and r["role"] == "taker"})
     partial: dict[Key, str] = {}
     located: set[str] = set()
+    maker_txs: dict[tuple, set[str]] = defaultdict(set)
+    for r in rows:
+        if r["maker"].lower() == wallet and r["role"] == "maker" and r.get("verified") is True and r.get("limit"):
+            key = (r["order_id"], r["token_id"], r["side"], px(r["limit"]), r["size"])
+            maker_txs[key].add(r["tx"])
+    receipts = Counter(o["order_id"] for o in om_rows or () if (o.get("maker") or "").lower() == wallet)
     for o in om_rows or ():
         hit = tok.get(o["token_id"])
-        if hit is None or (o.get("maker") or wallet).lower() != wallet:
+        if hit is None or (o.get("maker") or "").lower() != wallet:
             continue
         w, is_up = hit
-        if o["fill_before_placement"]:
-            continue   # a proven wrong match: its order stays unlocated
+        key = (o["order_id"], o["token_id"], o["side"], px(o["price"]), o["size"])
+        if (not qualified_placement(o) or receipts[o["order_id"]] != 1 or key not in maker_txs
+                or {tx for tx, _, _ in o["fills_at"]} != maker_txs[key]):
+            continue   # subtracting another maker's quote would change the counterfactual book
         fills = tuple(sorted((int(ms), float(sh)) for _, ms, sh in o["fills_at"] if ms is not None))
-        whole = o["outcome"] in ("filled", "cancelled") and o["end_ms"] is not None \
+        whole = o.get("rest_known") is True and o["outcome"] in ("filled", "cancelled") and o["end_ms"] is not None \
             and len(fills) == len(o["fills_at"])
         end = int(o["end_ms"] or 0) if whole else max([t for t, _ in fills], default=int(o["placed_venue_ms"]))
         side = o["side"] if is_up else ("SELL" if o["side"] == "BUY" else "BUY")

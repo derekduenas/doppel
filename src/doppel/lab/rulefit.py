@@ -117,7 +117,7 @@ from .census import LEN, window_of
 from .flow import RTDS_STREAMS, _ts, hours_between, iter_rtds
 from .intlbook import NS, IntlBook, LevelEvent, Print, px
 from .ledger import TokenMap
-from .ordermatch import filled_shares
+from .ordermatch import filled_shares, qualified_placement
 from .profile import BIAS_LENGTH, BIAS_UPPER, _size, load_rows, prepare
 
 TRAIN_FRAC = 0.7
@@ -428,7 +428,8 @@ def up_order(side: str, price: float, idx: int) -> tuple[str, float]:
 
 # ---------------------------------------------------------------- inputs
 ORDER_KEYS = ("order_id", "token_id", "side", "price", "size", "created_ms", "placed_venue_ms", "placed_tw_ns",
-              "outcome", "reason", "end_ms", "remainder", "rest_min_ms", "rest_max_ms", "fills_at", "placement_candidates")
+              "outcome", "reason", "end_ms", "remainder", "rest_min_ms", "rest_max_ms", "rest_known", "fills_at",
+              "placement_candidates")
 QUOTE_KEYS = ("token_id", "price", "venue_ms", "tw_ns", "size")
 
 
@@ -442,21 +443,32 @@ def _jsonl(path: Path):
 def load_orders(path: Path, summary: Path | None, wallet: str, bounds: tuple[int, int]) -> tuple[list[dict], dict, Counter]:
     """(the wallet's located maker orders, its ordermatch summary, counts). Needed columns only."""
     stats: Counter = Counter()
+    receipts: Counter = Counter()
     orders = []
     for r in _jsonl(path):
         if str(r.get("maker", "")).lower() != wallet:
             stats["orders_other_makers"] += 1
-        elif r.get("fill_before_placement"):
+            continue
+        receipts[r["order_id"]] += 1
+        if r.get("fill_before_placement"):
             stats["orders_wrong_match_dropped"] += 1
+        elif not qualified_placement(r):
+            stats["orders_unqualified_placement_dropped"] += 1
         else:
             orders.append({k: r.get(k) for k in ORDER_KEYS})
+    stats["orders_duplicate_receipt_dropped"] = sum(receipts[o["order_id"]] != 1 for o in orders)
+    orders = [o for o in orders if receipts[o["order_id"]] == 1]
     doc = {}
     if summary is not None and summary.exists():
         report = orjson.loads(summary.read_bytes())
         params = report.get("params") or {}
         period = params.get("from"), params.get("to")
         if period == bounds:
-            doc = (report.get("wallets") or {}).get(wallet) or {}
+            current = (report.get("wallets") or {}).get(wallet) or {}
+            if "placement_evidence_counts" in current:
+                doc = current
+            else:
+                stats["legacy_match_summary_ignored"] = 1
         elif period != (None, None):
             raise ValueError(f"ordermatch summary covers {period}, fit requires {bounds}; match the fit interval separately")
         else:
@@ -528,16 +540,18 @@ def quote_events(path: Path | None, wallet: str, bounds: tuple[int, int]) -> dic
     return {"t0_ms": t0, "times": dict(times), "lives": dict(lives), "n": sum(len(v) for v in times.values())}
 
 
-def wallet_fills(orders_path: Path, wallet: str) -> tuple[list[dict], dict, set[str] | None]:
+def wallet_fills(orders_path: Path, wallet: str) -> tuple[list[dict], dict, set[tuple] | None]:
     """The wallet's verified tape fills [{tx, token, side, shares, price, block_ts}], input counts,
-    and its verified order ids (None for a legacy tape without a ``verified`` column)."""
+    and its signed maker-order terms (None for legacy tape without a verification column)."""
     rows, flagged = load_rows(orders_path, {wallet})
     w = prepare(rows, flagged)
-    ids = {r["order_id"] for r in w["rows"]} if flagged else None
+    terms = {(r["order_id"], r["token_id"], r["side"], px(r["limit"]), r["size"], r["created_ms"])
+             for r in w["orders"] if r["role"] == "maker" and r.get("limit")
+             and r.get("ts_flag") is None and type(r.get("created_ms")) is int} if flagged else None
     out = [{"tx": r["tx"], "token": r["token_id"], "side": r["side"], "shares": filled_shares(r),
             "price": float(r.get("limit") or 0.5), "block_ts": r["block_ts"], "role": r.get("role")} for r in w["rows"]
            if r["side"] == "SELL" or r.get("maker_amount") or r.get("limit")]
-    return out, w["input"], ids
+    return out, w["input"], terms
 
 
 class Inventory:
@@ -646,9 +660,11 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
     stats["orders_outside_range_dropped"] = len(orders) - len(in_range)
     orders = in_range
     fills, fill_input, verified = wallet_fills(orders_path, wallet)
-    if verified is not None:  # ordermatch does not look at ``verified``; the order tape does
-        stats["orders_not_verified_dropped"] = sum(o["order_id"] not in verified for o in orders)
-        orders = [o for o in orders if o["order_id"] in verified]
+    if verified is not None:
+        signed = [o for o in orders if (o["order_id"], o["token_id"], o["side"], px(o["price"]), o["size"],
+                                         o["created_ms"]) in verified]
+        stats["orders_not_verified_dropped"] = len(orders) - len(signed)
+        orders = signed
     tok = token_map(root, t_from, t_to, token_files)
     quotes_path = om_dir / "quotes.jsonl" if om_dir is not None else None
     quotes, cand_info = sample_quotes(quotes_path, wallet, tok, max_candidates, (lo, hi))
@@ -676,8 +692,8 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
     scan_from = min(t_from, first_cutoff) - max(LEN.values())
 
     mapped = {s["token"] for s in specs} & tok.keys()
-    if not specs:  # a wallet with no maker order: its taker fills say where it trades
-        mapped = {f["token"] for f in fills if f["role"] == "taker"} & tok.keys()
+    if not orders:  # use the wallet's filled markets even when all the remaining quote specs are anonymous
+        mapped.update(f["token"] for f in fills if f["token"] in tok)
     streams = sorted({_stream(tok[t]) for t in mapped}) or sorted(
         d.name for d in Path(root).iterdir() if d.name.startswith("clob_"))
     pairs = {(tok[t]["asset"], tok[t]["hz"]) for t in mapped}
@@ -691,7 +707,8 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
         cancels: dict[tuple, list] = defaultdict(list)
         for x in mine:
             o = x["om"]
-            if x["kind"] == "order" and o.get("outcome") == "cancelled" and o.get("end_ms") is not None:
+            if (x["kind"] == "order" and o.get("outcome") == "cancelled"
+                    and o.get("rest_known") is True and o.get("end_ms") is not None):
                 cancels[(x["token"], x["price"], x["side"], o["end_ms"])].append((x["id"], o["remainder"]))
         hz = s.rsplit("_", 1)[1]
         # every mapped token of the stream's windows (Up or Down): a window whose Up token is only
@@ -756,7 +773,11 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
     takes = []
     for f in fills:
         t = res["fill_tw"].get(f["tx"], (int(f["block_ts"]) - 2) * NS)  # no print: ~2 s before its block
-        if f["role"] == "taker" and f["token"] in tok and lo <= t < hi:
+        if f["token"] not in tok or not lo <= t < hi:
+            continue
+        if f["role"] == "maker":
+            stats["mapped_maker_fills"] += 1
+        elif f["role"] == "taker":
             takes.append({"tw": t, "token": f["token"], "idx": tok[f["token"]]["idx"], "side": f["side"],
                           "slug": tok[f["token"]]["slug"], "located": f["tx"] in res["fill_tw"]})
     return {"rows": rows, "specs": [x for x in specs if "row" in x], "res": res, "inv": inv, "tok": tok,
@@ -1141,7 +1162,8 @@ def fit_timing(T: dict) -> dict:
                  "trigger_note": "book_move compares the token's best bid/ask just after the previous own order "
                                  "landed with the state before this one; the wallet's own cancels move it too"}
     # cancels (ordermatch outcome), post-placement facts only
-    can = [x for x in xs if x["om"].get("outcome") == "cancelled" and x["om"].get("rest_max_ms") is not None]
+    can = [x for x in xs if x["om"].get("outcome") == "cancelled" and x["om"].get("rest_known") is True
+           and x["om"].get("rest_max_ms") is not None]
     out["outcomes"] = dict(Counter(f"{x['om'].get('outcome')}:{x['om'].get('reason')}" for x in xs))
     if can:
         cc = np.array([x["row"]["window"] for x in can], dtype=object).astype(str)
@@ -1673,19 +1695,24 @@ def fit_taker(T: dict) -> dict:
 def taker_report(T: dict, wallet: str) -> dict:
     """The fit report of a wallet with no located maker order (its taker fills, if any, are tested)."""
     tk = fit_taker(T)
-    why = ["no maker order of this wallet was located: rulefit emits maker drafts only",
-           tk["reason"] or "a taker rule was found; taker genomes are not emitted by rulefit v1"]
-    return {"wallet": wallet, "label": "taker fills: no maker order located", "selection_caveat": CAVEAT,
+    why = ["no maker order of this wallet has a qualified placement in a mapped window"]
+    if T["takes"]:
+        why.append(tk["reason"] or "a taker rule was found; taker genomes are not emitted by rulefit v1")
+    label = "taker fills: no maker order located" if T["takes"] else "insufficient maker placement evidence"
+    return {"wallet": wallet, "label": label, "selection_caveat": CAVEAT,
             "inputs": T["inputs"] | {"counts": dict(T["stats"]), "rows_orders": 0, "rows_candidates": 0, "pairs": T["pairs"]},
             "taker_rule": tk,
             "explained_by_observed_inputs": {"verdict": tk.get("verdict"), "side": tk.get("side"), "timing": tk.get("when"),
-                                             "price": None, "reasons": [] if tk["found"] else [tk["reason"]]},
+                                             "price": None, "reasons": [] if tk["found"] else why},
             "genome": {"id": None, "status": "not_emitted", "registered": False, "reasons": why,
                        "reason": "; ".join(why)}}
 
 
 def taker_card(rep: dict) -> str:
     tk = rep["taker_rule"]
+    if not tk["n_takes"]:
+        return (f"# rule fit {rep['wallet']}\n\n## INSUFFICIENT MAKER PLACEMENT EVIDENCE\n\n"
+                + "\n".join(rep["genome"]["reasons"]) + "\n\n## NO GENOME EMITTED\n")
     L = [f"# rule fit {rep['wallet']}  [TAKER FILLS, NO MAKER ORDER]", "",
          f"taker fills {tk['n_takes']} ({tk['located_by_print']} timed by a print), cells {tk['cells']} x {tk['cell_s']} s", "",
          "## RULE FOUND (not emitted)" if tk["found"] else ("## NO RULE FOUND" if tk.get("verdict") is False else "## INSUFFICIENT EVIDENCE"), f"- {tk['reason'] or 'when and side both explained'}"]
@@ -2111,13 +2138,14 @@ def run(root: Path, om_dir: Path | None, orders_path: Path | None, wallet: str, 
     if reconstruct_manifest is not None:
         T["inputs"]["reconstruct_manifest"] = str(reconstruct_manifest)
         T["inputs"]["candidates"]["unavailable"] = "reconstruction does not publish per-wallet candidate quotes"
-    if not any(r["kind"] == "order" for r in T["rows"]) and T["takes"]:
-        report = _clean(taker_report(T, wallet))  # no maker order, but taker fills: a report, never a genome
+    if not any(r["kind"] == "order" for r in T["rows"]) and (T["takes"] or T["stats"]["mapped_maker_fills"]):
+        report = _clean(taker_report(T, wallet))
         if out is not None:
             out.mkdir(parents=True, exist_ok=True)
             (out / "genome.json").unlink(missing_ok=True)
             (out / "fit_report.json").write_bytes(orjson.dumps(report, option=orjson.OPT_INDENT_2))
             (out / "rule.md").write_text(taker_card(report))
+            (out / "decision_table.jsonl").write_bytes(b"")
         return None, report, []
     if not any(r["kind"] == "order" for r in T["rows"]):
         raise SystemExit(f"doppel-rulefit: no order of {wallet} could be put in a window ({dict(T['stats'])}). "
@@ -2178,7 +2206,7 @@ def main(argv=None) -> int:
         ap.error(str(exc))
     if "taker_rule" in report:   # a wallet with no maker order: "no rule found" is a result, not a failure
         print(taker_card(report))
-        return 0
+        return 0 if report["taker_rule"]["n_takes"] else 1
     print(card(report))
     return 0 if genome is not None else 1
 

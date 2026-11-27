@@ -244,7 +244,12 @@ def prepare(rows: list[dict], has_verified: bool) -> dict:
     use.sort(key=lambda r: (r["block_ts"], r["tx"], r["order_id"]))
     orders: dict[str, dict] = {}
     for r in use:
-        orders.setdefault(r["order_id"], r)
+        if r["order_id"] not in orders:
+            # A stale derived flag must not put a post-block signed clock into the timing sample.
+            # Fills are sorted, so this check uses the earliest block observed for the order.
+            if r.get("ts_flag") is None and r.get("created_ms") is not None and r["created_ms"] > r["block_ts"] * 1000:
+                r = r | {"ts_flag": "after_block"}
+            orders[r["order_id"]] = r
     return {"rows": use, "orders": list(orders.values()),
             "input": {"rows": len(rows), "rows_used": len(use),
                       "rows_excluded_by_role": dict(Counter(r["role"] for r in rows)
@@ -440,8 +445,8 @@ def copyability(fp: dict, om: dict | None) -> dict:
     if fp["n_orders"] >= T["min_n"] and tk is not None and tk >= COPY["taker_share_min"]:
         return {"verdict": "TAKER", "rate": None,
                 "reasons": [f"taker share of filled shares {tk} >= {COPY['taker_share_min']} over {fp['n_orders']} orders"]}
-    if not om:
-        return {"verdict": "UNKNOWN", "rate": None, "reasons": ["no ordermatch for this wallet"]}
+    if not om or "placement_evidence_counts" not in om:
+        return {"verdict": "UNKNOWN", "rate": None, "reasons": ["no qualified ordermatch summary for this wallet"]}
     ft = footprint(om)
     ratio = ft["fill_ratio"] if ft else None
     rate = ft["chance_share"] if ft else om["placebo_rate"]
@@ -470,6 +475,8 @@ def ledger(wallet: str, w: dict, fp: dict, om: dict | None = None, dos: dict | N
            src: dict[str, str | None] | None = None) -> dict:
     """The reconstruction ledger of one wallet. ``src`` names the orders / ordermatch / dossier files."""
     src = src or {}
+    if om is not None and "placement_evidence_counts" not in om:
+        om = None  # the older summaries counted ambiguous additions as the wallet's actions
     S_ord, S_om, S_dos = src.get("orders"), src.get("ordermatch"), src.get("dossier")
     n, n_mk, N = fp["n_orders"], fp["n_maker_orders"], T["min_n"]
     ob: dict[str, dict] = {}

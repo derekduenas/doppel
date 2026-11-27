@@ -179,7 +179,8 @@ GATES: dict[str, dict] = {
 _ME = "lab/reconstruct.py"
 CODE = {
     "ordertape": (_ME, "lab/ordertape.py", "lab/fillstore.py"),
-    "ordermatch": (_ME, "lab/ordermatch.py", "lab/intlbook.py", "tape/segment.py"),
+    "ordermatch": (_ME, "lab/ordermatch.py", "lab/intlbook.py", "lab/tradeallocation.py",
+                   "lab/ordertape.py", "tape/segment.py"),
     "orderreplay": (_ME, "lab/orderreplay.py", "lab/tradeallocation.py", "lab/ordertape.py", "lab/ordermatch.py", "lab/intlbook.py", "tape/segment.py",
                     "twin/engine.py", "twin/tape.py", "twin/features.py", "strategy/genome.py"),
     "profile": (_ME, "lab/profile.py", "lab/ordermatch.py", "lab/ordertape.py"),
@@ -617,26 +618,33 @@ def merge_match(wallet: str, docs: list[tuple[str, dict]], rows: list[dict], res
     n = {k: sum(d[k] for _, d in docs) for k in MATCH_COUNTS}
     outcomes: Counter = Counter()
     fills: Counter = Counter()
+    evidence: Counter = Counter()
     for _, d in docs:
+        if "placement_evidence_counts" not in d:
+            raise ValueError("regenerate legacy ordermatch chunks before merging placement evidence")
         outcomes.update(d["outcomes"])
         fills.update(d["fills"])
+        evidence.update(d["placement_evidence_counts"])
     obs = n["observable"]
+    qualified = [r for r in rows if ordermatch.qualified_placement(r)]
     return {"wallet": wallet, "chunks": [cid for cid, _ in docs],
+            "diagnostic_rows": sum(d["diagnostic_rows"] for _, d in docs),
+            "placement_evidence_counts": dict(evidence),
             "maker_orders": n["maker_orders"], "observable": obs, "matched": n["matched"],
             "match_rate": _r(n["matched"] / obs) if obs else None,
             "placebo_matched": n["placebo_matched"],
             "placebo_rate": _r(n["placebo_matched"] / obs) if obs else None,
             "match_rate_by_side": None,  # no per-side denominators in the chunk documents
             "matched_all": n["matched_all"],
-            "sign_to_book_ms": _q([r["sign_to_book_ms"] for r in rows]),
-            "tw_minus_created_ms": _q([r["placed_tw_ns"] / 1e6 - r["created_ms"] for r in rows]),
+            "sign_to_book_ms": _q([r["sign_to_book_ms"] for r in qualified]),
+            "tw_minus_created_ms": _q([r["placed_tw_ns"] / 1e6 - r["created_ms"] for r in qualified]),
             "outcomes": dict(outcomes),
             "cancelled_alone": n["cancelled_alone"],
             "cancelled_no_prints_near": n["cancelled_no_prints_near"],
             "cancelled_seen_as_price_change": n["cancelled_seen_as_price_change"],
             "fill_before_placement": n["fill_before_placement"],
             "fills": dict(fills),
-            "rest_ms_known": {k: _q([r["rest_max_ms"] for r in rows if r["rest_known"] and r["outcome"] == k])
+            "rest_ms_known": {k: _q([r["rest_max_ms"] for r in qualified if r["rest_known"] and r["outcome"] == k])
                               for k in ("filled", "cancelled")},
             "rest_not_known": n["rest_not_known"], "rest_censored": n["rest_censored"],
             "fingerprint_dropped_chunks": [cid for cid, d in docs if d.get("fingerprint_dropped")],
@@ -739,6 +747,8 @@ def step_ordermatch(x: _Ctx, units: list[dict], orders: dict | None) -> dict:
         dirs = [c.out / r["dir"] for r in done]
         files = _partition([d / "orders.jsonl" for d in dirs], "maker", c.wallets, c.out, "orders.jsonl")
         docs = [(r["chunk"], orjson.loads((d / "ordermatch.json").read_bytes())) for r, d in zip(done, dirs)]
+        if any(d["params"].get("placement_evidence_version") != ordermatch.PLACEMENT_EVIDENCE_VERSION for _, d in docs):
+            raise ValueError("regenerate ordermatch chunks for the current placement evidence version before merging")
         hists = [orjson.loads((d / "quotes_rest_ms.json").read_bytes()) for d in dirs]
         wallets = {}
         for w in c.wallets:
@@ -748,6 +758,7 @@ def step_ordermatch(x: _Ctx, units: list[dict], orders: dict | None) -> dict:
             wallets[w] = merge_match(w, [(cid, d["wallets"][w]) for cid, d in docs if w in d["wallets"]],
                                      list(_jsonl(c.out / "wallets" / w / "orders.jsonl")), rest)
         doc = {"params": {"from": c.t_from, "to": c.t_to, "chunk_s": c.chunk_s, "wallet_batch": c.wallet_batch,
+                          "placement_evidence_version": ordermatch.PLACEMENT_EVIDENCE_VERSION,
                           "chunks": sorted({r["chunk"] for r in done}),
                           "per_unit": docs[0][1]["params"] if docs else None},
                "merge": "counts summed over chunks; rates recomputed from the sums; quantiles from the pooled rows",
@@ -763,7 +774,8 @@ def step_ordermatch(x: _Ctx, units: list[dict], orders: dict | None) -> dict:
 
 
 # ---------------------------------------------------------------- step: orderreplay
-_DERIVED = ("orders_replayed", "headline_orders", "known_end_cut_by_reset", "cut_short", "twin_book_cross_fills")
+_DERIVED = ("orders_replayed", "headline_orders", "unqualified_placements", "known_end_cut_by_reset", "cut_short",
+            "twin_book_cross_fills")
 
 
 def _unit_orderreplay(c: Cfg, d: Path, u: dict, streams: list[str]) -> dict:
@@ -890,7 +902,7 @@ def step_orderreplay(x: _Ctx, units: list[dict], om: dict, orders: dict | None) 
                 d["never_filled_quotes_estimate"] = nf
             wallets[w] = d
             for r in rows:
-                if r["end_known"] and not r["cut"]:
+                if ordermatch.qualified_placement(r) and r["end_known"] and not r["cut"]:
                     for m in MODES:
                         by_market[m][r["market"]][0] += r[m]["filled"]
                         by_market[m][r["market"]][1] += r["real_filled"]
