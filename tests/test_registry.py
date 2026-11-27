@@ -11,6 +11,7 @@ from doppel.strategy.registry import GENESIS, Registry, RegistryError, holm
 NOW = datetime(2026, 11, 25, 23, 0, tzinfo=UTC).timestamp()
 DAY = 86400.0
 WIN = ("2026-11-26T00:00:00Z", "2026-11-29T00:00:00Z")
+RNG = (int(datetime(2026, 11, 26, tzinfo=UTC).timestamp()), int(datetime(2026, 11, 29, tzinfo=UTC).timestamp()))
 
 
 class Clock:
@@ -82,17 +83,17 @@ def test_results_append_only_first_binding(tmp_path):
     reg = _reg(tmp_path, clock)
     gid = reg.register(_g(), "h1", "h", WIN)["genome_id"]
     with pytest.raises(RegistryError, match="closes"):
-        reg.record_result(gid, {"p_value": 0.01})                       # window still open
+        reg.record_result(gid, {"p_value": 0.01}, RNG)                       # window still open
     clock.t = datetime(2026, 11, 29, 1, tzinfo=UTC).timestamp()
     with pytest.raises(RegistryError, match="not registered"):
-        reg.record_result("ab" * 32, {"p_value": 0.01})
+        reg.record_result("ab" * 32, {"p_value": 0.01}, RNG)
     for bad in ({"p": 0.1}, {"p_value": 1.5}, {"p_value": True}, {"p_value": "0.1"}):
         with pytest.raises(RegistryError):
             reg.record_result(gid, bad)
     before = reg.path.read_bytes()
-    r1 = reg.record_result(gid, {"p_value": 0.2, "net_c_per_window": 0.3, "windows": 310})
+    r1 = reg.record_result(gid, {"p_value": 0.2, "net_c_per_window": 0.3, "windows": 310}, RNG)
     mid = reg.path.read_bytes()
-    r2 = reg.record_result(gid, {"p_value": 0.001})                      # a re-run cannot replace it
+    r2 = reg.record_result(gid, {"p_value": 0.001}, RNG)                      # a re-run cannot replace it
     after = reg.path.read_bytes()
     assert mid.startswith(before) and after.startswith(mid)              # only ever appended
     assert r1["binding"] is True and r2["binding"] is False and r2["seq"] == 2
@@ -109,7 +110,7 @@ def test_ledger_holm_over_whole_family(tmp_path):
     reg.register(_g(5.0), "other", "h", WIN)                            # other families don't count
     clock.t = datetime(2026, 11, 30, tzinfo=UTC).timestamp()
     for gid, p in zip(ids, [0.01, 0.04, 0.03, 0.005]):
-        reg.record_result(gid, {"p_value": p})
+        reg.record_result(gid, {"p_value": p, "decision": "PASS"}, RNG)
     led = reg.ledger("h1")
     assert led["m"] == 4 and led["tested"] == 4 and led["pending"] == 0
     assert [r["p_holm"] for r in led["rows"]] == pytest.approx([0.03, 0.06, 0.06, 0.02])
@@ -143,7 +144,7 @@ def test_verify_detects_tampering(tmp_path):
     for h in (1.0, 2.0, 3.0):
         reg.register(_g(h), "h1", "h", WIN)
     clock.t = datetime(2026, 11, 30, tzinfo=UTC).timestamp()
-    reg.record_result(_g(1.0).id, {"p_value": 0.3})
+    reg.record_result(_g(1.0).id, {"p_value": 0.3}, RNG)
     pristine = reg.path.read_bytes()
     head = reg.head()
     assert reg.verify() == []
@@ -213,3 +214,38 @@ def test_registry_append_does_not_mark_code_dirty(tmp_path):
     assert git_sha(tmp_path / "src")["dirty"] is False
     (tmp_path / "src" / "m.py").write_text("x=2\n")
     assert git_sha(tmp_path / "src")["dirty"] is True
+
+
+def test_draft_genome_cannot_be_registered(tmp_path):
+    """rulefit emits status "draft"; status is not part of the id, so a draft would otherwise seal
+    silently into the append-only registry."""
+    import pytest
+
+    from doppel.strategy.genome import Genome, KillRule, MakerRule, Source, Universe, to_dict
+    from doppel.strategy.registry import Registry, RegistryError
+    g = Genome(name="d", mode="maker", universe=Universe(venue="pmus"), source=Source(kind="manual"),
+               maker=MakerRule(), kill=KillRule(min_windows=30), created_tw=0)
+    d = to_dict(g) | {"status": "draft"}
+    reg = Registry(tmp_path, now=lambda: 0.0, code={"sha": "c0ffee", "dirty": False})
+    with pytest.raises(RegistryError, match="draft"):
+        reg.register(d, "fam", "hyp", (10, 20))
+    assert reg.lines() == []
+
+
+def test_result_must_cover_the_preregistered_window_and_kill_never_wins(tmp_path):
+    """Astra audit 2026-11-26: a run over the wrong period was accepted, and a KILLed strategy (drawdown
+    breach) with a small p still became the family winner."""
+    clock = Clock()
+    reg = _reg(tmp_path, clock)
+    a, b = (reg.register(_g(h), "h1", "h", WIN)["genome_id"] for h in (1.0, 2.0))
+    clock.t = datetime(2026, 11, 30, tzinfo=UTC).timestamp()
+    for wrong in (None, (RNG[0] - 86400, RNG[1] - 86400), (RNG[0], RNG[0] + 600)):
+        with pytest.raises(RegistryError, match="preregistered window"):
+            reg.record_result(a, {"p_value": 0.001, "decision": "PASS"}, wrong)
+    reg.record_result(a, {"p_value": 0.001, "decision": "KILL"}, RNG)          # breached its kill rule
+    reg.record_result(b, {"p_value": 0.2, "decision": "CONTINUE"}, RNG)
+    led = reg.ledger("h1")
+    assert led["winner"] is None and not any(r["survives"] for r in led["rows"])
+    # a manual p is recorded but never binding, so it cannot rescue the family either
+    m = reg.record_result(b, {"p_value": 0.0001, "decision": "PASS", "p_source": "manual"})
+    assert m["binding"] is False and reg.ledger("h1")["winner"] is None and reg.verify() == []

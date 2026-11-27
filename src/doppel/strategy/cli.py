@@ -86,6 +86,7 @@ def cmd_register(a: argparse.Namespace) -> int:
 
 
 def cmd_result(a: argparse.Namespace) -> int:
+    rng: tuple | None = None
     if a.results:
         # The binding verdict comes from the twin's own output, never from typed numbers (audit A1-F1).
         doc = orjson.loads(Path(a.results).read_bytes())
@@ -100,6 +101,7 @@ def cmd_result(a: argparse.Namespace) -> int:
         v["twin_config"] = (doc.get("twin") or {}).get("config")
         v["twin_code_sha256"] = (doc.get("twin") or {}).get("code_sha256")
         a.p = v["p_value"]
+        rng = tuple(doc["range"]) if doc.get("range") else None
     else:
         if a.p is None:
             print("REFUSED pass --results <twin output.json> (or --p for a manual, non-twin verdict)",
@@ -109,7 +111,7 @@ def cmd_result(a: argparse.Namespace) -> int:
         v["p_value"] = a.p
         v["p_source"] = "manual"
     try:
-        rec = Registry(a.root).record_result(a.id, v)
+        rec = Registry(a.root).record_result(a.id, v, rng)
     except RegistryError as e:
         print(f"REFUSED {e}", file=sys.stderr)
         return 2

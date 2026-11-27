@@ -35,12 +35,13 @@ import subprocess
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import get_args
 from pathlib import Path
 
 import orjson
 
 from . import sequential as seq
-from .genome import Genome, from_dict, to_dict, validate
+from .genome import Genome, Status, from_dict, to_dict, validate
 
 REL_PATH = Path("registry") / "genomes.jsonl"
 GENESIS = "0" * 64
@@ -181,6 +182,11 @@ class Registry:
         must start after now. Returns the registration record (the existing one if the id is
         already registered: no-op)."""
         g = genome if isinstance(genome, Genome) else from_dict(genome)
+        st = getattr(g, "status", None)
+        if st not in get_args(Status):
+            # e.g. rulefit's "draft": status is outside the id, so a draft would seal silently and the
+            # registry is append-only. Promote it to a real Status deliberately before registering.
+            raise RegistryError(f"genome status {st!r} cannot be registered (allowed: {', '.join(get_args(Status))})")
         errs = validate(g)
         if errs:
             raise RegistryError("genome fails validate(): " + "; ".join(errs))
@@ -209,9 +215,13 @@ class Registry:
                     "genome": orjson.loads(orjson.dumps(to_dict(g)))}
         return self._append(build)
 
-    def record_result(self, genome_id: str, verdict: dict) -> dict:
+    def record_result(self, genome_id: str, verdict: dict, data_range: tuple[int, int] | None = None) -> dict:
         """Append a verdict for a registered genome. ``verdict["p_value"]`` is the one-sided p for
-        H1: net per window > 0. Refused before the evaluation window has closed."""
+        H1: net per window > 0. Refused before the evaluation window has closed.
+
+        Binding (Astra audit 2026-11-26): a twin verdict counts only if ``data_range`` is exactly the
+        preregistered [start, end) window; anything else is refused. A manual verdict (``p_source``
+        "manual") is recorded but never binding, so it can never make a family winner."""
         if not isinstance(verdict, dict) or "p_value" not in verdict:
             raise RegistryError("verdict must be a dict with p_value (one-sided, H1: net per window > 0)")
         p = verdict["p_value"]
@@ -230,9 +240,17 @@ class Registry:
             if now < reg["eval_window"]["end_s"]:
                 raise RegistryError(f"evaluation window closes {reg['eval_window']['end']}: a result before "
                                     "then is not on the preregistered window")
-            prior = sum(1 for r in recs if r["kind"] == "result" and r["genome_id"] == genome_id)
+            manual = vd.get("p_source") == "manual"
+            if not manual:
+                w = reg["eval_window"]
+                if data_range is None or [int(data_range[0]), int(data_range[1])] != [int(w["start_s"]), int(w["end_s"])]:
+                    raise RegistryError(f"twin results cover {data_range}, not the preregistered window "
+                                        f"[{w['start_s']}, {w['end_s']}) ({w['start']} .. {w['end']})")
+            prior = sum(1 for r in recs if r["kind"] == "result" and r["genome_id"] == genome_id
+                        and r.get("binding"))
             return {"kind": "result", "tw": int(now * 1e9), "genome_id": genome_id,
-                    "family": reg["family"], "binding": prior == 0, "verdict": vd}
+                    "family": reg["family"], "binding": (not manual) and prior == 0,
+                    "data_range": list(data_range) if data_range else None, "verdict": vd}
         return self._append(build)
 
     # -- ledger
@@ -242,10 +260,15 @@ class Registry:
         recs = self.records()
         regs = [r for r in recs if r["kind"] == "register" and r["family"] == family]
         res: dict[str, list[dict]] = {}
-        for r in recs:
+        for r in recs:   # binding result first; later re-runs are counted but never replace it
             if r["kind"] == "result":
                 res.setdefault(r["genome_id"], []).append(r)
-        ps = [float(res[r["genome_id"]][0]["verdict"]["p_value"]) if r["genome_id"] in res else 1.0
+        for v in res.values():
+            v.sort(key=lambda r: not r.get("binding"))
+        def binding(gid: str) -> dict | None:
+            got = res.get(gid) or []
+            return got[0] if got and got[0].get("binding") else None
+        ps = [float(binding(r["genome_id"])["verdict"]["p_value"]) if binding(r["genome_id"]) else 1.0  # type: ignore[index]
               for r in regs]
         adj = holm(ps)
         rows = []
@@ -253,10 +276,13 @@ class Registry:
             got = res.get(r["genome_id"], [])
             rows.append({"genome_id": r["genome_id"], "name": r["name"], "registered": iso(r["tw"] / 1e9),
                          "eval_window": [r["eval_window"]["start"], r["eval_window"]["end"]],
-                         "status": "tested" if got else "pending",
-                         "p_value": p if got else None, "p_holm": a,
-                         "survives": bool(got) and a <= alpha, "results": len(got),
-                         "verdict": got[0]["verdict"] if got else None})
+                         "status": "tested" if binding(r["genome_id"]) else "pending",
+                         "p_value": p if binding(r["genome_id"]) else None, "p_holm": a,
+                         # a KILL (or any non-PASS decision) can never be the winner, whatever its p
+                         "survives": bool(binding(r["genome_id"])) and a <= alpha
+                         and ((binding(r["genome_id"]) or {}).get("verdict") or {}).get("decision") == "PASS",
+                         "results": len(got),
+                         "verdict": (binding(r["genome_id"]) or {}).get("verdict")})
         surv = sorted((x for x in rows if x["survives"]), key=lambda x: (x["p_holm"], x["p_value"]))
         return {"family": family, "alpha": alpha, "method": "holm", "m": len(rows),
                 "tested": sum(x["status"] == "tested" for x in rows),

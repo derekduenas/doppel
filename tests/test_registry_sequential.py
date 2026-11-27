@@ -88,9 +88,9 @@ def test_early_pass_needs_family_holm_and_is_binding(tmp_path):
     assert led["rows"][0]["survives"] and reg.verify() == []
     # the end-of-window verdict path is unchanged and still refused before the window closes
     with pytest.raises(RegistryError, match="closes"):
-        reg.record_result(ids[0], {"p_value": 0.01})
+        reg.record_result(ids[0], {"p_value": 0.01}, WIN)
     clock.t = END + 1
-    reg.record_result(ids[0], {"p_value": 0.01})
+    reg.record_result(ids[0], {"p_value": 0.01}, WIN)
     assert reg.ledger("seqfam")["rows"][0]["p_value"] == 0.01 and reg.verify() == []
 
 
