@@ -1491,7 +1491,7 @@ def run(root: Path, om_dir: Path | None, orders_path: Path | None, wallet: str, 
     if reconstruct_manifest is not None:
         if om_dir is not None or orders_path is not None:
             raise ValueError("use reconstruction manifest or standalone order inputs")
-        from .research_manifest import read_reconstruction
+        from .research_manifest import read_reconstruction  # pyright: ignore[reportMissingImports]  (module lives on review/system-audit-20261126, not on main yet)
 
         source = read_reconstruction(reconstruct_manifest, wallet, t_from, t_to)
         orders_path, matched_orders, match_summary = source.orders, source.matched_orders, source.summary
