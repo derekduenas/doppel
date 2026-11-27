@@ -1,5 +1,5 @@
 {
-  "schema": "wallet-inspection/1",
+  "schema": "wallet-inspection/2",
   "use": "retrospective_diagnostic",
   "layer1_summary_sha256": "652d8f5225786fc83ebca8c5cd3b8e06d6eb4803465977778fd8a3973103eae2",
   "window_time": [
@@ -30,7 +30,7 @@
   "lookback_ms": 10000,
   "placebo_shift_ms": -60000,
   "size_tolerance_shares": 0.02,
-  "orders_sha256": "db4d7a4698c05d723e50ea399cded30c0c5aa8ae1dedcf83bd4e4148d2955c8d",
+  "orders_sha256": "0cb300eddb24a68a267d813d8ac4fd6859fe3a4c902a80ab058ad5033eae4f63",
   "inputs": [
     {
       "wallet": "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c",
@@ -107,6 +107,7 @@
         }
       },
       "residence_upper_bounds": 11,
+      "sole_actual_residence_by_depth": {},
       "wallet_identified_placements": 0
     },
     "0x28cc505fb60501dbb2199a9662ba175919af904f": {
@@ -139,7 +140,13 @@
         }
       },
       "residence_upper_bounds": 2,
+      "sole_actual_residence_by_depth": {
+        "excluded_by_empty_level": 1,
+        "possible_owner_unknown": 1
+      },
       "wallet_identified_placements": 0
     }
-  }
+  },
+  "prior_summary_sha256": "a6faff79354a2ee62c3e004e7ae6662047a5416dd63e379c6c75b1ccb170f4cb",
+  "prior_orders_sha256": "db4d7a4698c05d723e50ea399cded30c0c5aa8ae1dedcf83bd4e4148d2955c8d"
 }

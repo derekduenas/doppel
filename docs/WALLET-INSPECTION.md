@@ -26,6 +26,38 @@ window. This trade is excluded from the paired comparison. Two independent reade
 agreed on the print, both competing additions, the empty level and the bound.
 [Raw-tape cross-check](../evidence/2026-11-27-wallet-inspection/first-trade.json)
 
+## Short-window results
+
+The first interval was Nov 25 18:00–18:15 UTC. Both wallets traded three conditions.
+
+| Fill-anchored measure | Candidate | Control |
+|---|---:|---:|
+| Reconciled fills → unique signed orders | 30 → 17 | 35 → 18 |
+| First executions located | 17 | 16 |
+| Continuous ten-second actual windows | 11 | 4 |
+| Orders eligible in both arms / distinct conditions | 6 / 2 | 2 / 1 |
+| Any compatible addition, actual / shifted | 6 / 3 | 2 / 0 |
+| Sole uncontested addition, actual / shifted | 0 / 1 | 2 / 0 |
+| Orders with an upper bound on continuous displayed residence | 11 | 2 |
+
+The short sample provides no unique actual addition for the candidate among the paired
+orders. For the control, one of the two sole actual additions occurred 136 ms before
+the fill. A later observation put the continuous displayed upper bound at 65 ms.
+That rules out the addition as the beginning of an uninterrupted quote through execution.
+The other control addition remained possible with unknown owner. This check follows
+the registered size comparison and keeps its counts visible. [Short receipt](../evidence/2026-11-27-wallet-inspection/first15-summary.json)
+
+**Separate signing-time comparator.** The candidate had zero eligible orders. All 17
+signed stamps fell after both the first block second and the end of the short interval.
+The control had 17 eligible signed orders and 10 observable in both comparisons. Six
+qualified against the actual signing window and zero against the +60-second placebo.
+Across all 17, seven offered a unique hypothesis, five lacked coverage, two were ambiguous,
+two hit an empty level before the fill and one had no candidate. No exact lifetime was
+established. The comparator used a different anchor, searched −300 to +2,500 ms, and
+therefore has a different denominator from the fill-anchored study above. Its provisional
+wallet clock gate needs at least 30 comparable orders, 90% actual and at most 10% placebo.
+[Native matcher receipt](../evidence/2026-11-27-wallet-inspection/standard-first15.json)
+
 ## How the comparison works
 
 - Select by the verified fill interval and group on account and signed order hash.
@@ -54,6 +86,22 @@ agreed on the print, both competing additions, the empty level and the bound.
   arm. Both tests are limited to observed orders. The market can contain other traders
   whose orders or cancellations never appear with an identity.
 
+## Corrections to the production research tools
+
+The normal matcher now distinguishes one compatible native addition from a contested
+or ambiguous one. It verifies the available execution evidence, rejects contradictory
+prints and reversals, and censors intervals that cross lost state. A full signed fill
+can establish that the signed amount was executed. Anonymous depth reductions supply
+no owner-linked cancellation. The replay and fidelity book adjustment consume qualified
+placement hypotheses. Older summary formats and stale cached reconstruction outputs
+must be regenerated before a trusted handoff.
+
+Rule fitting can retain its diagnostics when evidence is thin. Publishing a maker
+draft requires the existing wallet-level clock and placebo gate plus its side, price and
+participation evidence. Losing coverage or token mapping clears a prior draft from
+that output directory. The profile checks unrounded counts for the clock decision.
+This keeps a plausible-looking model from promoting a wallet with unsupported timing.
+
 ## Reproduce on Apex
 
 The retained research directory is
@@ -64,7 +112,7 @@ were read. The paired studies ran from `016d7ceb2e0d3e4fa7961567de42a72ca6edf586
 They used a 1,100 MiB memory cap, no swap, nice 19, and idle I/O. The short run took
 106 seconds and used 165,600 KiB peak RSS. All inputs come from the retained archive.
 
-Set `src` to `$PWD/rev016d7ce` in the research directory, `arc` to
+Set `src` to `$PWD/rev2000dac` for the final residence labels in the research directory, `arc` to
 `/var/backups/doppel-sealed-20261126`, and `ledger` to
 `$arc/research/wallet-absorption.crsLww`. Use the full registered addresses above for
 `candidate` and `control`. Use fresh output names when repeating a run.
@@ -82,14 +130,18 @@ summary="$src/evidence/2026-11-27-wallet-absorption/run-summary.json"
   --subject "$ledger/signed-day-0x28cc/wallet-$control.json" "$ledger/day-store-0x28cc" "$ledger/day-orders-0x28cc"
 ```
 
-The retained outputs are `paired-first15` and `paired-day`. Recompute the compact
+The original comparisons live in `paired-first15` and `paired-day`. The final check at
+`2000dac8b263f13ccafd801481ca8e160a1713d7` applied the witnessed empty level to
+each actual sole candidate. It validated the original row hashes and reproduced every
+registered count before publishing `qualified-first15` and `qualified-day`. A direct
+run from the raw short tape also reproduces the qualified per-order output. Recompute the compact
 cross-check from the research directory with the script and the independent first case
 from this review branch. It validates the SHA-256 of the per-order results against each
 summary, the signed manifests against Layer 1, and the first-order result against the
 independent raw-tape walk. [Evidence verifier](../evidence/2026-11-27-wallet-inspection/summarize.py)
 
 ```sh
-/opt/doppel/.venv/bin/python verify-results.py --study "$PWD" \
+/opt/doppel/.venv/bin/python "$src/evidence/2026-11-27-wallet-inspection/summarize.py" --study "$PWD" \
   --layer1-summary "$summary" --first-case independent-first.json
 ```
 
