@@ -1,5 +1,15 @@
 # Claude Code handoff
 
+## Latest wallet walkthrough · Layer 3
+
+Open `/Users/derekduenas/doppel-wallet-dissection-20261127` on `review/wallet-dissection-20261127`.
+The [Layer 3 evidence checkpoint](https://github.com/derekduenas/doppel/blob/a0c96476f8d85d050653625fb6ac671a2c1e1ea0/docs/WALLET-DISSECTION.md)
+covers the two registered wallets, both anonymous posting hypotheses, the independently
+observed no-fill market, and the two real-wallet abstentions. The branch tip carries
+verification and reproducible Apex receipts. Start Layer 4 by registering rival rules
+and acquiring a separately labelled holdout. Production tape and archive capacity on
+Apex are below their reserves.
+
 ## Wallet-by-wallet audit · Layer 2
 
 Use `review/wallet-inspection-20261127` in
