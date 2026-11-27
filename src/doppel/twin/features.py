@@ -7,7 +7,8 @@ Reference data:
   s + ``brti_delay_s`` (default 1 s). Everything derived from BRTI (fair_up, brti moves,
   dist_to_open_usd, the edges) is computed as of d_eff = d - brti_delay_s.
 - the published PM US settlement series (``ref_prices``), only at window boundaries:
-  priceToBeat = A(S-1), settlement = A(E-1), Up iff settlement >= priceToBeat (ties Up).
+  priceToBeat = A(S-1) after its first retained receipt. Revisions become eligible at receipt.
+  Final historical A(S-1) and A(E-1) are available for retrospective settlement labels.
 
 fair_up is fair-v1 (``lab.fair.fair_up_raw``) with the genome's ``vol_window_s`` and the measured
 alignment lag (E19: 0). Assets other than BTC have no raw index, hence no fair and no BRTI features:
@@ -18,7 +19,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -48,14 +49,14 @@ class WindowRef:
 
     # None is an explicitly supplied static reference (e.g. a synthetic test).
     # Tape-backed windows always carry a history, including an empty one.
-    ptb_history: tuple[tuple[int, float | None], ...] | None = None
+    ptb_history: tuple[tuple[int, float | None], ...] | None = field(default=None, kw_only=True)
 
     def opening_at(self, receive_ns: int) -> tuple[int | None, float | None]:
         """Latest opening value recorded by receive_ns, inclusive, and its receipt."""
         if self.ptb_history is None:
             return None, self.ptb
         i = bisect_right(self.ptb_history, receive_ns, key=lambda x: x[0])
-        return self.ptb_history[i-1] if i else (None, None)
+        return self.ptb_history[i - 1] if i else (None, None)
 
     @property
     def outcome(self) -> int | None:

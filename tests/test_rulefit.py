@@ -137,11 +137,14 @@ def write(tmp, frames, orders, tape, quotes=None, om_doc=None, windows=6, asset=
     if om_doc is not None:
         (om / "ordermatch.json").write_bytes(orjson.dumps(om_doc))
     (tmp / "ordertape.jsonl").write_bytes(jl(tape))
-    (tmp / "coverage_receipt.json").write_bytes(orjson.dumps({"wallet": W, "simulated_flat_start_fills": {
-        "ordertape.jsonl": {"from": T0, "to": T0 + 3600, "sha256": hashlib.sha256(jl(tape)).hexdigest()}}}))
     (tmp / "tokens.jsonl").write_bytes(jl([{"token": f"{'UD'[i]}{k}", "slug": slug(k, asset), "idx": i,
                                             "status": "open", "known_tw_ns": (T0 - 3600) * NS,
-                                            "witness_source": "test_config"} for k in range(windows) for i in (0, 1)]))
+                                            "witness_source": "answerkey_config"} for k in range(windows) for i in (0, 1)]))
+    (tmp / "coverage_receipt.json").write_bytes(orjson.dumps({"wallet": W, "simulated_flat_start_fills": {
+        "ordertape.jsonl": {"from": T0, "to": T0 + 3600, "sha256": hashlib.sha256(jl(tape)).hexdigest()}},
+        "simulated_market_universe": {"source": "answerkey_config", "configured_tw_ns": (T0 - 3600) * NS,
+                                      "from": T0, "to": T0 + 3600,
+                                      "sha256": hashlib.sha256((tmp / "tokens.jsonl").read_bytes()).hexdigest()}}))
 
 
 def brti_lab(lab, lo=T0 - 900, hi=T0 + 1300, bump_received_after=None):
@@ -1278,4 +1281,5 @@ def test_real_price_draft_cannot_depend_on_attributed_fill_proxy(tmp_path):
     assert not rep["expressible_price_rule"]["skew_kept"]
     assert rep["price_rule"]["ask"]["inventory_basis"] == "diagnostic_association_with_attributed_fills_from_zero"
     assert abs(rep["price_rule"]["ask"]["rule"]["skew_c_per_contract"]) > 0.01
-    assert genome is not None and genome["maker"]["skew_c_per_contract"] == 0
+    assert rep["expressible_price_rule"]["skew_c_per_contract"] == 0
+    assert genome is None and any("missing reference" in reason for reason in rep["genome"]["reasons"])

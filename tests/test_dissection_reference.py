@@ -54,9 +54,11 @@ def test_raw_import_needs_documented_receipt_and_uses_earliest_observation(tmp_p
     raw.close()
     live = SegmentWriter(tmp_path, "ref_brti_live")
     live.append("", tw=(START+5)*NS, meta={"new": [[(START+1)*1000, 100], [(START+3)*1000, 105]]})
+    live.append("", tw=(START+6)*NS+1, meta={"new": [[(START+4)*1000, 100]]})
     live.close()
     got = load_raw_rcv(tmp_path)
     values, clocks = RefStore(tmp_path).brti_rcv(START, START+3)
+    assert got[START+4][1] > START+6
     for i in range(4):
         assert got[START+i][0] == values[i]
         if i in (0, 2):
@@ -79,6 +81,9 @@ def test_only_matching_execution_print_can_supply_fill_time():
     assert row["receipt_tw"] is None
     bind_fill_receipts([row], {"tx": invalid + [event(8), event(7)]}, {}, {})
     assert row["receipt_tw"] == 7
+    duplicate = dict(row)
+    bind_fill_receipts([row, duplicate], {"tx": [event(7)]}, {}, {})
+    assert row["receipt_tw"] is None and duplicate["receipt_tw"] is None
 
 
 @pytest.mark.parametrize("row,reason", [

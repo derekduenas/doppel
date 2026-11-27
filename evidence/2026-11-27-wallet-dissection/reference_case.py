@@ -1,11 +1,14 @@
 """Recompute the first case's reference availability and account-side evidence on Apex."""
 import argparse
 from pathlib import Path
+from statistics import median
+import math
 
 import orjson
 
 from doppel.lab.goldsky_proof import digest
 from doppel.lab.rulefit import Fair
+from doppel.strategy.genome import FairModel
 from doppel.twin.features import RAW_PAD_S
 from doppel.twin.tape import hour_path
 
@@ -35,7 +38,8 @@ def ledger_evidence(case, first, ledger, ledger_digest):
         raise ValueError("cannot isolate the signed movement at its block")
     qty = {i: (before[i][-1][3] if before[i] else t["open"]) for i, (_, t) in pair.items()}
     first_identity = min(first["rtds"]["received_ns"].values())
-    return {"receipt_sha256": ledger_digest, "settlement_block": block, "opening_block": ledger["window_blocks"][0],
+    return {"receipt_sha256": ledger_digest, "settlement_block": block, "opening_balance_block": ledger["window_blocks"][0] - 1,
+            "first_scanned_block": ledger["window_blocks"][0],
             "condition": first["condition_id"], "up_opening_shares": up["open"], "down_opening_shares": down["open"],
             "economic_movements_in_condition_prior_to_block": sum(map(len, before.values())),
             "own_pre_block_up_shares": qty[0], "own_pre_block_down_shares": qty[1],
@@ -85,8 +89,8 @@ def report(root, ledger_path):
     inv = ledger_evidence(case, first, orjson.loads(ledger_path.read_bytes()), ledger_digest)
     start = case["source"]["selected_utc"][0]
     info = {"asset": "btc", "start": start, "end": start + 300}
+    files = sources(root, info, FairModel().vol_window_s)
     fair = Fair(root, start, info["end"])
-    files = sources(root, info, fair.genome.fair.vol_window_s)
     marks = {f"addition_{i}": r["tw_ns"] for i, r in enumerate(case["arms"]["actual"]["fragment_candidates"], 1)}
     marks["execution"] = case["tx_print"]["tw_ns"]
     ref = fair.store.window_ref("btc", start, info["end"], fair.genome.fair.vol_window_s)
@@ -95,7 +99,25 @@ def report(root, ledger_path):
                    "wallet_identified_in_public_execution_records": inv["first_retained_public_identity_receipt_ns"] < tw,
                    "observed_wallet_client_inventory": None}
             for name, tw in marks.items()}
-    return {"schema": "wallet-dissection-first-reference-inventory/1", "wallet": case["wallet"],
+    for state in asof.values():
+        r = state["reference"]
+        received = {}
+        for second in range(r["volatility_first_second"], r["volatility_last_second"] + 1):
+            offset = second - ref.raw_t0
+            stamp = ref.rcv[offset]
+            if math.isfinite(ref.raw[offset]) and stamp <= r["decision_second"]:
+                received[second] = float(stamp)
+        if len(received) != r["raw_seconds_known"]:
+            raise ValueError("raw-source receipt counts differ from the reference model")
+        delays = [v - k for k, v in received.items()]
+        r["raw_receipt_basis"] = ("upstream_perelman_only" if not any(files["ref_brti_live"]["selected_files"].values())
+                                  else "earliest_documented_upstream_or_local_receipt")
+        r["raw_source_lag_s"] = ({"min": round(min(delays), 6), "median": round(median(delays), 6),
+                                  "max": round(max(delays), 6)} if delays else None)
+        r["latest_raw_source_receipt_s"] = max(received.values(), default=None)
+    if files != sources(root, info, fair.genome.fair.vol_window_s) or digest(ledger_path) != ledger_digest:
+        raise ValueError("inputs changed during the reference audit")
+    return {"schema": "wallet-dissection-first-reference-inventory/2", "wallet": case["wallet"],
             "tx": case["transaction"], "window": [start, info["end"]], "cutoffs": asof,
             "opening_revision_count": len(opening_history),
             "first_retained_opening_receipt_ns": opening_history[0][0] if opening_history else None,

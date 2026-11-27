@@ -16,8 +16,8 @@ INPUTS
   when it has a ``verified`` column only orders with a verified row there are kept (counted).
 - ``--data``: tape root (``clob_<asset>_<hz>`` books, ``rtds_*`` for the token map).
 - RTDS supplies dated token-to-window and outcome witnesses from other wallets and transactions.
-  An independent ``tokens.jsonl`` input may supply ``known_tw_ns`` and ``witness_source`` alongside
-  the identity. Untimed metadata supplies retrospective labels only. A mate inherits identity after
+  Offline maps supply retrospective labels. The controlled simulator separately binds its configured
+  token map, interval and configuration instant to its tape-root receipt. A mate inherits identity after
   its paired tokens and the source identity have both been observed. Missing identities are counted.
 - ``--brti-lab LAB``: enables fair-v1. Raw BRTI and the settlement series are read from LAB when it
   holds ``ref_brti_raw``, else from ``--data``; the same directory may hold ``tokens.jsonl``.
@@ -33,7 +33,7 @@ INPUTS
    against a rewritten future): ``bb_c``/``ba_c``/``mid_c``/``spread_c``, ``depth_bid``/
    ``depth_ask`` (size at the best), ``tau_s``/``tte_s``, ``fair_c`` (twin ``Features.fair`` at
    the last whole second strictly before cutoff: BRTI and the opening boundary received by then, 1 s model delay; BTC only, null before the window start;
-   cached per (start, end)), ``inv`` (own net Up contracts in the window: tape fills located by a
+   cached per (start, end)), ``inv`` (attributed change from an assumed flat opening: tape fills located by an
    economically compatible transaction print received strictly before cutoff, maker and taker; block-only fills are excluded),
    ``notional_usd`` (own opening notional in the window from the same fills, accrued as the twin
    does), ``since_prev_s`` (cutoff minus the receive time of its previous verified order's
@@ -74,8 +74,8 @@ INPUTS
    best rule the v1 schema can hold (one reference mid|fair, one symmetric half-spread, one skew)
    fitted on orders of assets with fair-v1 only, mid and fair compared on one common set of rows,
    and scored against the per-side rules on the same test rows. ``Risk.max_inventory`` and
-   ``max_notional_per_window`` are MEASURED from the wallet (>= fitted size and p99 |inventory|;
-   p95 opening notional per window) so the rule can act; they are not limits. The emitted genome
+   ``max_notional_per_window`` are simulation settings derived from attributed fills (>= fitted size and p99 |inventory|;
+   p95 opening notional per window). Live wallet limits are unobserved. The emitted genome
    is then checked through ``Genome.maker_quotes`` and the twin's ``WindowSim._room`` on its
    fitting observations (``emitted_genome_check``). This is a static check at observed state.
    Assess the complete draft with a separately reserved replay window. NO genome is written
@@ -307,15 +307,22 @@ def token_map(root: Path, t_from: int, t_to: int, token_files: list[Path], *,
               exclude_wallets=(), exclude_txs=()) -> dict[str, dict]:
     """Keep retrospective labels for outcomes, and dated public witnesses for decision inputs."""
     out, _ = public_listings(root, t_from - 3600, t_to, exclude_wallets=exclude_wallets, exclude_txs=exclude_txs)
+    receipt_path = Path(root).parent / "coverage_receipt.json"
+    config = (orjson.loads(receipt_path.read_bytes()).get("simulated_market_universe") or {}) if receipt_path.is_file() else {}
+    stamp, source_sha = config.get("configured_tw_ns"), config.get("sha256")
+    controlled = (config.get("source") == "answerkey_config" and type(stamp) is int and isinstance(source_sha, str)
+                  and type(config.get("from")) is int and type(config.get("to")) is int
+                  and 0 <= stamp < config["from"] * NS and config["from"] <= t_from < t_to <= config["to"])
     for p in token_files:
+        bound = controlled and p.is_file() and digest(p) == source_sha
         for tok, info in TokenMap(p).m.items():
             w = window_of(info)
             if w and info.get("idx") in (0, 1):
-                known = info.get("known_tw_ns")
-                source = info.get("witness_source")
-                if known is not None and (type(known) is not int or known < 0 or not isinstance(source, str) or not source):
-                    raise ValueError(f"invalid dated market identity for token {tok}")
-                merge_identity(out, tok, w | {"idx": int(info["idx"]), "known_tw_ns": known, "witness_source": source})
+                configured = bound and info.get("known_tw_ns") == stamp and info.get("witness_source") == "answerkey_config"
+                merge_identity(out, tok, w | {"idx": int(info["idx"]), "known_tw_ns": stamp if configured else None,
+                                             "witness_source": "answerkey_config" if configured else None})
+        if bound and digest(p) != source_sha:
+            raise ValueError("configured token map changed during replay")
     return out
 
 
@@ -467,8 +474,15 @@ def wallet_fills(orders_path: Path, wallet: str) -> tuple[list[dict], dict, set[
     terms = {(r["order_id"], r["token_id"], r["side"], px(r["limit"]), r["size"], r["created_ms"])
              for r in w["orders"] if r["role"] == "maker" and r.get("limit")
              and r.get("ts_flag") is None and type(r.get("created_ms")) is int} if flagged else None
+    def limit_price(r):
+        if r.get("limit"):
+            return float(r["limit"])
+        if r.get("maker_amount") and r.get("taker_amount"):
+            ratio = r["maker_amount"] / r["taker_amount"]
+            return ratio if r["side"] == "BUY" else 1 / ratio
+        return None
     out = [{"tx": r["tx"], "order_id": r.get("order_id"), "token": r["token_id"], "side": r["side"], "shares": filled_shares(r),
-            "price": r.get("limit"), "condition": r.get("condition_id"), "block_ts": r["block_ts"], "role": r.get("role")} for r in w["rows"]
+            "price": limit_price(r), "condition": r.get("condition_id"), "block_ts": r["block_ts"], "role": r.get("role")} for r in w["rows"]
            if r["side"] == "SELL" or r.get("maker_amount") or r.get("limit")]
     return out, w["input"], terms
 
@@ -486,6 +500,7 @@ def simulated_inventory_receipt(orders: Path, wallet: str, start: int, end: int)
 
 def bind_fill_receipts(fills, prints, mates, allocations):
     """Attach the first economically compatible public print; ownership comes from the signed tape."""
+    wallet_legs = Counter(fill["tx"] for fill in fills)
     for fill in fills:
         tx = fill["tx"]
         call = allocations.get(tx)
@@ -495,7 +510,7 @@ def bind_fill_receipts(fills, prints, mates, allocations):
                 if call.match(event, mates.get(event.asset)) == "allocated":
                     valid.append(event.tw_ns)
                 continue
-            if call not in (None, "incomplete_call", "unverified_call"):
+            if wallet_legs[tx] != 1 or call not in (None, "incomplete_call", "unverified_call"):
                 continue
             # A partial call supports a single direct leg only at the exact signed terms
             # and filled quantity. Improved-price and aggregate prints need the full call.
@@ -509,7 +524,7 @@ def bind_fill_receipts(fills, prints, mates, allocations):
                     and abs(event.size - fill["shares"]) <= 1e-6):
                 valid.append(event.tw_ns)
         fill["receipt_tw"] = min(valid, default=None)
-        if valid and fill["role"] == "taker" and isinstance(call, Allocation):
+        if valid and fill["role"] == "taker" and isinstance(call, Allocation) and call.total > 0:
             fill["shares"] = call.total
             fill["price"] = sum(p * q for p, q in call.levels) / call.total
 
@@ -518,8 +533,8 @@ class Inventory:
     """Relative net Up contracts and opening notional from print-located signed fills, as of a receive
     instant. Notional accrues as in the twin (``WindowSim._fill``): the part of a fill that opens
     or adds exposure, at its Up-terms cost (price for Up bought, 1 - price for Up sold). The fill
-    price is the signed maker limit or the allocated taker execution price. A zero starting exposure is a model convention. Wallet attribution
-    uses the retrospective signed tape and this series excludes nonfill balance movements."""
+    price is the signed maker limit or the allocated taker execution price. The model assumes a flat
+    start. Attribution uses the retrospective signed tape. Nonfill balance movements are excluded."""
 
     def __init__(self, fills: list[dict], tok: dict[str, dict], fill_tw: dict[str, int],
                  bounds: tuple[int, int] | None = None):
@@ -735,15 +750,17 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
             stats["tokens_mapped_by_mate"] += 1
         peer_tw = info.get("known_tw_ns")
         known = None if peer_tw is None else max(res["mate_known_tw"][a], peer_tw)
-        merge_identity(tok, a, info | {"idx": 1 - info["idx"], "known_tw_ns": known,
-                                      "witness_source": "paired_clob_tokens"})
+        derived = {k: info[k] for k in ("slug", "asset", "hz", "start", "end")}
+        merge_identity(tok, a, derived | {"idx": 1 - info["idx"], "known_tw_ns": known, "witness_source": "paired_clob_tokens",
+                                         "paired_from_token": b, "peer_identity_tw_ns": peer_tw,
+                                         "pair_seen_tw_ns": res["mate_known_tw"][a]})
 
     panel = opportunity_panel(t_from, t_to, pairs, tok, res["grid"], res["grid_integrity"])
     call_allocations = load_allocations(orders_path, txs, allow_legacy=True) if verified is not None and txs else {}
     bind_fill_receipts(fills, prints, res["mates"], call_allocations)
     inv = Inventory(fills, tok, res["fill_tw"], (scan_from * NS, hi))
-    simulated_inventory = (not (inv.unmapped or inv.without_receipt or inv.identity_unobserved)
-                           and simulated_inventory_receipt(orders_path, wallet, t_from, t_to))
+    simulated_source = simulated_inventory_receipt(orders_path, wallet, t_from, t_to)
+    simulated_inventory = simulated_source and not (inv.unmapped or inv.without_receipt or inv.identity_unobserved)
     fair = Fair(brti_root, t_from, t_to) if brti_root is not None else None
     rows = []
     prev: dict[str, dict] = {}  # token -> previous verified order's spec
@@ -772,6 +789,8 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
         row = {"id": x["id"], "kind": x["kind"], "w": x["w"], "window": info["slug"],
                "window_start_ns": info["start"] * NS, "window_end_ns": info["end"] * NS, "asset": info["asset"],
                "hz": info["hz"], "token": x["token"], "idx": info["idx"], "cutoff_tw_ns": x["cutoff"],
+               "identity_witness": {k: info[k] for k in ("known_tw_ns", "witness_source", "witness_seq", "paired_from_token",
+                                                         "peer_identity_tw_ns", "pair_seen_tw_ns") if k in info},
                # state (STATE_COLS): functions of the cutoff and of data received before it
                **v, "fair_c": _r(f),
                "tau_s": _r(x["cutoff"] / NS - info["start"], 3), "tte_s": _r(info["end"] - x["cutoff"] / NS, 3),
@@ -829,7 +848,7 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
             "inputs": {"fills": fill_input | {"n": inv.n, "unmapped": inv.unmapped,
                                               "without_print_receipt": inv.without_receipt, "timed_by_block": 0,
                                               "identity_unobserved_at_fill": inv.identity_unobserved,
-                                              "simulated_flat_start_fills": simulated_inventory,
+                                              "simulated_flat_start_fills": simulated_inventory, "controlled_simulation": simulated_source,
                                               "inventory_basis": "attributed_fill_delta_from_zero_at_compatible_transaction_prints"},
                        "streams": streams, "opportunities": scope, "asof": asof, "from": t_from, "to": t_to, "fair": fair is not None,
                        "sign_to_book_ms_p50": float(np.median(s2b)) if s2b else None,
@@ -1145,7 +1164,7 @@ def check_genome(g: Genome, rows: list[dict], fair_supplied: bool) -> dict:
             "mae_c_when_quoting": _r(np.mean(errs)) if errs else None, "silent_by": dict(why),
             "fair_clamp_binds_share": _r(clamp / len(errs)) if errs else None,
             "fair_substituted_by_mid": not fair_supplied,
-            "note": "In-sample quote intent at observed state. Out-of-sample execution needs a separate replay."}
+            "note": "In-sample quote intent using recorded books and the attributed fill inventory and notional series. Out-of-sample execution needs a separate replay."}
 
 
 # ---------------------------------------------------------------- 2b size rule
@@ -1870,6 +1889,10 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
         "gap between the per-side median offsets at zero inventory (half_spread_fit, clamped at 0); one "
         "inventory slope with side intercepts; refitted on all rows" if expr.get("quote_ref")
         else "defaults: " + str(expr.get("reason")))
+    if expr.get("quote_ref") and not inventory_supported:
+        prov["maker.quote_ref/half_spread_c/skew_c_per_contract"] = (
+            "expressible_price_rule: constant offsets against a validated reference. Skew fixed at zero because "
+            "client inventory is unobserved.")
     prov["maker.requote_threshold_c"] = "default 1.0 (the trigger threshold used to classify book moves)"
     prov["maker.size"] = "size_rule.median_size" if med else "default"
     # risk envelope from the wallet's own measured state: the emitted rule must be able to quote
@@ -1881,7 +1904,8 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
     risk = Risk(max_inventory=float(max(math.ceil(max(med or 0.0, p99)), 1)),
                 max_notional_per_window=float(max(math.ceil(n95), 1)),
                 max_loss_per_day=base.max_loss_per_day, max_open_windows=base.max_open_windows)
-    risk_fit = {"max_inventory": risk.max_inventory, "max_notional_per_window": risk.max_notional_per_window,
+    risk_fit = {"evidence_scope": "simulated_flat_start" if inventory_supported else "attributed_fills_from_zero",
+                "client_risk_limits_observed": False, "max_inventory": risk.max_inventory, "max_notional_per_window": risk.max_notional_per_window,
                 "fitted_size": med, "abs_inventory_at_placement": (
                     {f"p{q}": _r(np.percentile(ai, q)) for q in (50, 90, 99, 100)} if len(ai) else None),
                 "window_opening_notional_usd": ({f"p{q}": _r(np.percentile(wn, q)) for q in (50, 95, 100)}
@@ -1909,11 +1933,11 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
                evidence={"extractor": "doppel.lab.rulefit v1", "wallet": wallet, "label": "rule conditional on fill",
                          "fit_range": {"from": T["inputs"]["from"], "to": T["inputs"]["to"]},
                          "n_orders": len(ver), "fields": prov,
-                         "price_rule": {s: {k: price[s].get(k) for k in ("chosen", "model", "tie_with", "n", "rule")}
+                         "price_rule": {s: {k: price[s].get(k) for k in ("chosen", "model", "tie_with", "n", "rule", "inventory_basis")}
                                         | {"oos_mae_c": ((price[s].get("offset_c") or {}).get("oos") or {}).get("mae_c")}
                                         for s in ("bid", "ask")},
                          "expressible": {k: expr.get(k) for k in ("quote_ref", "oos_mae_c", "per_side_fit_oos_mae_c",
-                                                                  "oos_cost_of_schema_c", "centre_shift_c")}})
+                                                                  "oos_cost_of_schema_c", "centre_shift_c", "inventory_skew_evidence")}})
     errs = validate(g)
     gd = to_dict(g) | {"status": "draft"}
 
@@ -1926,6 +1950,8 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
 
     # ---- reasons not to emit: a genome that cannot act like the fit must not carry the wallet's name
     blockers: list[str] = []
+    if check is not None and check["fair_substituted_by_mid"] and not T["inputs"]["fills"].get("controlled_simulation"):
+        blockers.append("the v1 maker requires a fair clamp; static intent substituted mid for the missing reference")
     n_windows = len({r["window"] for r in fit_rows})
     if n_windows == 1:
         blockers.append("1 market window in the fit: no clustered CI, need >= 2")
@@ -2245,7 +2271,7 @@ def main(argv=None) -> int:
     ap.add_argument("--brti-lab", type=Path, default=None,
                     help="enables fair-v1; BRTI is read from here if it holds ref_brti_raw, else from --data; "
                          "its tokens.jsonl (if any) joins the token map")
-    ap.add_argument("--tokens", type=Path, action="append", default=[], help="offline token identities; decision inputs require known_tw_ns and witness_source or a prior public receipt")
+    ap.add_argument("--tokens", type=Path, action="append", default=[], help="offline token identities for retrospective mapping; live-study inputs require a prior public witness")
     ap.add_argument("--asof", choices=("placement", "created"), default="placement",
                     help="use the placement receipt or estimate the signing cutoff from that signed order's own delay")
     ap.add_argument("--identity-precision", type=float, default=None,

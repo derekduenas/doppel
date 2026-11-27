@@ -811,6 +811,9 @@ def write_public(sim: Sim, root: Path, tokens: Path, pub: Path, hold: tuple[int,
     (pub / "coverage_receipt.json").write_bytes(orjson.dumps(
         {"wallet": sim.wallet, "from": hold[0], "to": hold[1], "complete": True, "order_tape_sha256": sha,
          "simulated_flat_start_fills": inventory_files,
+         "simulated_market_universe": {"source": "answerkey_config", "configured_tw_ns": configured_from * NS - 1,
+                                       "from": configured_from, "to": hold[1],
+                                       "sha256": hashlib.sha256((pub / "lab" / "tokens.jsonl").read_bytes()).hexdigest()},
          "basis": "answer-key lab: every fill of the subject was written by the lab"}))
 
 

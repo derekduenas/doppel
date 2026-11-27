@@ -30,7 +30,8 @@ def test_independent_first_receipt_and_untimed_map(tmp_path):
     assert not observable_identity(tokens["U0"], (T0 + 10) * NS)
     assert observable_identity(tokens["U0"], (T0 + 10) * NS + 1)
     path = tmp_path / "later.jsonl"
-    path.write_bytes(orjson.dumps({"token": "U1", "slug": slug(1), "idx": 0, "status": "resolved", "payout": 1}))
+    path.write_bytes(orjson.dumps({"token": "U1", "slug": slug(1), "idx": 0, "status": "resolved", "payout": 1,
+                                  "known_tw_ns": (T0 - 100) * NS, "witness_source": "answerkey_config"}))
     info = rulefit.token_map(tmp_path, T0, T0 + 30, [path])["U1"]
     assert info["known_tw_ns"] is None and "payout" not in info
 
