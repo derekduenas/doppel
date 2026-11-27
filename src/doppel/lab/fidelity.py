@@ -36,8 +36,9 @@ WALLET FILLS (order tape rows with ``maker == wallet``; ``verified`` must be tru
 CLONE FILLS: the twin's fills (engine clock: our receive time), same form.
 
 WINDOWS
-- eligible: the twin simulated it (tokens known, inside the order tape's span for the wallet, book
-  known from the open to the close, outcome known).
+- eligible: the twin simulated it (tokens known, full window inside the requested holdout, book
+  known from the open to the close, outcome known). A verdict also requires a coverage receipt
+  attesting that the wallet's order tape is complete for that holdout, including quiet windows.
 - comparable: eligible AND traded in-window by the wallet or the clone. Windows neither traded
   carry no information and are only counted. Every score is over the comparable windows.
 
@@ -45,8 +46,9 @@ SCORES (95% CI: resampling distinct window START TIMES with replacement, so wind
 assets / horizons that share a start move together)
 - activity: share of comparable windows traded by both / wallet only / clone only. ``agreement`` =
   the share traded by both (both / either: idle-idle never counts as agreement).
-- fills, ONE-TO-ONE pairs on (window, direction, |price| <= 1 c, |time| <= 2 s), closest in time
-  first: ``precision_count`` / ``recall_count`` = pairs over clone / wallet fills;
+- fills, a maximum number of ONE-TO-ONE pairs on (window, direction, |price| <= 1 c, |time| <= 2 s).
+  Augmenting paths prefer nearby time, then price, then input indices for deterministic tie-breaking.
+  ``precision_count`` / ``recall_count`` = pairs over clone / wallet fills;
   ``precision_shares`` / ``recall_shares`` = sum of min(qty) over the pairs over each side's shares;
   scale-free ``precision_shares_scaled`` / ``recall_shares_scaled`` = the same with the clone's
   quantities multiplied by k (a pair counts up to the smaller of the two sizes).
@@ -74,6 +76,12 @@ VERDICT: ``THRESHOLDS`` and ``GATES`` below, PROVISIONAL, fixed before any real-
 
 Analysis only: nothing here is a decision input. The twin's decisions use data received by the
 decision second; the wallet's fills are read only to remove its footprint and by the scorer.
+
+The coverage receipt is a JSON object with ``wallet``, ``from`` and ``to`` (Unix seconds, exclusive
+end), ``complete`` (true only after checking the source fill coverage), and ``order_tape_sha256``.
+Use the file SHA-256 for JSONL or the reconstruction order-tape digest for a parquet directory.
+Observed fills alone cannot establish completeness.
+When a draft records ``evidence.fit_range``, the holdout must begin at or after that range ends.
 """
 
 from __future__ import annotations
@@ -82,7 +90,7 @@ import argparse
 import bisect
 import hashlib
 import sys
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -130,6 +138,7 @@ THRESHOLDS = (
 # Data gates: (measured quantity, lowest allowed, highest allowed). One outside its range, or not
 # measured, makes the verdict INCONCLUSIVE whatever the scores say.
 GATES = (
+    ("verified_holdout", 1, 1),            # a complete wallet order tape for the requested range
     ("comparable_starts", 30, INF),          # distinct window start times with a comparable window
     ("wallet_fills", 1, INF),                # scored wallet fills: none = no wallet data, not a silent wallet
     ("usable_rows_share", 0.9, 1.0),         # wallet rows that are verified and priced
@@ -167,11 +176,55 @@ def code_sha256() -> str:
     """sha256 over the code a fidelity verdict depends on."""
     lab = Path(__file__).resolve().parent
     files = [lab / n for n in ("fidelity.py", "intltwin.py", "intlbook.py", "ordermatch.py")]
+    if (lab / "research_manifest.py").is_file():
+        files.append(lab / "research_manifest.py")
     files += sorted((lab.parent / "twin").glob("*.py"))
     h = hashlib.sha256()
     for f in files:
         h.update(f.name.encode() + b"\0" + f.read_bytes())
     return h.hexdigest()
+
+
+def order_tape_sha256(path: Path) -> str:
+    """Hash a JSONL order tape or the sorted path -> SHA-256 map of its parquet parts."""
+    def sha256(p: Path) -> str:
+        with p.open("rb") as f:
+            return hashlib.file_digest(f, "sha256").hexdigest()
+
+    if not path.is_dir():
+        return sha256(path)
+    parts = {p.relative_to(path).as_posix(): sha256(p)
+             for p in sorted(path.glob("day=*/part-*.parquet"))}
+    return hashlib.sha256(orjson.dumps(parts, option=orjson.OPT_SORT_KEYS)).hexdigest()
+
+
+def _order_tape_snapshot(path: Path) -> list[tuple[Path, int, int, int]]:
+    parts = sorted(path.glob("day=*/part-*.parquet")) if path.is_dir() else [path]
+    snapshot = []
+    for part in parts:
+        stat = part.stat()
+        snapshot.append((part, stat.st_ino, stat.st_size, stat.st_mtime_ns))
+    return snapshot
+
+
+def holdout_coverage(receipt: Path | None, orders: Path, wallet: str, t_from: int, t_to: int) -> dict:
+    """Verify the wallet, holdout and artifact named by an explicit completeness receipt."""
+    if receipt is None:
+        return {"verified": False, "reason": "no coverage receipt"}
+    raw = receipt.read_bytes()
+    d = orjson.loads(raw)
+    out = {"receipt": str(receipt), "receipt_sha256": hashlib.sha256(raw).hexdigest(), "verified": False}
+    if not isinstance(d, dict) or not isinstance(d.get("wallet"), str) or d["wallet"].lower() != wallet:
+        return out | {"reason": "coverage receipt is for a different wallet"}
+    if type(d.get("from")) is not int or type(d.get("to")) is not int \
+            or (d["from"], d["to"]) != (t_from, t_to):
+        return out | {"reason": "coverage receipt does not cover the exact holdout"}
+    if d.get("complete") is not True:
+        return out | {"reason": "coverage receipt does not establish completeness"}
+    digest = order_tape_sha256(orders)
+    if d.get("order_tape_sha256") != digest:
+        return out | {"reason": "coverage receipt order tape hash mismatch"}
+    return out | {"verified": True, "order_tape_sha256": digest, "reason": None}
 
 
 # ---------------------------------------------------------------- wallet fills and footprint
@@ -316,25 +369,47 @@ def pnl_usd(fills: list[Fill], outcome: int, costs: Costs) -> float:
 
 
 def match(clone: list[Fill], wallet: list[Fill]) -> list[tuple[int, int]]:
-    """One-to-one (clone index, wallet index) pairs, closest in time first. ``wallet`` must be
-    sorted by time."""
+    """Maximum-cardinality (clone index, wallet index) pairs. ``wallet`` is sorted by time."""
     wt = [f.t for f in wallet]
-    cand = []
+    choices: dict[int, list[tuple[float, float, int]]] = {}
     for i, c in enumerate(clone):
+        cand = []
         for j in range(bisect.bisect_left(wt, c.t - TOL_S - EPS), bisect.bisect_right(wt, c.t + TOL_S + EPS)):
             w = wallet[j]
             if w.d == c.d and abs(w.px - c.px) <= TOL_PX + EPS:
-                cand.append((abs(w.t - c.t), abs(w.px - c.px), i, j))
-    cand.sort()
-    used_c: set[int] = set()
-    used_w: set[int] = set()
-    pairs = []
-    for _, _, i, j in cand:
-        if i not in used_c and j not in used_w:
-            used_c.add(i)
-            used_w.add(j)
-            pairs.append((i, j))
-    return pairs
+                cand.append((abs(w.t - c.t), abs(w.px - c.px), j))
+        if cand:
+            choices[i] = sorted(cand)
+
+    by_clone: dict[int, int] = {}
+    by_wallet: dict[int, int] = {}
+    for root in sorted(choices, key=lambda i: (*choices[i][0][:2], i)):
+        # Visit alternating edges until reaching a free wallet fill. Reassigning earlier
+        # pairs along this path leaves every paired clone matched and adds one more pair.
+        queue = deque([root])
+        seen_clones = {root}
+        parent: dict[int, int] = {}
+        free = None
+        while queue and free is None:
+            i = queue.popleft()
+            for _, _, j in choices[i]:
+                if j in parent:
+                    continue
+                parent[j] = i
+                owner = by_wallet.get(j)
+                if owner is None:
+                    free = j
+                    break
+                if owner not in seen_clones:
+                    seen_clones.add(owner)
+                    queue.append(owner)
+        while free is not None:
+            i = parent[free]
+            former = by_clone.get(i)
+            by_clone[i] = free
+            by_wallet[free] = i
+            free = former
+    return sorted(by_clone.items())
 
 
 def inv_path(fills: list[Fill], start: int, length: int, opening: float = 0.0) -> np.ndarray:
@@ -564,23 +639,41 @@ def evaluate(clone: dict[Key, list[Fill]], wallet: dict[Key, list[Fill]], window
 # ---------------------------------------------------------------- run
 def run(root: Path, lab: Path, g: Genome, wallet: str, orders: Path, t_from: int, t_to: int,
         cfg: SimConfig = SimConfig(), n_boot: int = N_BOOT, n_null: int = N_NULL, seed: int = 0,
-        allow_unverified: bool = False, ordermatch_dir: Path | None = None) -> tuple[dict, list[dict]]:
+        allow_unverified: bool = False, ordermatch_dir: Path | None = None,
+        coverage_receipt: Path | None = None) -> tuple[dict, list[dict]]:
     """Returns (document, per-window rows)."""
+    if t_from >= t_to:
+        raise ValueError("holdout --to must be after --from")
+    fit_range = None
+    if isinstance(g.evidence, dict) and "fit_range" in g.evidence:
+        fit_range = g.evidence["fit_range"]
+        if (not isinstance(fit_range, dict) or type(fit_range.get("from")) is not int
+                or type(fit_range.get("to")) is not int or fit_range["from"] >= fit_range["to"]):
+            raise ValueError("genome evidence.fit_range must contain increasing integer Unix seconds 'from' and 'to'")
+        if t_from < fit_range["to"]:
+            raise ValueError(f"holdout starts at {t_from}, before genome evidence.fit_range ends at {fit_range['to']}")
     wallet = wallet.lower()
+    orders = Path(orders)
     tmap = TokenMap(Path(lab) / "tokens.jsonl")
     wins, missing = windows_from_tokens(tmap, g.universe.assets, g.universe.horizons, t_from, t_to)
-    rows = load_rows(Path(orders), wallet)
+    snapshot = _order_tape_snapshot(orders) if coverage_receipt else None
+    coverage = holdout_coverage(coverage_receipt, orders, wallet, t_from, t_to)
+    rows = load_rows(orders, wallet)
+    if snapshot is not None and snapshot != _order_tape_snapshot(orders):
+        raise ValueError("the order tape changed while reading, retry with a complete snapshot")
     mine = [r["block_ts"] for r in rows if r["maker"].lower() == wallet and r.get("block_ts")]
     span = [min(mine), max(mine)] if mine else None
-    covered = [w for w in wins if span and w.start <= span[1] and w.end > span[0]]
     om = None
     if ordermatch_dir is not None:
-        om = [orjson.loads(line) for line in (Path(ordermatch_dir) / "orders.jsonl").read_bytes().splitlines()]
-    fp, partial = footprint(rows, wallet, covered, om)
+        match_path = Path(ordermatch_dir)
+        if match_path.is_dir():
+            match_path /= "orders.jsonl"
+        om = [orjson.loads(line) for line in match_path.read_bytes().splitlines() if line.strip()]
+    fp, partial = footprint(rows, wallet, wins, om)
     tx_ms: dict[tuple[str, Key], int] = {}
     prints: dict[Key, list[tuple]] = {}
-    results = run_intl(root, g, covered, cfg, lab, {r["tx"] for r in rows}, tx_ms, fp, wallet, prints)
-    wal = wallet_fills(rows, wallet, covered, tx_ms, tmap, t_from, t_to, allow_unverified)
+    results = run_intl(root, g, wins, cfg, lab, {r["tx"] for r in rows}, tx_ms, fp, wallet, prints)
+    wal = wallet_fills(rows, wallet, wins, tx_ms, tmap, t_from, t_to, allow_unverified)
     by_key = {(r["asset"], r["horizon"], r["start"]): r for r in results}
     elig = {k: r for k, r in by_key.items() if r["eligible"]}
     clone = {k: clone_fills(r) for k, r in elig.items()}
@@ -594,7 +687,8 @@ def run(root: Path, lab: Path, g: Genome, wallet: str, orders: Path, t_from: int
     out_win = sh.get("pre_open", 0.0) + sh.get("post_close", 0.0)
     total = sh.get("in_window", 0.0) + out_win + sh.get("outside_universe", 0.0) \
         + sh.get("unknown_token_or_other_market", 0.0)
-    gates = {"print_lag_s": _num(np.median(lags)) if lags else None,
+    gates = {"verified_holdout": int(coverage["verified"]),
+             "print_lag_s": _num(np.median(lags)) if lags else None,
              "usable_rows_share": _num(1 - bad / len(mine)) if mine else None,
              "out_of_window_share": _num(out_win / (sh.get("in_window", 0.0) + out_win))
              if sh.get("in_window", 0.0) + out_win > 0 else None,
@@ -609,6 +703,8 @@ def run(root: Path, lab: Path, g: Genome, wallet: str, orders: Path, t_from: int
         doc["verdict"] = decide(doc["scores"], doc["null"], doc["gates_measured"])
         if om is None:
             doc["verdict"]["reason"] += " (no --ordermatch-dir: none of the wallet's resting orders was removed)"
+    if not coverage["verified"]:
+        doc["verdict"]["reason"] += f" ({coverage['reason']})"
     base = SimConfig()
     diag = [n for n, on in (("--boot", n_boot != N_BOOT), ("--null-shuffles", n_null != N_NULL),
                             ("--allow-unverified", allow_unverified), ("--latency-ms", cfg.latency_ms != base.latency_ms),
@@ -627,14 +723,14 @@ def run(root: Path, lab: Path, g: Genome, wallet: str, orders: Path, t_from: int
         "params": {"wallet": wallet, "from": t_from, "to": t_to, "tol_px": TOL_PX, "tol_s": TOL_S,
                    "n_boot": n_boot, "n_null": n_null, "seed": seed, "allow_unverified": allow_unverified,
                    "ordermatch_dir": str(ordermatch_dir) if ordermatch_dir else None, "twin": asdict(cfg)},
-        "genome": {"id": g.id, "name": g.name, "mode": g.mode, "describe": describe(g)},
+        "genome": {"id": g.id, "name": g.name, "mode": g.mode, "describe": describe(g), "fit_range": fit_range},
         "thresholds": [{"score": s, "min": lo if lo > -INF else None, "max": hi if hi < INF else None,
                         "must_beat_null": b} for s, lo, hi, b in THRESHOLDS],
         "gates": [{"quantity": n, "min": lo, "max": hi if hi < INF else None} for n, lo, hi in GATES],
         "provisional": True, "diagnostic": diag,
         "coverage": {
             "windows_in_range": len(wins) + len(missing), "windows_without_tokens": len(missing),
-            "order_tape_block_ts": span, "windows_outside_order_tape": len(wins) - len(covered),
+            "order_tape_block_ts": span, "verified_holdout": coverage,
             "windows_excluded": dict(excl), "of_which_wallet_traded": dict(excl_w),
             "wallet_rows": wal.rows, "wallet_shares": sh,
             "wallet_shares_in_excluded_windows": _num(sh.get("in_window", 0.0) - in_elig)},
@@ -674,8 +770,8 @@ def card(doc: dict) -> str:
          f"VERDICT (PROVISIONAL thresholds): {v['decision']}: {v['reason']}",
          f"windows: {w['comparable']} comparable of {w['eligible']} eligible ({w['neither_traded']} traded by "
          f"neither); excluded {c.get('windows_excluded')}, without tokens {c.get('windows_without_tokens')}, "
-         f"outside the order tape {c.get('windows_outside_order_tape')} (wallet rows span block_ts "
-         f"{c.get('order_tape_block_ts')}; a window the tape does not cover reads as wallet-idle)",
+         f"wallet rows span block_ts {c.get('order_tape_block_ts')}",
+         f"wallet holdout coverage: {c.get('verified_holdout')}",
          f"shares: clone {doc['clone_shares']} wallet {doc['wallet_shares']} (k = {doc['scale_k']}); wallet "
          f"rows {c.get('wallet_rows')}; wallet shares {c.get('wallet_shares')}",
          f"footprint: {doc.get('footprint')}",
@@ -701,11 +797,16 @@ def main(argv=None) -> int:
     ap.add_argument("--lab", type=Path, required=True, help="lab dir holding tokens.jsonl (read only)")
     ap.add_argument("--genome", type=Path, required=True)
     ap.add_argument("--wallet", required=True)
-    ap.add_argument("--orders", type=Path, required=True,
-                    help="doppel-ordertape output: parquet directory or JSONL (maker and taker rows)")
-    ap.add_argument("--ordermatch-dir", type=Path,
-                    help="doppel-ordermatch output (orders.jsonl): the lives of the wallet's resting orders, "
+    inputs = ap.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--orders", type=Path,
+                        help="doppel-ordertape output: parquet directory or JSONL (maker and taker rows)")
+    inputs.add_argument("--reconstruct-manifest", type=Path,
+                        help="load the order tape and wallet's matched orders from a reconstruction manifest")
+    ap.add_argument("--ordermatch-dir", "--ordermatch", type=Path,
+                    help="doppel-ordermatch directory or its orders.jsonl file: lives of the wallet's resting orders, "
                          "needed to take them out of the book; required for a MAKER genome's verdict")
+    ap.add_argument("--coverage-receipt", type=Path,
+                    help="wallet order-tape completeness JSON for the exact holdout and order tape SHA-256")
     ap.add_argument("--from", dest="t_from", type=_ts, required=True, help="unix s or ISO UTC")
     ap.add_argument("--to", dest="t_to", type=_ts, required=True)
     ap.add_argument("--out", type=Path, required=True, help="directory")
@@ -719,14 +820,26 @@ def main(argv=None) -> int:
     dg.add_argument("--allow-unverified", action="store_true",
                     help="also use rows whose order hash the fill store could not check (verified null)")
     a = ap.parse_args(argv)
+    if a.reconstruct_manifest and a.ordermatch_dir:
+        ap.error("--ordermatch-dir cannot be combined with --reconstruct-manifest")
     g = from_dict(orjson.loads(a.genome.read_bytes()))
     errs = validate(g)
     if errs:
         print("genome invalid: " + "; ".join(errs), file=sys.stderr)
         return 2
     cfg = SimConfig(latency_ms=a.latency_ms, brti_delay_s=a.brti_delay_s, depth_levels=a.depth_levels)
-    doc, rows = run(a.data, a.lab, g, a.wallet, a.orders, a.t_from, a.t_to, cfg, a.boot, a.null_shuffles,
-                    a.seed, a.allow_unverified, a.ordermatch_dir)
+    try:
+        orders, matched = a.orders, a.ordermatch_dir
+        if a.reconstruct_manifest:
+            from .research_manifest import read_reconstruction
+
+            files = read_reconstruction(a.reconstruct_manifest, a.wallet, a.t_from, a.t_to, exact=True)
+            orders, matched = files.orders, files.matched_orders
+        doc, rows = run(a.data, a.lab, g, a.wallet, orders, a.t_from, a.t_to, cfg, a.boot, a.null_shuffles,
+                        a.seed, a.allow_unverified, matched, a.coverage_receipt)
+    except (ValueError, OSError) as e:
+        print(f"fidelity: {e}", file=sys.stderr)
+        return 2
     a.out.mkdir(parents=True, exist_ok=True)
     (a.out / "fidelity.json").write_bytes(orjson.dumps(doc, option=orjson.OPT_INDENT_2))
     with open(a.out / "windows.jsonl", "wb") as f:

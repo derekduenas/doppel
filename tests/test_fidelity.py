@@ -8,6 +8,7 @@ only fill in window i is: tau_i + 0.25 s, 10 contracts, BUY Up at p (even) or SE
 """
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -140,10 +141,18 @@ def mirror(i, p):
     return [taker_fill(p, i, p["up_cheap"], p["start"] + p["tau"] + 0.25, p["px"], f"0x{i:04d}")]
 
 
-def run(tmp_path, wallet_of, n=N, g=None, **kw):
+def receipt(tmp_path, orders, n=N, **override):
+    p = tmp_path / "coverage.json"
+    p.write_bytes(orjson.dumps({"wallet": WALLET, "from": T0, "to": T0 + n * 300, "complete": True,
+                                "order_tape_sha256": F.order_tape_sha256(orders)} | override))
+    return p
+
+
+def run(tmp_path, wallet_of, n=N, g=None, verified_coverage=True, **kw):
     root, lab, orders = build(tmp_path, wallet_of, n, kw.pop("lag_s", 0.0), kw.pop("parquet", False),
                               kw.pop("verified", True))
-    return F.run(root, lab, g or genome(), WALLET, orders, T0, T0 + 300 * n, **kw)
+    coverage = receipt(tmp_path, orders, n) if verified_coverage else None
+    return F.run(root, lab, g or genome(), WALLET, orders, T0, T0 + 300 * n, coverage_receipt=coverage, **kw)
 
 
 def val(doc, name):
@@ -151,17 +160,16 @@ def val(doc, name):
 
 
 # ---------------------------------------------------------------- end to end
-OK_GATES = {"usable_rows_share": 1.0, "out_of_window_share": 0.0, "volume_share_scored": 1.0,
+OK_GATES = {"verified_holdout": 1, "usable_rows_share": 1.0, "out_of_window_share": 0.0, "volume_share_scored": 1.0,
             "print_lag_s": 0.0, "side_conflict_share": 0.0}
 GATED = [t[0] for t in F.THRESHOLDS]
 
 
 def test_a_clone_that_mirrors_the_wallet_passes_with_scores_of_one(tmp_path):
     doc, rows = run(tmp_path, mirror)
-    # window 0 ends before the wallet's first order-tape row: not covered by the order tape (S6)
-    assert doc["coverage"]["windows_outside_order_tape"] == 1
+    assert doc["coverage"]["verified_holdout"]["verified"]
     assert doc["coverage"]["order_tape_block_ts"] == [T0 + 300 + 57 + 2, T0 + 300 * 39 + 168 + 2]
-    assert doc["windows"] == {"eligible": 39, "comparable": 32, "neither_traded": 7}
+    assert doc["windows"] == {"eligible": 40, "comparable": 32, "neither_traded": 8}
     assert doc["clone_shares"] == doc["wallet_shares"] == 320.0 and doc["scale_k"] == 1.0
     for name in ("activity.agreement", "fills.precision_count", "fills.recall_count", "fills.precision_shares",
                  "fills.recall_shares", "fills.precision_shares_scaled", "fills.recall_shares_scaled", "path.corr",
@@ -179,10 +187,11 @@ def test_a_clone_that_mirrors_the_wallet_passes_with_scores_of_one(tmp_path):
     assert doc["null_draws"] == F.N_NULL and doc["null"]["fills.recall_count"] == {"mean": 0.0, "max": 0.0, "n": 20}
     assert doc["null"]["pnl.corr"]["max"] < 1.0
     assert doc["gates_measured"] == {
-        "print_lag_s": 0.0, "usable_rows_share": 1.0, "out_of_window_share": 0.0, "volume_share_scored": 1.0,
+        "verified_holdout": 1, "print_lag_s": 0.0, "usable_rows_share": 1.0, "out_of_window_share": 0.0,
+        "volume_share_scored": 1.0,
         "side_conflict_share": 0.0, "comparable_starts": 32, "wallet_fills": 32, "located_share": 1.0,
         "match_lag_s": 0.0}
-    assert doc["footprint"]["taker_txs_dropped"] == 32 and doc["adapter"]["outcome_src"] == {"payout": 39}
+    assert doc["footprint"]["taker_txs_dropped"] == 32 and doc["adapter"]["outcome_src"] == {"payout": 40}
     v = doc["verdict"]
     assert v["decision"] == "PASS" and [c["result"] for c in v["checks"]] == ["pass"] * len(F.THRESHOLDS)
     assert doc["diagnostic"] == [] and len(doc["code_sha256"]) == 64
@@ -209,12 +218,60 @@ def test_a_clone_trading_windows_the_wallet_did_not_fails(tmp_path):
             return []
         return [taker_fill(p, i, True, p["start"] + 100.0, 0.51, f"0x{i:04d}")]
     doc, _ = run(tmp_path, elsewhere)
-    # the order tape spans windows 0..35 (the wallet's first and last fill)
-    assert doc["windows"]["comparable"] == 36 and doc["coverage"]["windows_outside_order_tape"] == 4
+    assert doc["windows"]["comparable"] == 40 and doc["coverage"]["verified_holdout"]["verified"]
     assert (val(doc, "activity.agreement"), val(doc, "activity.wallet_only"), val(doc, "activity.clone_only")) \
-        == (0.0, pytest.approx(8 / 36, abs=1e-6), pytest.approx(28 / 36, abs=1e-6))
+        == (0.0, 0.2, 0.8)
     assert val(doc, "fills.recall_count") == 0.0 and val(doc, "fills.precision_count") == 0.0
     assert doc["verdict"]["decision"] == "FAIL" and "activity.agreement" in doc["verdict"]["binding"]
+
+
+def test_holdout_includes_clone_only_windows_outside_observed_wallet_fill_span(tmp_path):
+    def quiet_edges(i, p):
+        return [] if i in (1, N - 1) else mirror(i, p)
+
+    doc, rows = run(tmp_path, quiet_edges)
+    assert val(doc, "activity.clone_only") == 0.0625
+    assert [(r["wallet_fills"], r["clone_fills"]) for r in (rows[1], rows[-1])] == [(0, 1), (0, 1)]
+
+
+def test_missing_receipt_keeps_an_apparent_pass_inconclusive(tmp_path):
+    doc, _ = run(tmp_path, mirror, verified_coverage=False)
+    assert val(doc, "activity.agreement") == 1.0
+    assert doc["gates_measured"]["verified_holdout"] == 0
+    assert doc["verdict"]["decision"] == "INCONCLUSIVE"
+    assert doc["coverage"]["verified_holdout"]["reason"] == "no coverage receipt"
+
+
+def test_receipt_requires_the_exact_wallet_range_complete_assertion_and_tape(tmp_path):
+    _, _, orders = build(tmp_path, mirror, n=2)
+    for overrides, reason in [
+        ({"wallet": OTHER}, "different wallet"),
+        ({"to": T0 + 300}, "exact holdout"),
+        ({"complete": False}, "does not establish completeness"),
+        ({"order_tape_sha256": "a" * 64}, "hash mismatch"),
+    ]:
+        cov = F.holdout_coverage(receipt(tmp_path, orders, n=2, **overrides), orders, WALLET, T0, T0 + 600)
+        assert cov["verified"] is False and reason in cov["reason"]
+
+
+@pytest.mark.parametrize("fit_range", [None, [], {"from": T0 - 300}, {"from": T0, "to": T0 - 300},
+                                       {"from": True, "to": T0}])
+def test_malformed_draft_fit_range_is_rejected(tmp_path, fit_range):
+    g = replace(genome(), evidence={"fit_range": fit_range})
+    with pytest.raises(ValueError, match=r"evidence\.fit_range must contain increasing integer Unix seconds"):
+        F.run(tmp_path, tmp_path, g, WALLET, tmp_path / "unread.jsonl", T0, T0 + 600)
+
+
+def test_holdout_must_start_at_or_after_the_draft_fit_end(tmp_path):
+    root, lab, orders = build(tmp_path, mirror, n=2)
+    fit_range = {"from": T0 - 300, "to": T0}
+    g = replace(genome(), evidence={"fit_range": fit_range})
+    with pytest.raises(ValueError, match=r"before genome evidence\.fit_range ends"):
+        F.run(root, lab, g, WALLET, orders, T0 - 1, T0 + 600)
+    doc, _ = F.run(root, lab, g, WALLET, orders, T0, T0 + 600,
+                   coverage_receipt=receipt(tmp_path, orders, n=2))
+    assert doc["genome"]["fit_range"] == fit_range
+    assert doc["windows"]["eligible"] == 2
 
 
 def test_fewer_than_30_comparable_windows_is_inconclusive_even_for_a_perfect_clone(tmp_path):
@@ -259,14 +316,16 @@ def test_cli_writes_json_summary_and_windows(tmp_path, capsys):
     gp = tmp_path / "g.json"
     gp.write_bytes(orjson.dumps(to_dict(genome())))
     out = tmp_path / "out"
+    cov = receipt(tmp_path, orders)
     rc = F.main(["--data", str(root), "--lab", str(lab), "--genome", str(gp), "--wallet", WALLET.upper(),
-                 "--orders", str(orders), "--from", str(T0), "--to", str(T0 + 300 * N), "--out", str(out)])
+                 "--orders", str(orders), "--from", str(T0), "--to", str(T0 + 300 * N), "--out", str(out),
+                 "--coverage-receipt", str(cov)])
     assert rc == 0 and "VERDICT (PROVISIONAL thresholds): PASS" in capsys.readouterr().out
     doc = orjson.loads((out / "fidelity.json").read_bytes())
     assert doc["verdict"]["decision"] == "PASS" and doc["provisional"] is True
     assert doc["code_sha256"] == F.code_sha256()
     assert [t["score"] for t in doc["thresholds"]] == GATED
-    assert len((out / "windows.jsonl").read_bytes().splitlines()) == N - 1
+    assert len((out / "windows.jsonl").read_bytes().splitlines()) == N
     assert (out / "fidelity.txt").read_text().startswith("fid-test")
 
 
@@ -305,6 +364,13 @@ def test_match_is_one_to_one_on_direction_price_and_time():
               Fill(200.0, 1, 0.60, 5, "maker"),      # wrong direction
               Fill(201.0, -1, 0.62, 5, "maker")]     # 2 c away
     assert F.match(clone, wallet) == [(1, 0)]        # the closer buy (100.5) takes the pair
+
+
+def test_match_reassigns_the_nearest_pair_when_it_can_match_more_fills():
+    clone = [Fill(t, 1, 0.4, 10, "maker") for t in (100, 101.9)]
+    wallet = [Fill(t, 1, 0.4, 10, "maker") for t in (98.1, 100.1)]
+    assert F.match(clone, wallet) == [(0, 0), (1, 1)]
+    assert F.match([clone[0]] * 2, [wallet[0]] * 2) == [(0, 0), (1, 1)]
 
 
 def test_window_record_pnl_fees_inventory_path_and_scaled_shares():
