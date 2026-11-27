@@ -35,7 +35,22 @@ class Subject:
     receipt: dict
 
 
-def subject(ledger: Path, store: Path, tape: Path) -> Subject:
+def sealed_files(folder: Path, paths: list[Path]) -> tuple[dict[str, str], str]:
+    refs = {p.relative_to(folder).as_posix(): digest(p) for p in sorted(paths)}
+    seal = hashlib.sha256(orjson.dumps(list(refs.items()))).hexdigest()
+    return refs, seal
+
+
+def source_seals(store: Path, tape: Path):
+    state = store / "state.json"
+    parts = [store / s["file"] for s in orjson.loads(state.read_bytes())["segments"].values() if s["file"]]
+    _, store_sha = sealed_files(store, [state, *parts])
+    orders = committed_parts(tape)
+    refs, tape_sha = sealed_files(tape, [*orders, *tape.glob("_state/flush-*.json")])
+    return store_sha, tape_sha, refs, orders
+
+
+def subject(ledger: Path, store: Path, tape: Path, study: dict) -> Subject:
     raw = ledger.read_bytes()
     r = orjson.loads(raw)
     wallet, (start, end) = r["wallet"], r["window_time"]
@@ -45,6 +60,17 @@ def subject(ledger: Path, store: Path, tape: Path) -> Subject:
                        "block_time_window_verified", "chain_scan_complete"))
             or c["receipts_missing"] or c["chain_error"]):
         raise ValueError(f"Layer 1 receipt did not reconcile for {wallet}")
+    ledger_sha = hashlib.sha256(raw).hexdigest()
+    matches = [win for win in study["windows"].values() for report in win["wallets"]
+               if report["wallet"] == wallet and report["receipt"]["sha256"] == ledger_sha]
+    if len(matches) != 1:
+        raise ValueError(f"ledger differs from the published Layer 1 receipt for {wallet}")
+    win, = matches
+    store_sha, tape_sha, refs, parts = source_seals(store, tape)
+    inputs = study["inputs"]
+    if (store_sha != inputs[win["store"]]["manifest_sha256"] or
+            tape_sha != inputs[win["order_tape"]]["manifest_sha256"]):
+        raise ValueError(f"signed tape or fill store differs from the Layer 1 fileset for {wallet}")
     pages = {(wallet, g["start_time"], g["end_time"]):
              {**g, "address": wallet, "complete": g["stop"] == "done", "cursor": None}
              for g in c["goldsky_queries"]}
@@ -58,11 +84,9 @@ def subject(ledger: Path, store: Path, tape: Path) -> Subject:
         raise ValueError(f"receipt and fill scope disagree for {wallet}")
 
     index = defaultdict(list)
-    part_refs = {}
     fields = ["block", "block_ts", "tx", "order_id", "token_id", "side", "role", "condition_id",
               "created_ms", "maker_amount", "taker_amount", "fill_amount"]
-    for part in committed_parts(tape):
-        part_refs[str(part.relative_to(tape))] = digest(part)
+    for part in parts:
         table = pq.read_table(part, columns=fields, filters=[("maker", "=", wallet), ("verified", "=", True),
                               ("block", ">=", lo), ("block", "<=", hi)])
         for row in table.to_pylist():
@@ -115,10 +139,14 @@ def subject(ledger: Path, store: Path, tape: Path) -> Subject:
         item["fills"].sort(key=lambda f: (f["block"], f["log_index"]))
         if any(f["role"] == "maker" for f in item["fills"]):
             selected.append(item)
-    receipt = {"wallet": wallet, "layer1_sha256": hashlib.sha256(raw).hexdigest(), "window_time": [start, end],
-               "bound_source_fills": len(fills), "fill_roles": dict(roles), "signed_order_parts": part_refs,
+    allocations = load_allocations(tape)
+    if source_seals(store, tape)[:2] != (store_sha, tape_sha):
+        raise ValueError(f"Layer 1 inputs changed during inspection for {wallet}")
+    receipt = {"wallet": wallet, "layer1_sha256": ledger_sha, "window_time": [start, end],
+               "bound_source_fills": len(fills), "fill_roles": dict(roles), "store_manifest_sha256": store_sha,
+               "signed_order_manifest_sha256": tape_sha, "signed_order_files": refs,
                "unique_orders_filled_in_window": len(by_order), "orders_with_maker_fills": len(selected)}
-    return Subject(wallet, (start, end), selected, load_allocations(tape), pairs, receipt)
+    return Subject(wallet, (start, end), selected, allocations, pairs, receipt)
 
 
 def anchor(order, book, owner):
@@ -265,12 +293,16 @@ def summary(rows):
             "wallet_identified_placements": 0}
 
 
-def run(specs, data, stream, out):
+def run(specs, data, stream, out, layer1_summary):
     from .inspection_book import read_book
 
     if out.exists():
         raise FileExistsError(out)
-    owners = [subject(*paths) for paths in specs]
+    binding = layer1_summary.read_bytes()
+    study = orjson.loads(binding)
+    if study.get("schema") != "wallet-absorption-study-summary/1":
+        raise ValueError("unrecognized Layer 1 study summary")
+    owners = [subject(*paths, study) for paths in specs]
     start, end = owners[0].span
     if len({o.wallet for o in owners}) != len(owners) or any(o.span != (start, end) for o in owners):
         raise ValueError("use distinct wallets with identical Layer 1 UTC bounds")
@@ -291,6 +323,7 @@ def run(specs, data, stream, out):
         evidence = dest / "orders.jsonl"
         evidence.write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in rows))
         doc = {"schema": "wallet-inspection/1", "use": "retrospective_diagnostic",
+               "layer1_summary_sha256": hashlib.sha256(binding).hexdigest(),
                "window_time": [start, end], "stream": stream, "source_segments": book.sources,
                "missing_segments": book.missing, "book_counts": dict(book.counts),
                "lookback_ms": LOOKBACK_MS, "placebo_shift_ms": PLACEBO_MS, "size_tolerance_shares": SIZE_TOL,
@@ -304,11 +337,12 @@ def run(specs, data, stream, out):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--subject", action="append", nargs=3, metavar=("LEDGER", "STORE", "ORDERS"), type=Path, required=True)
+    p.add_argument("--layer1-summary", type=Path, required=True, help="published Layer 1 receipt and fileset digests")
     p.add_argument("--data", type=Path, required=True)
     p.add_argument("--stream", default="clob_btc_5m")
     p.add_argument("--out", type=Path, required=True)
     a = p.parse_args(argv)
-    doc = run(a.subject, a.data, a.stream, a.out)
+    doc = run(a.subject, a.data, a.stream, a.out, a.layer1_summary)
     print(orjson.dumps(doc["wallets"]).decode())
     return 0
 
