@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 import tempfile
 
@@ -114,7 +115,7 @@ def subject(ledger: Path, store: Path, tape: Path) -> Subject:
         item["fills"].sort(key=lambda f: (f["block"], f["log_index"]))
         if any(f["role"] == "maker" for f in item["fills"]):
             selected.append(item)
-    receipt = {"wallet": wallet, "layer1_sha256": digest(ledger), "window_time": [start, end],
+    receipt = {"wallet": wallet, "layer1_sha256": hashlib.sha256(raw).hexdigest(), "window_time": [start, end],
                "bound_source_fills": len(fills), "fill_roles": dict(roles), "signed_order_parts": part_refs,
                "unique_orders_filled_in_window": len(by_order), "orders_with_maker_fills": len(selected)}
     return Subject(wallet, (start, end), selected, load_allocations(tape), pairs, receipt)
@@ -170,7 +171,7 @@ def event_key(order, e):
 
 def mark(e):
     return {"venue_ms": e.venue_ms, "tw_ns": e.tw_ns, "seq": e.seq, "ordinal": e.ordinal,
-            "span_id": e.span_id, "old_size": e.old_size, "new_size": e.new_size}
+            "span_id": e.span_id, "old_size": e.old_size, "new_size": e.new_size, "source": e.src}
 
 
 def inspect(owners, book):
