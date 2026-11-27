@@ -321,10 +321,12 @@ def test_end_to_end_scorecard(tape, tmp_path):
         c = row["fidelity_verdict"]
         assert c["category"] in ("gate_inconclusive", "not_scored", "correctly_unknown", "missed"), (k, c)
         assert c["category"] != "correctly_unknown" or c["state"] == "not_run"
-    # the decoy and the hidden-signal wallet: rulefit reports "not explained" (exit 0 for the taker), no genome
+    # Three short training windows lack observations to test these controls independently.
+    # Absence of a draft cannot earn credit for a successful negative control.
     for k, key in (("random_taker", "e"), ("hidden_signal", "f")):
         hd = card["hidden_and_decoy"][k]
-        assert hd["rulefit_genome_emitted"] is False and hd["rulefit_says_explained"] is False and hd["rulefit_reasons"]
+        assert hd["rulefit_genome_emitted"] is False and hd["rulefit_says_explained"] is None and hd["rulefit_reasons"]
+        assert card["cells"][k]["explained_by_observed_inputs"]["category"] == "missed"
         assert hd["fidelity_state"] == "not_run" and hd["fidelity_passed"] is False
         assert not (out / k / "tools" / "rulefit" / "genome.json").exists()
     assert card["strategies"]["e"]["tools"]["exit"]["rulefit"] == 0
