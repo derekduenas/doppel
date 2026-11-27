@@ -11,6 +11,7 @@ Read [the recovery handoff](docs/CLAUDE-HANDOFF.md) before resuming replay work.
 4. Goal-driven: turn each task into a check (a test that reproduces the bug, a number that must match) and loop until it passes.
 
 ## Invariants (never break)
+- **Scoring freeze until H4 is scored (2026-12-01):** H1–H4 are bound to evaluation protocol `received-raw-opening` v1 with evaluator code hash `c2d01f50…` (registry seq 21–24). Do not change any file covered by `twin.cli.code_sha256()`: `src/doppel/twin/*.py`, `strategy/{genome,registry,sequential}.py`, `lab/{fair,flow,ledger,brti_import,dossier,census,scan,refprice}.py`, `tape/{segment,universe}.py`. A change makes the bound families unscorable. Check with `uv run python -c "from doppel.twin.cli import code_sha256; print(code_sha256())"` == `c2d01f506f6dcb32ab935df3632e500b798bab5444779c910a7a683e0f3d25e4`.
 - No look-ahead: a decision at second d uses only data received by d (`tw`).
 - Sealed genomes and `registry/genomes.jsonl` are append-only; `doppel-genome verify` and `doppel-genome dna` must pass.
 - No orders, no credentials in code or logs, no deploys from agents; Apex deploys go through `ops/deploy.sh` by the lead only.
