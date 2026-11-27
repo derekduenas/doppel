@@ -236,3 +236,35 @@ def test_t_stat_and_winsorizing():
     b = cv.winsorized_t(lucky, "top")
     assert b["mean_c"] > 1000 and b["mean_w_c"] < 1.3
     assert cv.winsorized_t(cells[:10], "top")["t"] is None            # too few windows
+
+
+def test_stream_marks_parity_with_resets_deltas_and_prints(tmp_path):
+    root = tmp_path / "tape"
+    s, tok, mate, mk = T0, "tu", "td", "0xm"
+
+    def pc(tok_, px, size, side):
+        return orjson.dumps({"event_type": "price_change", "market": mk, "timestamp": "1",
+                             "price_changes": [{"asset_id": tok_, "price": px, "size": size, "side": side}]}).decode()
+    w = SegmentWriter(root, "clob_btc_5m")
+    w.append(_book(mate, mk, 0.5, (s + 1) * NS), tw=(s + 1) * NS)
+    w.append(_book(tok, mk, 0.5, (s + 2) * NS), tw=(s + 2) * NS)
+    w.append(pc(tok, "0.53", "10", "SELL"), tw=(s + 50) * NS)        # a level behind the ask: mid unchanged
+    w.append(pc(tok, "0.51", "0", "SELL"), tw=(s + 52) * NS)         # best ask removed: ask 0.53
+    w.append("", tw=(s + 60) * NS, meta={"ctl": "disconnect"})       # book unknown until the next snapshot
+    w.append(_book(tok, mk, 0.6, (s + 70) * NS), tw=(s + 70) * NS)
+    w.append(orjson.dumps({"event_type": "last_trade_price", "asset_id": tok, "market": mk, "price": "0.61",
+                           "size": "5", "side": "BUY", "timestamp": "1", "transaction_hash": "0xab"}).decode(),
+             tw=(s + 80) * NS)
+    w.append(pc(tok, "0.65", "0", "SELL"), tw=(s + 120) * NS)        # unknown level: no change
+    w.append(_book(tok, mk, 0.7, (s + 200) * NS), tw=(s + 200) * NS)
+    w.close()
+    fills = {tok: [(mo.Fill(tok, (s + t) * NS, side, 0.5, 2.0, 0.0, None, "receive"), "w", "slug", s, s + 300)
+                   for t, side in ((40, "buy"), (49, "sell"), (55, "buy"), (65, "buy"), (75, "sell"), (130, "buy"))]}
+    got = [(r[0].t_ns, m) for r, m in cv.stream_marks(root, "clob_btc_5m", T0, T0 + 3600, fills, {tok: 1})]
+    paths, _ = mo.intl_paths(root, "clob_btc_5m", T0, T0 + 3600, {tok}, {tok: {"outcome": 1, "end": s + 300}})
+    ref = [(f.t_ns, {k: v for k, v in mo.marks(f, paths[tok], cv.HORIZONS, fair=False)["mid"].items() if k in cv.HK})
+           for f, *_ in fills[tok]]
+    assert sorted(got, key=lambda x: x[0]) == sorted(ref, key=lambda x: x[0])
+    by_t = dict(got)
+    assert by_t[(s + 55) * NS]["2s"] is not None and by_t[(s + 55) * NS]["10s"] is None   # +10 s is in the gap
+    assert by_t[(s + 49) * NS]["10s"] == pytest.approx(50.0 - 51.0)     # sold at 50; 0.49 / 0.53 -> mid 51
