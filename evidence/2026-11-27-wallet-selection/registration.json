@@ -1,0 +1,103 @@
+{
+  "apex_directory": "/var/backups/doppel-sealed-20261126/research/wallet-selection-v1-7a4cd7b",
+  "before_first_window": true,
+  "candidates": 100,
+  "cohort_sha256": "1775c0998506abf721e27ed3cb0043b5816b2dde587462034e55a4622a396b54",
+  "controls": 50,
+  "frozen_utc": "2026-11-27T03:24:59.190567+00:00",
+  "matched_candidates": 11,
+  "observations": {
+    "previous_pilot": {
+      "candidate_rank": 2,
+      "controls": [],
+      "matching": {
+        "controls": [],
+        "controls_in_support": 0,
+        "controls_passing_each_limit": {
+          "asset_mix": 37,
+          "extreme_price_share": 37,
+          "horizon_mix": 42,
+          "market_windows": 19,
+          "median_price": 26,
+          "notional": 0
+        },
+        "reason": "no control in common support",
+        "status": "unmatched"
+      },
+      "reason": "no_matched_control",
+      "receipt_sha256": "dfcaf5d7cecc06fa2c27cfbc863ebcdab4b26e9a7587789385cc4e8e28a4edc6",
+      "selected_for_next_layer": false,
+      "status": "INCONCLUSIVE",
+      "wallet": "0x0cb038487586d1119b165466072e9baf666f3a90",
+      "weeks": []
+    },
+    "walkthrough": {
+      "candidate_rank": 52,
+      "controls": [
+        "0x28cc505fb60501dbb2199a9662ba175919af904f"
+      ],
+      "matching": {
+        "controls": [
+          "0x28cc505fb60501dbb2199a9662ba175919af904f"
+        ],
+        "controls_in_support": 1,
+        "controls_passing_each_limit": {
+          "asset_mix": 37,
+          "extreme_price_share": 37,
+          "horizon_mix": 39,
+          "market_windows": 23,
+          "median_price": 28,
+          "notional": 1
+        },
+        "reason": null,
+        "status": "matched"
+      },
+      "reason": "four_complete_weeks_required",
+      "receipt_sha256": "601c218fadae13937db22b3d2a9ac761f453c43feb085ffcdb519fcc92c7f7a3",
+      "selected_for_next_layer": false,
+      "status": "INCONCLUSIVE",
+      "wallet": "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c",
+      "weeks": [
+        "pending",
+        "pending",
+        "pending",
+        "pending"
+      ]
+    }
+  },
+  "plan_file_sha256": "e91b52cef6808a6c8842186a1ebf502da8df66c301310812d140ed5622dbd1be",
+  "plan_frozen_tw": 1795749899190566956,
+  "plan_sha256": "e235c99d177583e3c44156992cdd89985fc9c281e6b09fb335386ecb01d691d6",
+  "scan_sha256": "d13368be7ba0b379ab01a26eb46b91211e2d5b6a05dc1daad7a18284f3b44a89",
+  "schema": "wallet-selection-registration/1",
+  "source_revision": "7a4cd7b38656566148f5ebedf6e36e57c522dbf7",
+  "unmatched_candidates": 89,
+  "walkthrough_choice": "highest discovery rank with frozen comparable controls",
+  "windows": [
+    {
+      "end": 1796355000,
+      "end_utc": "2026-12-04T03:30:00+00:00",
+      "start": 1795750200,
+      "start_utc": "2026-11-27T03:30:00+00:00"
+    },
+    {
+      "end": 1796959800,
+      "end_utc": "2026-12-11T03:30:00+00:00",
+      "start": 1796355000,
+      "start_utc": "2026-12-04T03:30:00+00:00"
+    },
+    {
+      "end": 1797564600,
+      "end_utc": "2026-12-18T03:30:00+00:00",
+      "start": 1796959800,
+      "start_utc": "2026-12-11T03:30:00+00:00"
+    },
+    {
+      "end": 1798169400,
+      "end_utc": "2026-12-25T03:30:00+00:00",
+      "start": 1797564600,
+      "start_utc": "2026-12-18T03:30:00+00:00"
+    }
+  ],
+  "witnessed_tw": 1795749902514208706
+}
