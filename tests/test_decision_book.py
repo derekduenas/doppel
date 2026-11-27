@@ -33,14 +33,14 @@ def opening(ms, token="U"):
     return book(ms, token, [(.40, 7), (.38, 13)], [(.42, 18)], "m")
 
 
-def test_cancel_receipt_uses_the_first_compatible_local_timestamp(tmp_path):
+def test_cancel_receipt_tracks_the_best_matching_quantity(tmp_path):
     write_tape(tmp_path, [opening(0), pc(50, "U", .40, 110, "BUY", "m"),
                           pc(100, "U", .40, 11, "BUY", "m"),
                           pc(120, "U", .40, 111, "BUY", "m", ts=100),
                           pc(150, "U", .40, 11, "BUY", "m", ts=100)])
     cancels = {("U", .40, "BUY", MS + 100): [("order", 100)]}
     out = scan(tmp_path, STREAM, T0, T0 + 60, [], cancels, set(), {}, 300)
-    assert out["cancel_tw"] == {"order": (MS + 100) * 1_000_000}
+    assert out["cancel_tw"] == {"order": (MS + 150) * 1_000_000}
 
 
 def test_cutoff_excludes_all_embedded_messages_and_equal_time_packets_and_traces_depth(tmp_path):

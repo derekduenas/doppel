@@ -75,3 +75,22 @@ The production tape recorder and the original six-hour baseline were active at t
 Use review source `37e0854` in a fresh scratch checkout. The public and label readers are in `evidence/2026-11-27-wallet-rivals/real_study.py`. Its `public` phase makes the public grid and source receipt. Use the registered `doppel-rivals predict` command with scope determined by that grid. Compare against the [published forecast seal](../evidence/2026-11-27-wallet-rivals/real-forecast-seal.json) before running the reader's `labels` phase and `doppel-rivals score`. Read the complete retained files under `/var/backups/doppel-sealed-20261126/research/wallet-rivals.FsyLZq`. The sealed forecast is `real/predictions.json`, the repeated public grid, sources, labels and scores are under `real-repeat/`, and the independent receipt is `release.SRNTxF/verification.json`. Its SHA-256 is `d3f184b0736c485754050c7c437faecefd0d070b7e8b768c0d8ee672f30635f9`. All recorded individual labels remain there.
 
 Layer 5 is the prespecified three-seed, six-policy exam on recorded books. The two-rule controlled result here measures a narrower recovery task. The six-hour preflight, memory limit and reserved inputs are defined in the [exam protocol](../evidence/2026-11-27-answerkey-inputs/EXAM.md). The real-wallet gate is independently attributed decision evidence including unfilled orders and skips. An opt-in account's order and decision journal would supply it. Any real candidate carried forward should be published before a fresh holdout begins.
+
+The prior materialization benchmark estimated about 10 GB per complete six-policy seed,
+before downstream outputs. Apex's free space is also needed for ongoing capture. Before
+opening the reserved seeds, size scratch against the current recorder reserve and reuse sealed
+public evidence for the paired old-tool comparison. [Capacity estimate](RULE-TWIN-REVIEW-20261127.md)
+
+To repeat the independent score verification against the retained files, run from the review
+checkout on Apex.
+
+```sh
+d=/var/backups/doppel-sealed-20261126/research/wallet-rivals.FsyLZq
+e=evidence/2026-11-27-wallet-rivals
+/opt/doppel/.venv/bin/python "$e/real_verify.py" \
+  --public "$d/real-repeat/public.json" \
+  --predictions "$d/real/predictions.json" \
+  --labels "$d/real-repeat/labels.json" \
+  --score "$d/real-repeat/scores.json" \
+  --label-source "$d/real-repeat/label-source.json"
+```
