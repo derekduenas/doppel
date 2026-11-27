@@ -67,7 +67,9 @@ wallet clock gate needs at least 30 comparable orders, 90% actual and at most 10
 - Bind the first observed maker fill to the complete decoded transaction. Direct and
   complementary print representations can describe one execution. The join checks
   market, asset, aggressor side, price, quantity and the 120-second block-time bound.
-  Contradictory or multiply timed reports have their own unresolved status.
+  Contradictory or multiply timed reports have their own unresolved status. An order can
+  already have rested or partly filled before the observation window. A recent absence
+  of a full-size addition cannot establish that it was never posted.
 - Test a ten-second window before execution and an equal window 60 seconds earlier.
   Require continuous state across each individual window on both exchange and recorder
   clocks. A reset between the two windows is allowed. Only native increases at the
@@ -100,7 +102,17 @@ Rule fitting can retain its diagnostics when evidence is thin. Publishing a make
 draft requires the existing wallet-level clock and placebo gate plus its side, price and
 participation evidence. Losing coverage or token mapping clears a prior draft from
 that output directory. The profile checks unrounded counts for the clock decision.
-This keeps a plausible-looking model from promoting a wallet with unsupported timing.
+This prevents a maker draft from being published when the timing evidence fails its own control.
+
+**Real end-to-end check.** The standalone matcher reproduced its published short-window
+aggregate before both wallets were passed to the normal rule-fitting command. The
+candidate mapped all 30 maker fills, had zero qualified placement rows and emitted no
+genome. The control mapped all 35 maker fills, with two timed by block, and retained
+seven placement hypotheses in one fit window. Its clock and held-out evidence were
+insufficient. Both commands wrote their diagnostic reports and returned the documented
+no-draft exit code of 1. No candidate rows or external network requests entered either
+run. The scratch directory is `consumer-8c44ca1` under the study. The isolated check
+took 365 seconds and peaked at 710 MiB. [Consumer receipt](../evidence/2026-11-27-wallet-inspection/consumer-first15.json)
 
 ## Reproduce on Apex
 
@@ -112,7 +124,7 @@ were read. The paired studies ran from `016d7ceb2e0d3e4fa7961567de42a72ca6edf586
 They used a 1,100 MiB memory cap, no swap, nice 19, and idle I/O. The short run took
 106 seconds and used 165,600 KiB peak RSS. All inputs come from the retained archive.
 
-Set `src` to `$PWD/rev2000dac` for the final residence labels in the research directory, `arc` to
+From the research directory, set `src` to `$PWD/rev2000dac` for the final residence labels, `arc` to
 `/var/backups/doppel-sealed-20261126`, and `ledger` to
 `$arc/research/wallet-absorption.crsLww`. Use the full registered addresses above for
 `candidate` and `control`. Use fresh output names when repeating a run.
@@ -134,14 +146,15 @@ The original comparisons live in `paired-first15` and `paired-day`. The final ch
 `2000dac8b263f13ccafd801481ca8e160a1713d7` applied the witnessed empty level to
 each actual sole candidate. It validated the original row hashes and reproduced every
 registered count before publishing `qualified-first15` and `qualified-day`. A direct
-run from the raw short tape also reproduces the qualified per-order output. Recompute the compact
+run from the raw short tape reproduced the qualified per-order output byte for byte. Recompute the compact
 cross-check from the research directory with the script and the independent first case
 from this review branch. It validates the SHA-256 of the per-order results against each
 summary, the signed manifests against Layer 1, and the first-order result against the
-independent raw-tape walk. [Evidence verifier](../evidence/2026-11-27-wallet-inspection/summarize.py)
+independent raw-tape walk. `verify-market-results.py` is the copy of `summarize.py` at
+`69e94a25f5cab29dacf6c5b3d07da9f1a5080213`. [Evidence verifier](../evidence/2026-11-27-wallet-inspection/summarize.py)
 
 ```sh
-/opt/doppel/.venv/bin/python "$src/evidence/2026-11-27-wallet-inspection/summarize.py" --study "$PWD" \
+/opt/doppel/.venv/bin/python verify-market-results.py --study "$PWD" \
   --layer1-summary "$summary" --layer1-root "$ledger" --first-case independent-first.json
 ```
 
