@@ -925,7 +925,11 @@ def _status(ob: dict | None) -> str:
 
 
 def _covers(ci, x, pad=0.0) -> bool | None:
-    return None if not ci or None in ci or x is None else ci[0] - pad <= x <= ci[1] + pad
+    if not ci or None in ci or x is None:
+        return None
+    lower, upper = ci[0] - pad, ci[1] + pad
+    return ((x >= lower or math.isclose(x, lower, rel_tol=1e-12, abs_tol=1e-12)) and
+            (x <= upper or math.isclose(x, upper, rel_tol=1e-12, abs_tol=1e-12)))
 
 
 def selected_parameter(side: dict, name: str) -> tuple:
@@ -940,6 +944,19 @@ def selected_parameter(side: dict, name: str) -> tuple:
                       (name == "skew_c_per_contract" and model == "skew"))
     ci = (side.get(name) or {}).get("ci95") if same_parameter else None
     return value, ci
+
+
+def price_parameter_cell(truth, sides, estimates: dict, comparison: list, coverage: list) -> dict:
+    """A contradiction on one fitted side survives missing evidence on its mate."""
+    stated = {s: value for s, value in estimates.items() if value is not None}
+    checked = [v for v in coverage if v is not None]
+    covered = all(checked) if checked else None
+    complete = bool(sides) and len(stated) == len(sides)
+    result = _cell(truth, stated or None, "claim" if stated else "unknown",
+                   complete and all(comparison), covered, tool="rulefit", complete_sides=complete)
+    if stated and not complete and all(comparison) and covered is not False:
+        result["category"] = "missed"
+    return result
 
 
 def _timing_cell(truth, q: dict | None, ob: dict | None) -> dict:
@@ -991,28 +1008,31 @@ def score(name: str, t: dict, tools: dict) -> dict:
         tie = any(ties[s] for s in sides)
         cells["price_reference"] = _cell(e["ref"], refs if have else None,
                                          "hedged" if tie else "claim", ok, tool="rulefit", tie_with=ties)
-    same_ref = bool(have) and all(refs[s] == e["ref"] for s in sides)
     offs, cover, okk = {}, [], []
     for s in sides:
+        if refs[s] != e["ref"]:
+            continue
         v, ci = selected_parameter(pr.get(s) or {}, "offset_c")
+        if v is None:
+            continue
         offs[s] = v
         tv = t["offset_c_p50"][s]
         okk.append(v is not None and abs(v - tv) <= TOL_OFFSET_C)
-        cover.append(_covers(ci, tv) if same_ref else None)
-    cv = False if False in cover else None if not cover or None in cover else True
-    cells["price_offset"] = _cell({s: t["offset_c_p50"][s] for s in sides} if maker else None,
-                                  offs if same_ref else None, "claim" if same_ref else "unknown",
-                                  bool(okk) and all(okk), cv, tool="rulefit", matching_reference=same_ref)
+        cover.append(_covers(ci, tv))
+    cells["price_offset"] = price_parameter_cell({s: t["offset_c_p50"][s] for s in sides} if maker else None,
+                                                 sides, offs, okk, cover)
     sk, skc, sko = {}, [], []
     true_skew = t["skew_c_per_contract"]
     for s in sides:
+        if refs[s] != e["ref"]:
+            continue
         v, ci = selected_parameter(pr.get(s) or {}, "skew_c_per_contract")
+        if v is None:
+            continue
         sk[s] = v
         sko.append(v is not None and true_skew is not None and abs(v - true_skew) <= max(TOL_SKEW, 0.5 * abs(true_skew)))
-        skc.append(_covers(ci, true_skew) if same_ref else None)
-    cv = False if False in skc else None if not skc or None in skc else True
-    cells["skew"] = _cell(true_skew, sk if same_ref else None, "claim" if same_ref else "unknown",
-                          bool(sko) and all(sko), cv, tool="rulefit", matching_reference=same_ref)
+        skc.append(_covers(ci, true_skew))
+    cells["skew"] = price_parameter_cell(true_skew, sides, sk, sko, skc)
     # cadence and quote life: rulefit's corrected estimates, status from the profile ledger
     tm = rf.get("timing_rule") or {}
     cells["cadence"] = _timing_cell(t["repost_gap_s_p50"], tm.get("gap_s"), led.get("placement_cadence"))

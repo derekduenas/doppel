@@ -468,3 +468,7 @@ def test_selected_parameter_uses_the_matching_interval():
     cell = ak._timing_cell(3, {"status": "ESTIMATED", "value": 2, "ci95": [1, 4], "upper_bound": 2.5},
                            {"status": "ESTIMATED"})
     assert cell["category"] == "wrongly_confident" and cell["bound_holds"] is False
+    assert ak._covers([1., 1.], 0.9999999999999929) and not ak._covers([1., 1.], 0.9999)
+    args = ({"bid": -1, "ask": 1}, ["bid", "ask"], {"bid": 0}, [True])
+    assert ak.price_parameter_cell(*args, [False])["category"] == "wrongly_confident"
+    assert ak.price_parameter_cell(*args, [True])["category"] == "missed"
