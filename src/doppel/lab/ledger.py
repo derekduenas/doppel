@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fcntl
+import math
+import os
 import sys
 import time
 from collections import defaultdict
@@ -67,23 +70,81 @@ class TokenMap:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.m: dict[str, dict] = {}
+        self._revision = None
         if self.path.exists():
-            for line in self.path.read_bytes().splitlines():
+            with self.path.open("rb") as fh:
+                fcntl.flock(fh, fcntl.LOCK_SH)
+                self._refresh(fh)
+
+    @staticmethod
+    def _merge(previous: dict | None, row: dict) -> dict:
+        if previous is None or previous.get("status") == "unknown":
+            return row
+        if row.get("status") == "unknown":
+            return previous
+        fields = ["condition", "idx"]
+        if previous.get("status") == "resolved":
+            fields.extend(("slug", "end"))
+            if row.get("status") == "resolved":
+                fields.append("payout")
+        if any(previous.get(k) is not None and row.get(k) is not None
+               and previous[k] != row[k] for k in fields):
+            raise ValueError(f"conflicting venue metadata for token {row['token']}")
+        return previous if previous.get("status") == "resolved" else row
+
+    def _refresh(self, fh) -> None:
+        st = os.fstat(fh.fileno())
+        revision = (st.st_ino, st.st_size, st.st_mtime_ns)
+        if revision != self._revision:
+            fh.seek(0)
+            cache = {}
+            for line in fh:
                 if line.strip():
                     d = orjson.loads(line)
-                    self.m[d["token"]] = d
+                    cache[d["token"]] = self._merge(cache.get(d["token"]), d)
+            self.m = cache
+            self._revision = revision
 
     def _save(self, recs: list[dict]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.path, "ab") as fh:
-            for d in recs:
-                fh.write(orjson.dumps(d) + b"\n")
-        for d in recs:
-            self.m[d["token"]] = d
+        with self.path.open("a+b") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            self._refresh(fh)  # another ledger/census process can share this cache
+            pending = {}
+            for row in recs:
+                tok = row["token"]
+                pending[tok] = self._merge(pending.get(tok, self.m.get(tok)), row)
+            changed = [r for t, r in pending.items() if self.m.get(t) != r]
+            if not changed:
+                return
+            slots = {(r.get("condition"), r.get("idx")): t for t, r in self.m.items() if r.get("condition")}
+            for row in changed:
+                if row.get("condition"):
+                    slot = (row["condition"], row["idx"])
+                    if slots.setdefault(slot, row["token"]) != row["token"]:
+                        raise ValueError(f"contradictory tokens for condition and outcome {slot}")
+            if fh.seek(0, os.SEEK_END):
+                fh.seek(-1, os.SEEK_END)
+                if fh.read(1) != b"\n":
+                    fh.write(b"\n")
+            fh.write(b"".join(orjson.dumps(row) + b"\n" for row in changed))
+            fh.flush()
+            os.fsync(fh.fileno())
+            self.m.update(pending)
+            st = os.fstat(fh.fileno())
+            self._revision = (st.st_ino, st.st_size, st.st_mtime_ns)
 
     async def ensure(self, tokens: set[str], batch: int = 40, refresh_open: bool = True) -> None:
-        need = [t for t in tokens if t not in self.m
-                or (refresh_open and self.m[t]["status"] in ("open", "unknown"))]
+        # Old cache files stored only IDs observed in fills. Query the traded side of a
+        # resolved market again when its corresponding settled outcome is absent.
+        resolved = defaultdict(set)
+        for row in self.m.values():
+            if row.get("status") == "resolved" and row.get("condition"):
+                resolved[row["condition"]].add(row["idx"])
+        need = sorted(t for t in tokens if t not in self.m
+                      or (refresh_open and self.m[t]["status"] in ("open", "unknown"))
+                      or (self.m[t]["status"] == "resolved" and self.m[t].get("condition")
+                          and len(resolved[self.m[t]["condition"]]) == 1))
         if not need:
             return
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=SSL_CTX, limit=4),
@@ -97,18 +158,33 @@ class TokenMap:
                     async with s.get(GAMMA, params=q) as r:
                         data = orjson.loads(await r.read()) if r.status == 200 else []
                     for mk in data:
-                        ids = orjson.loads(mk.get("clobTokenIds") or "[]")
-                        prices = orjson.loads(mk.get("outcomePrices") or "[]")
-                        resolved = bool(mk.get("closed")) and mk.get("umaResolutionStatus") == "resolved"
+                        ids = mk.get("clobTokenIds") or []
+                        ids = orjson.loads(ids) if isinstance(ids, str) else ids
+                        if not isinstance(ids, list) or not any(t in chunk for t in ids):
+                            continue
+                        if not all(isinstance(t, str) and t for t in ids) or len(set(ids)) != len(ids):
+                            raise ValueError("invalid outcome token identities in requested venue market")
+                        prices = mk.get("outcomePrices") or []
+                        prices = orjson.loads(prices) if isinstance(prices, str) else prices
+                        settled = mk.get("closed") is True and mk.get("umaResolutionStatus") == "resolved"
+                        pair = len(ids) == 2 and all(mk.get(k) for k in ("conditionId", "slug", "endDate"))
+                        if pair and settled:
+                            if (not isinstance(prices, list) or len(prices) != 2
+                                    or not all(0 <= float(p) <= 1 for p in prices)
+                                    or not math.isclose(sum(map(float, prices)), 1.0, abs_tol=1e-9)):
+                                raise ValueError("inconsistent binary payouts in requested venue market")
                         for idx, tok in enumerate(ids):
-                            pay = float(prices[idx]) if resolved and idx < len(prices) else None
-                            found[tok] = {"token": tok, "slug": mk.get("slug"), "idx": idx,
-                                          "condition": mk.get("conditionId"),
-                                          "end": mk.get("endDate"), "payout": pay,
-                                          "status": "resolved" if pay is not None else "open"}
+                            if tok not in chunk and not pair:
+                                continue
+                            pay = float(prices[idx]) if settled and idx < len(prices) else None
+                            row = {"token": tok, "slug": mk.get("slug"), "idx": idx,
+                                   "condition": mk.get("conditionId"), "end": mk.get("endDate"),
+                                   "payout": pay, "status": "resolved" if pay is not None else "open"}
+                            found[tok] = self._merge(found.get(tok), row)
                     await asyncio.sleep(0.15)
-                recs = [found.get(t, {"token": t, "status": "unknown"}) for t in chunk]
-                self._save(recs)
+                for tok in chunk:
+                    found.setdefault(tok, {"token": tok, "status": "unknown"})
+                self._save(list(found.values()))
 
 
 def _end_ts(iso: str | None) -> int | None:
