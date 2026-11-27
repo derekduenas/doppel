@@ -94,6 +94,7 @@ import numpy as np
 import orjson
 
 from ..tape.segment import SegmentWriter, read_segment, segment_path
+from .answerkey_inputs import preflight_inputs
 from .census import LEN
 from .fillstore import compact
 from .flow import _ts
@@ -1301,7 +1302,7 @@ def main(argv=None) -> int:
     ap.add_argument("--no-tools", action="store_true", help="simulate and write evidence only")
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args(argv)
-    split = a.split or (a.t_from + (a.t_to - a.t_from) // 2) // 60 * 60
+    split = a.split if a.split is not None else (a.t_from + (a.t_to - a.t_from) // 2) // 60 * 60
     keys = a.strategies.split(",")
     if not a.t_from < split < a.t_to or len(keys) != len(set(keys)) or set(keys) - POLICIES.keys():
         ap.error("specify a split inside the range and unique subject keys a through f")
@@ -1310,10 +1311,13 @@ def main(argv=None) -> int:
     raw_params = a.policy_params.read_bytes() if a.policy_params else b"{}"
     try:
         params = policy_overrides(raw_params)
+        preflight = preflight_inputs(a.data, a.tokens, a.stream, a.t_from, split, a.t_to)
     except ValueError as exc:
         ap.error(str(exc))
-    length = LEN.get(a.stream.rsplit("_", 1)[-1], 300)
-    starts = max(0, a.t_to // length - -(-split // length))   # whole windows inside the holdout
+    a.out.mkdir(parents=True, exist_ok=True)
+    (a.out / "input-preflight.json").write_bytes(orjson.dumps(preflight, option=orjson.OPT_INDENT_2))
+    length = LEN[a.stream.rsplit("_", 1)[-1]]
+    starts = preflight["holdout"]["book_pairs"]
     if starts < MIN_FIDELITY_STARTS and not a.no_tools:
         print(f"doppel-answerkey: the holdout [{split}, {a.t_to}) holds {starts} whole window(s); fidelity needs "
               f">= {MIN_FIDELITY_STARTS} comparable window starts, so every fidelity verdict will be INCONCLUSIVE by "
@@ -1326,7 +1330,7 @@ def main(argv=None) -> int:
         res[k] = run_strategy(k, a.data, a.tokens, a.stream, a.t_from, split, a.t_to, a.out, a.seed, subject_params,
                               not a.no_tools)
         print(f"{k} {res[k]['policy']}: {res[k]['truth']['status']} sim {res[k]['sim_s']} s", file=sys.stderr)
-    card = {"range": [a.t_from, split, a.t_to], "stream": a.stream, "seed": a.seed,
+    card = {"range": [a.t_from, split, a.t_to], "stream": a.stream, "seed": a.seed, "input_preflight": preflight,
             "policy_params_sha256": hashlib.sha256(raw_params).hexdigest(), "scorecard_schema": 2,
             "holdout_window_starts": starts, "fidelity_readable": False,
             "strategies": {k: {x: v for x, v in r.items() if x != "cells"} for k, r in res.items()}}

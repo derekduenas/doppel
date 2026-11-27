@@ -1,0 +1,8 @@
+{
+  "a": {"h_c": 3, "timer_s": 7, "move_c": 2, "sizes": [12, 24, 48]},
+  "b": {"h_c": 4, "k_c_per_contract": 0.075, "size": 18, "timer_s": 13},
+  "c": {"m_c": 3, "size": 17},
+  "d": {"levels_c": [0, 2, 4], "sizes": [83, 86, 89]},
+  "e": {"sizes": [12, 24, 48]},
+  "f": {"accuracy": 0.7, "size": 19}
+}
