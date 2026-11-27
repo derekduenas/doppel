@@ -80,6 +80,12 @@ prospectively frozen wallet-level comparison. The first real walkthrough wallet 
 matched control and four weeks to observe. Cohort-wide PIT skill and the later
 strategy-identification stages remain open. [Layer 0 audit and evidence](WALLET-SELECTION.md)
 
+Stage 1 has now been exercised on that same candidate and control. The first 15 minutes and
+a subsequent 24-hour capture reconciled independently through source fills, Polygon events
+and both collateral balances. The intervening 37 minutes and 7 seconds lack a supporting
+Goldsky capture. Stage 2 starts with a signed order whose timestamp is later than its fill.
+[Layer 1 audit and receipts](WALLET-ABSORPTION.md)
+
 ## 5. Genome v2
 
 Rule fitting on real orders listed what today's genome format cannot say. v2 adds: quotes pegged to

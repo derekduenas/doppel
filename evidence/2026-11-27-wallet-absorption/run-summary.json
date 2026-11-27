@@ -1,0 +1,1038 @@
+{
+  "collection_scope": {
+    "candidates": [
+      "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c"
+    ],
+    "controls": [
+      "0x28cc505fb60501dbb2199a9662ba175919af904f"
+    ],
+    "receipt": {
+      "path": "evidence/2026-11-27-wallet-selection/collection-scope.json",
+      "sha256": "8afbd2f2d35481734bf86994637c4127aa2259177b3a8a0c326fd9abbc210b8a"
+    },
+    "schema": "wallet-selection-collection-scope/1",
+    "sha256": "1884ce63df4729e7a592caa806e33ecd53c056f07b05f944f1f9c5f8363527b4",
+    "source_plan_sha256": "e235c99d177583e3c44156992cdd89985fc9c281e6b09fb335386ecb01d691d6"
+  },
+  "gap_diagnostic": {
+    "cohort_receipt": {
+      "path": "signed-gap/cohort.json",
+      "sha256": "86a73d2b2a40f582454ca73761195b2a11e15473e0570b129c15696b4311e94d"
+    },
+    "wallets": [
+      {
+        "causes": [
+          "goldsky_incomplete",
+          "fill_transaction_legs_disagree",
+          "fill_orders_disagree",
+          "goldsky_missing_fill_txs",
+          "share_residual",
+          "cash_residual"
+        ],
+        "chain_legs": 97,
+        "chain_orderfilled": 37,
+        "economic_status": "not_reconciled",
+        "goldsky_fills": 0,
+        "receipt": {
+          "path": "signed-gap/wallet-0x28cc505fb60501dbb2199a9662ba175919af904f.json",
+          "sha256": "d7adf6fc5a1b1ebee3200bbf28960b8039eb31cccb175eb23e755474bf755a41"
+        },
+        "source_checks": {
+          "block_time_window_verified": true,
+          "chain_error": null,
+          "chain_next_block": null,
+          "chain_scan_complete": true,
+          "chain_window_timestamps": [
+            1795630498,
+            1795630500,
+            1795632726,
+            1795632727
+          ],
+          "goldsky_complete": false,
+          "goldsky_pagination_complete": false,
+          "goldsky_store_verified": false,
+          "receipts_missing": 0
+        },
+        "wallet": "0x28cc505fb60501dbb2199a9662ba175919af904f",
+        "window_blocks": [
+          97950020,
+          97951504
+        ],
+        "window_time": [
+          1795630500,
+          1795632727
+        ]
+      },
+      {
+        "causes": [
+          "goldsky_incomplete",
+          "fill_transaction_legs_disagree",
+          "fill_orders_disagree",
+          "goldsky_missing_fill_txs",
+          "share_residual",
+          "cash_residual"
+        ],
+        "chain_legs": 140,
+        "chain_orderfilled": 70,
+        "economic_status": "not_reconciled",
+        "goldsky_fills": 0,
+        "receipt": {
+          "path": "signed-gap/wallet-0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c.json",
+          "sha256": "c1c8d35b9da2490e03e5cbbb72f147492f338f68f5092b95827291087dbddca4"
+        },
+        "source_checks": {
+          "block_time_window_verified": true,
+          "chain_error": null,
+          "chain_next_block": null,
+          "chain_scan_complete": true,
+          "chain_window_timestamps": [
+            1795630498,
+            1795630500,
+            1795632726,
+            1795632727
+          ],
+          "goldsky_complete": false,
+          "goldsky_pagination_complete": false,
+          "goldsky_store_verified": false,
+          "receipts_missing": 0
+        },
+        "wallet": "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c",
+        "window_blocks": [
+          97950020,
+          97951504
+        ],
+        "window_time": [
+          1795630500,
+          1795632727
+        ]
+      }
+    ]
+  },
+  "inputs": {
+    "day-orders-0x28cc": {
+      "files": 29,
+      "manifest_sha256": "3aab16dbaa9f7b1d182e06031556967667623260256b7e59fdd82a1a8d54f8fe",
+      "path": "day-orders-0x28cc"
+    },
+    "day-orders-0xf9b7": {
+      "files": 63,
+      "manifest_sha256": "4af1e9a20ad450966639d4cce07272168fdb73743b4ed4fb2ea5a78779bf6b30",
+      "path": "day-orders-0xf9b7"
+    },
+    "day-store-0x28cc": {
+      "files": 2,
+      "manifest_sha256": "b3208483994478024f18182602710d3896a6c58f04b412fc0173fc8c9f2814a9",
+      "path": "day-store-0x28cc"
+    },
+    "day-store-0xf9b7": {
+      "files": 2,
+      "manifest_sha256": "14b34170fa5afa84f4c4d26e2af1f1320b33c6bdd6963141eb516793bf84e7bb",
+      "path": "day-store-0xf9b7"
+    },
+    "day_and_gap_tokens": {
+      "path": "day-with-chain-tokens.jsonl",
+      "sha256": "7ae259f2e20ef16802728bc1ce75a54cbaf9e50c313b7ffdb90dd06a93830535"
+    },
+    "first-orders": {
+      "files": 2,
+      "manifest_sha256": "d60083957ca6fec33781adee8b9e37c55b39159bae51276b3fc6ff1d83b15f47",
+      "path": "first-orders"
+    },
+    "reviewed/first-source/fills": {
+      "files": 2,
+      "manifest_sha256": "716acfdf84aa831c05b451201488ebc0ac609ce875625a549cbf53034d4f980e",
+      "path": "reviewed/first-source/fills"
+    },
+    "short_window_tokens": {
+      "path": "../../lab/tokens.jsonl",
+      "sha256": "72f6055444f589d317fb24716b0dc9bb222a6d63b00fbc540ec82534abac0875"
+    }
+  },
+  "original_failed_candidate_day": {
+    "causes": [
+      "balances_unavailable",
+      "unclassified_chain_txs"
+    ],
+    "chain_error": "BudgetExhausted",
+    "economic_status": "not_reconciled",
+    "receipt": {
+      "path": "day-0xf9b7/wallet-0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c.json",
+      "sha256": "fd83c0f9b2a4fbb2e1e7afd35eece23e16d9a0a98176e7554aafe46c38e65b3f"
+    },
+    "receipts_missing": 167,
+    "wallet": "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c",
+    "window_time": [
+      1795632727,
+      1795719127
+    ]
+  },
+  "schema": "wallet-absorption-study-summary/1",
+  "scope": {
+    "account_count": 2,
+    "covered_seconds_per_wallet": 87300,
+    "day_window_count_per_wallet": 1,
+    "gap_interpretation": "The archived queries do not cover the intervening interval. Its chain counts are diagnostic.",
+    "short_windows_overlap": true,
+    "strategy_identified": false,
+    "uncovered_interval": [
+      1795630500,
+      1795632727
+    ],
+    "uncovered_seconds": 2227,
+    "weekly_selection_established": false
+  },
+  "source_proofs": {
+    "day-proof": {
+      "pagination": {
+        "path": "reviewed/day-proof/pagination.jsonl",
+        "sha256": "349ac1178b2cd331694086284429b29c2a95548bd7954840d5d887bba49bde51"
+      },
+      "proof": {
+        "cohort_sha256": "8afbd2f2d35481734bf86994637c4127aa2259177b3a8a0c326fd9abbc210b8a",
+        "cohort_wallets": 2,
+        "complete": 2,
+        "complete_rows": 6638,
+        "incomplete": 0,
+        "interval": [
+          1795632727,
+          1795719127
+        ],
+        "missing": 0,
+        "pages": 8,
+        "pagination_sha256": "349ac1178b2cd331694086284429b29c2a95548bd7954840d5d887bba49bde51",
+        "queries": 2,
+        "rows": 6638,
+        "segments": {
+          "20261126/18.dtape.zst": {
+            "bytes": 47965150,
+            "sha256": "8d7b972b0e878c156f5a18cace50937cc078c7f31617e9c8da62b5ab555b70dd"
+          },
+          "20261126/19.dtape.zst": {
+            "bytes": 28021652,
+            "sha256": "56303bad125ba72d3c21b550c399173ecfe0d96bea2b7cb76b217af047eedc7f"
+          }
+        },
+        "source": "sealed_goldsky_pages"
+      },
+      "summary": {
+        "path": "reviewed/day-proof/summary.json",
+        "sha256": "a90c3e75776ff8abcc417185d9dfda12fcafa390e8dd506280b78d39be495a51"
+      }
+    },
+    "first-source": {
+      "pagination": {
+        "path": "reviewed/first-source/pagination.jsonl",
+        "sha256": "f55aea5a7c91153f575f43d074b3ed8bfbdb8c94167e688a4276447efb457537"
+      },
+      "proof": {
+        "interval": [
+          1795629600,
+          1795630500
+        ],
+        "job": "val-20261125T1800-15m",
+        "manifest_sha256": "a46f2d4b31f444f292f878ea46c6bf69530dd590431cef9130eefc7c9a87ef9a",
+        "pagination_sha256": "f55aea5a7c91153f575f43d074b3ed8bfbdb8c94167e688a4276447efb457537",
+        "projected_wallet_rows": {
+          "0x28cc505fb60501dbb2199a9662ba175919af904f": 35,
+          "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": 30
+        },
+        "segments": {
+          "20261125/18.dtape.zst": {
+            "bytes": 18418466,
+            "sha256": "ca2bb539b1492332ae6ed0d9c94e9273a027a92f7b6cbbfe019f109fbd9592c9"
+          }
+        },
+        "source": "sealed_global_activity_projection",
+        "source_pages": 47,
+        "source_rows": 46152,
+        "trade_bindings": {
+          "0x28cc505fb60501dbb2199a9662ba175919af904f": {
+            "sha256_sum": "8bd38286c5943fcf5e03d899a74fd7144cba197f6e0550687260390d337b430c",
+            "trades": 35
+          },
+          "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": {
+            "sha256_sum": "12d6e6681f91a8fc53cce0570f5ed0f005a7ee911ec33e7aab3db2d1209c04d1",
+            "trades": 30
+          }
+        }
+      },
+      "summary": {
+        "path": "reviewed/first-source/summary.json",
+        "sha256": "416c414b107aa57785eb568ed8e3c2c6ee5d7016f4b3d1c3b5757d54fbd07a67"
+      }
+    }
+  },
+  "windows": {
+    "signed-day-0x28cc": {
+      "cohort_receipt": {
+        "path": "signed-day-0x28cc/cohort.json",
+        "sha256": "bc5e0e45cb7412e46c34ed5cbc531530989612b46edbe04831e51b962a0d70fa"
+      },
+      "order_tape": "day-orders-0x28cc",
+      "shared_verified_signers": [],
+      "source_proof": "day-proof",
+      "store": "day-store-0x28cc",
+      "token_metadata": "day_and_gap_tokens",
+      "wallets": [
+        {
+          "cash_log_residual": 0.0,
+          "cash_residual": 0.0,
+          "causes": [],
+          "chain_legs": 5167,
+          "collateral_residual_micro": {
+            "0x2791bca1f2de4661ed88a30c99a7a9449aa84174": 0,
+            "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb": 0
+          },
+          "economic_event_counts": {
+            "buy": 2082,
+            "cash": 198,
+            "redeem": 249
+          },
+          "economic_status": "reconciled",
+          "fill_checks": {
+            "chain_fill_txs_missing_in_goldsky": 0,
+            "goldsky_fill_txs_without_chain_legs": 0,
+            "order_filled": {
+              "amount_mismatch": 0,
+              "chain": 2082,
+              "chain_only": 0,
+              "goldsky_only": 0,
+              "matched": 2082
+            },
+            "other_collateral_fill_txs": 0,
+            "tx_asset_mismatches": 0,
+            "unexplained_gross_cash_movements": 0,
+            "unexplained_gross_share_movements": 0
+          },
+          "goldsky_fills": 2082,
+          "identity": {
+            "code_kind": "contract_bytecode",
+            "delegation_target": null,
+            "is_contract": true,
+            "safe_owners": null,
+            "sig_types": {
+              "3": 2082
+            },
+            "signer_coverage": {
+              "chain_orders": 2082,
+              "conflicting_orders": 0,
+              "status": "complete",
+              "verified_orders": 2082
+            },
+            "signers": {
+              "0x28cc505fb60501dbb2199a9662ba175919af904f": 2082
+            },
+            "trading_account": "0x28cc505fb60501dbb2199a9662ba175919af904f"
+          },
+          "known_conditions": 250,
+          "max_abs_collateral_residual_micro": 0,
+          "max_abs_share_residual": 0.0,
+          "nonfill_tx_counts": {
+            "cash": 198,
+            "redeem": 249
+          },
+          "orders": {
+            "all_provider_fill_rows_linked": true,
+            "conflicting_signed_role_keys": 0,
+            "creation_time_flags_by_matched_row": {
+              "after_block": 27,
+              "plausible": 2055
+            },
+            "distinct_provider_order_keys": 2082,
+            "matched_distinct_order_keys": 2082,
+            "matched_key_count_equals_identity_receipt": true,
+            "matched_signed_rows": 2082,
+            "provider_fill_rows": 2082,
+            "provider_fills_without_signed_order": 0,
+            "provider_roles_by_fill": {
+              "maker": 2082
+            },
+            "provider_signed_role_disagreements_by_fill": 0,
+            "signed_roles_by_matched_row": {
+              "maker": 2082
+            },
+            "unmatched_verified_rows": 0,
+            "verified_account_order_rows": 2082
+          },
+          "paired_conditions": 250,
+          "pairing": {
+            "completing_share_of_buys": 0.279,
+            "coverage": "complete",
+            "event_time_anchors_consistent": true,
+            "interpolated_event_blocks": 0,
+            "log_timestamp_event_blocks": 1364,
+            "longest_one_sided_s": 683,
+            "paired_share_of_holding_time": 0.3143
+          },
+          "receipt": {
+            "path": "signed-day-0x28cc/wallet-0x28cc505fb60501dbb2199a9662ba175919af904f.json",
+            "sha256": "c67c054bf7ae3c3f5bcbcb627fad79c3da5aac40df7ab38e3a2bfdc3aa89a372"
+          },
+          "source_checks": {
+            "block_time_window_verified": true,
+            "chain_error": null,
+            "chain_next_block": null,
+            "chain_scan_complete": true,
+            "chain_window_timestamps": [
+              1795632726,
+              1795632727,
+              1795719126,
+              1795719127
+            ],
+            "goldsky_complete": true,
+            "goldsky_pagination_complete": true,
+            "goldsky_store_verified": true,
+            "receipts_missing": 0
+          },
+          "tokens": 500,
+          "tokens_without_pair": 0,
+          "wallet": "0x28cc505fb60501dbb2199a9662ba175919af904f",
+          "window_blocks": [
+            97951505,
+            98009101
+          ],
+          "window_time": [
+            1795632727,
+            1795719127
+          ]
+        }
+      ]
+    },
+    "signed-day-0xf9b7": {
+      "cohort_receipt": {
+        "path": "signed-day-0xf9b7/cohort.json",
+        "sha256": "580026dbd3b43ffb76207be71292c7dc8f0033c7138c9b63109576a8415f220a"
+      },
+      "order_tape": "day-orders-0xf9b7",
+      "shared_verified_signers": [],
+      "source_proof": "day-proof",
+      "store": "day-store-0xf9b7",
+      "token_metadata": "day_and_gap_tokens",
+      "wallets": [
+        {
+          "cash_log_residual": 0.0,
+          "cash_residual": 0.0,
+          "causes": [],
+          "chain_legs": 11338,
+          "collateral_residual_micro": {
+            "0x2791bca1f2de4661ed88a30c99a7a9449aa84174": 0,
+            "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb": 0
+          },
+          "economic_event_counts": {
+            "buy": 4556,
+            "cash": 206,
+            "merge": 364,
+            "redeem": 278
+          },
+          "economic_status": "reconciled",
+          "fill_checks": {
+            "chain_fill_txs_missing_in_goldsky": 0,
+            "goldsky_fill_txs_without_chain_legs": 0,
+            "order_filled": {
+              "amount_mismatch": 0,
+              "chain": 4556,
+              "chain_only": 0,
+              "goldsky_only": 0,
+              "matched": 4556
+            },
+            "other_collateral_fill_txs": 0,
+            "tx_asset_mismatches": 0,
+            "unexplained_gross_cash_movements": 0,
+            "unexplained_gross_share_movements": 0
+          },
+          "goldsky_fills": 4556,
+          "identity": {
+            "code_kind": "delegated_eoa",
+            "delegation_target": "0x63c0c19a282a1b52b07dd5a65b58948a07dae32b",
+            "is_contract": false,
+            "safe_owners": null,
+            "sig_types": {
+              "0": 4556
+            },
+            "signer_coverage": {
+              "chain_orders": 4556,
+              "conflicting_orders": 0,
+              "status": "complete",
+              "verified_orders": 4556
+            },
+            "signers": {
+              "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": 4556
+            },
+            "trading_account": "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c"
+          },
+          "known_conditions": 289,
+          "max_abs_collateral_residual_micro": 0,
+          "max_abs_share_residual": 0.0,
+          "nonfill_tx_counts": {
+            "cash": 206,
+            "merge": 364,
+            "redeem": 278
+          },
+          "orders": {
+            "all_provider_fill_rows_linked": true,
+            "conflicting_signed_role_keys": 0,
+            "creation_time_flags_by_matched_row": {
+              "after_block": 4556
+            },
+            "distinct_provider_order_keys": 4556,
+            "matched_distinct_order_keys": 4556,
+            "matched_key_count_equals_identity_receipt": true,
+            "matched_signed_rows": 4556,
+            "provider_fill_rows": 4556,
+            "provider_fills_without_signed_order": 0,
+            "provider_roles_by_fill": {
+              "maker": 4556
+            },
+            "provider_signed_role_disagreements_by_fill": 0,
+            "signed_roles_by_matched_row": {
+              "maker": 4556
+            },
+            "unmatched_verified_rows": 0,
+            "verified_account_order_rows": 4556
+          },
+          "paired_conditions": 289,
+          "pairing": {
+            "completing_share_of_buys": 0.361,
+            "coverage": "complete",
+            "event_time_anchors_consistent": true,
+            "interpolated_event_blocks": 0,
+            "log_timestamp_event_blocks": 3437,
+            "longest_one_sided_s": 22523,
+            "paired_share_of_holding_time": 0.444
+          },
+          "receipt": {
+            "path": "signed-day-0xf9b7/wallet-0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c.json",
+            "sha256": "9a7cf87049d2dbfb28700646d9e6092204b92f1ab42459eb30f86dbc08d9dc90"
+          },
+          "source_checks": {
+            "block_time_window_verified": true,
+            "chain_error": null,
+            "chain_next_block": null,
+            "chain_scan_complete": true,
+            "chain_window_timestamps": [
+              1795632726,
+              1795632727,
+              1795719126,
+              1795719127
+            ],
+            "goldsky_complete": true,
+            "goldsky_pagination_complete": true,
+            "goldsky_store_verified": true,
+            "receipts_missing": 0
+          },
+          "tokens": 578,
+          "tokens_without_pair": 0,
+          "wallet": "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c",
+          "window_blocks": [
+            97951505,
+            98009101
+          ],
+          "window_time": [
+            1795632727,
+            1795719127
+          ]
+        }
+      ]
+    },
+    "signed-fifteen": {
+      "cohort_receipt": {
+        "path": "signed-fifteen/cohort.json",
+        "sha256": "0c9bb12079b3de97c354e5c0474b8cb5d827e8038e415c04b6c1ba01405a16ca"
+      },
+      "order_tape": "first-orders",
+      "shared_verified_signers": [],
+      "source_proof": "first-source",
+      "store": "reviewed/first-source/fills",
+      "token_metadata": "short_window_tokens",
+      "wallets": [
+        {
+          "cash_log_residual": 0.0,
+          "cash_residual": 0.0,
+          "causes": [],
+          "chain_legs": 85,
+          "collateral_residual_micro": {
+            "0x2791bca1f2de4661ed88a30c99a7a9449aa84174": 0,
+            "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb": 0
+          },
+          "economic_event_counts": {
+            "buy": 35,
+            "cash": 3,
+            "redeem": 3
+          },
+          "economic_status": "reconciled",
+          "fill_checks": {
+            "chain_fill_txs_missing_in_goldsky": 0,
+            "goldsky_fill_txs_without_chain_legs": 0,
+            "order_filled": {
+              "amount_mismatch": 0,
+              "chain": 35,
+              "chain_only": 0,
+              "goldsky_only": 0,
+              "matched": 35
+            },
+            "other_collateral_fill_txs": 0,
+            "tx_asset_mismatches": 0,
+            "unexplained_gross_cash_movements": 0,
+            "unexplained_gross_share_movements": 0
+          },
+          "goldsky_fills": 35,
+          "identity": {
+            "code_kind": "contract_bytecode",
+            "delegation_target": null,
+            "is_contract": true,
+            "safe_owners": null,
+            "sig_types": {
+              "3": 35
+            },
+            "signer_coverage": {
+              "chain_orders": 35,
+              "conflicting_orders": 0,
+              "status": "complete",
+              "verified_orders": 35
+            },
+            "signers": {
+              "0x28cc505fb60501dbb2199a9662ba175919af904f": 35
+            },
+            "trading_account": "0x28cc505fb60501dbb2199a9662ba175919af904f"
+          },
+          "known_conditions": 4,
+          "max_abs_collateral_residual_micro": 0,
+          "max_abs_share_residual": 0.0,
+          "nonfill_tx_counts": {
+            "cash": 3,
+            "redeem": 3
+          },
+          "orders": {
+            "all_provider_fill_rows_linked": true,
+            "conflicting_signed_role_keys": 0,
+            "creation_time_flags_by_matched_row": {
+              "plausible": 35
+            },
+            "distinct_provider_order_keys": 35,
+            "matched_distinct_order_keys": 35,
+            "matched_key_count_equals_identity_receipt": true,
+            "matched_signed_rows": 35,
+            "provider_fill_rows": 35,
+            "provider_fills_without_signed_order": 0,
+            "provider_roles_by_fill": {
+              "maker": 35
+            },
+            "provider_signed_role_disagreements_by_fill": 0,
+            "signed_roles_by_matched_row": {
+              "maker": 35
+            },
+            "unmatched_verified_rows": 0,
+            "verified_account_order_rows": 35
+          },
+          "paired_conditions": 4,
+          "pairing": {
+            "completing_share_of_buys": 0.2256,
+            "coverage": "complete",
+            "event_time_anchors_consistent": true,
+            "interpolated_event_blocks": 0,
+            "log_timestamp_event_blocks": 20,
+            "longest_one_sided_s": 420,
+            "paired_share_of_holding_time": 0.2249
+          },
+          "receipt": {
+            "path": "signed-fifteen/wallet-0x28cc505fb60501dbb2199a9662ba175919af904f.json",
+            "sha256": "9c528de64e36fb2e44b5257f7f86018dae61a472a0de1ea90b3faf9632909952"
+          },
+          "source_checks": {
+            "block_time_window_verified": true,
+            "chain_error": null,
+            "chain_next_block": null,
+            "chain_scan_complete": true,
+            "chain_window_timestamps": [
+              1795629598,
+              1795629600,
+              1795630498,
+              1795630500
+            ],
+            "goldsky_complete": true,
+            "goldsky_pagination_complete": true,
+            "goldsky_store_verified": true,
+            "receipts_missing": 0
+          },
+          "tokens": 8,
+          "tokens_without_pair": 0,
+          "wallet": "0x28cc505fb60501dbb2199a9662ba175919af904f",
+          "window_blocks": [
+            97949420,
+            97950019
+          ],
+          "window_time": [
+            1795629600,
+            1795630500
+          ]
+        },
+        {
+          "cash_log_residual": 0.0,
+          "cash_residual": 0.0,
+          "causes": [],
+          "chain_legs": 60,
+          "collateral_residual_micro": {
+            "0x2791bca1f2de4661ed88a30c99a7a9449aa84174": 0,
+            "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb": 0
+          },
+          "economic_event_counts": {
+            "buy": 30
+          },
+          "economic_status": "reconciled",
+          "fill_checks": {
+            "chain_fill_txs_missing_in_goldsky": 0,
+            "goldsky_fill_txs_without_chain_legs": 0,
+            "order_filled": {
+              "amount_mismatch": 0,
+              "chain": 30,
+              "chain_only": 0,
+              "goldsky_only": 0,
+              "matched": 30
+            },
+            "other_collateral_fill_txs": 0,
+            "tx_asset_mismatches": 0,
+            "unexplained_gross_cash_movements": 0,
+            "unexplained_gross_share_movements": 0
+          },
+          "goldsky_fills": 30,
+          "identity": {
+            "code_kind": "delegated_eoa",
+            "delegation_target": "0x63c0c19a282a1b52b07dd5a65b58948a07dae32b",
+            "is_contract": false,
+            "safe_owners": null,
+            "sig_types": {
+              "0": 30
+            },
+            "signer_coverage": {
+              "chain_orders": 30,
+              "conflicting_orders": 0,
+              "status": "complete",
+              "verified_orders": 30
+            },
+            "signers": {
+              "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": 30
+            },
+            "trading_account": "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c"
+          },
+          "known_conditions": 3,
+          "max_abs_collateral_residual_micro": 0,
+          "max_abs_share_residual": 0.0,
+          "nonfill_tx_counts": {},
+          "orders": {
+            "all_provider_fill_rows_linked": true,
+            "conflicting_signed_role_keys": 0,
+            "creation_time_flags_by_matched_row": {
+              "after_block": 30
+            },
+            "distinct_provider_order_keys": 30,
+            "matched_distinct_order_keys": 30,
+            "matched_key_count_equals_identity_receipt": true,
+            "matched_signed_rows": 30,
+            "provider_fill_rows": 30,
+            "provider_fills_without_signed_order": 0,
+            "provider_roles_by_fill": {
+              "maker": 30
+            },
+            "provider_signed_role_disagreements_by_fill": 0,
+            "signed_roles_by_matched_row": {
+              "maker": 30
+            },
+            "unmatched_verified_rows": 0,
+            "verified_account_order_rows": 30
+          },
+          "paired_conditions": 3,
+          "pairing": {
+            "completing_share_of_buys": 0.3346,
+            "coverage": "complete",
+            "event_time_anchors_consistent": true,
+            "interpolated_event_blocks": 0,
+            "log_timestamp_event_blocks": 19,
+            "longest_one_sided_s": 677,
+            "paired_share_of_holding_time": 0.5517
+          },
+          "receipt": {
+            "path": "signed-fifteen/wallet-0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c.json",
+            "sha256": "13c190f982c5d84fbfbd3f1a7f025e6ead0411254dedff464a6aa8d843c8543d"
+          },
+          "source_checks": {
+            "block_time_window_verified": true,
+            "chain_error": null,
+            "chain_next_block": null,
+            "chain_scan_complete": true,
+            "chain_window_timestamps": [
+              1795629598,
+              1795629600,
+              1795630498,
+              1795630500
+            ],
+            "goldsky_complete": true,
+            "goldsky_pagination_complete": true,
+            "goldsky_store_verified": true,
+            "receipts_missing": 0
+          },
+          "tokens": 6,
+          "tokens_without_pair": 0,
+          "wallet": "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c",
+          "window_blocks": [
+            97949420,
+            97950019
+          ],
+          "window_time": [
+            1795629600,
+            1795630500
+          ]
+        }
+      ]
+    },
+    "signed-five": {
+      "cohort_receipt": {
+        "path": "signed-five/cohort.json",
+        "sha256": "2294dac7a8ff22414b7a9621881b31b1170368d1901d8f26e6aff584447c8939"
+      },
+      "order_tape": "first-orders",
+      "shared_verified_signers": [],
+      "source_proof": "first-source",
+      "store": "reviewed/first-source/fills",
+      "token_metadata": "short_window_tokens",
+      "wallets": [
+        {
+          "cash_log_residual": 0.0,
+          "cash_residual": 0.0,
+          "causes": [],
+          "chain_legs": 9,
+          "collateral_residual_micro": {
+            "0x2791bca1f2de4661ed88a30c99a7a9449aa84174": 0,
+            "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb": 0
+          },
+          "economic_event_counts": {
+            "buy": 2,
+            "cash": 1,
+            "redeem": 1
+          },
+          "economic_status": "reconciled",
+          "fill_checks": {
+            "chain_fill_txs_missing_in_goldsky": 0,
+            "goldsky_fill_txs_without_chain_legs": 0,
+            "order_filled": {
+              "amount_mismatch": 0,
+              "chain": 2,
+              "chain_only": 0,
+              "goldsky_only": 0,
+              "matched": 2
+            },
+            "other_collateral_fill_txs": 0,
+            "tx_asset_mismatches": 0,
+            "unexplained_gross_cash_movements": 0,
+            "unexplained_gross_share_movements": 0
+          },
+          "goldsky_fills": 2,
+          "identity": {
+            "code_kind": "contract_bytecode",
+            "delegation_target": null,
+            "is_contract": true,
+            "safe_owners": null,
+            "sig_types": {
+              "3": 2
+            },
+            "signer_coverage": {
+              "chain_orders": 2,
+              "conflicting_orders": 0,
+              "status": "complete",
+              "verified_orders": 2
+            },
+            "signers": {
+              "0x28cc505fb60501dbb2199a9662ba175919af904f": 2
+            },
+            "trading_account": "0x28cc505fb60501dbb2199a9662ba175919af904f"
+          },
+          "known_conditions": 2,
+          "max_abs_collateral_residual_micro": 0,
+          "max_abs_share_residual": 0.0,
+          "nonfill_tx_counts": {
+            "cash": 1,
+            "redeem": 1
+          },
+          "orders": {
+            "all_provider_fill_rows_linked": true,
+            "conflicting_signed_role_keys": 0,
+            "creation_time_flags_by_matched_row": {
+              "plausible": 2
+            },
+            "distinct_provider_order_keys": 2,
+            "matched_distinct_order_keys": 2,
+            "matched_key_count_equals_identity_receipt": true,
+            "matched_signed_rows": 2,
+            "provider_fill_rows": 2,
+            "provider_fills_without_signed_order": 0,
+            "provider_roles_by_fill": {
+              "maker": 2
+            },
+            "provider_signed_role_disagreements_by_fill": 0,
+            "signed_roles_by_matched_row": {
+              "maker": 2
+            },
+            "unmatched_verified_rows": 0,
+            "verified_account_order_rows": 2
+          },
+          "paired_conditions": 2,
+          "pairing": {
+            "completing_share_of_buys": 0.0279,
+            "coverage": "complete",
+            "event_time_anchors_consistent": true,
+            "interpolated_event_blocks": 0,
+            "log_timestamp_event_blocks": 3,
+            "longest_one_sided_s": 285,
+            "paired_share_of_holding_time": 0.276
+          },
+          "receipt": {
+            "path": "signed-five/wallet-0x28cc505fb60501dbb2199a9662ba175919af904f.json",
+            "sha256": "38b01f366cbd52b38032078e09e761c6391125f86c3017c43d2405e76ce8a83d"
+          },
+          "source_checks": {
+            "block_time_window_verified": true,
+            "chain_error": null,
+            "chain_next_block": null,
+            "chain_scan_complete": true,
+            "chain_window_timestamps": [
+              1795629598,
+              1795629600,
+              1795629898,
+              1795629900
+            ],
+            "goldsky_complete": true,
+            "goldsky_pagination_complete": true,
+            "goldsky_store_verified": true,
+            "receipts_missing": 0
+          },
+          "tokens": 4,
+          "tokens_without_pair": 0,
+          "wallet": "0x28cc505fb60501dbb2199a9662ba175919af904f",
+          "window_blocks": [
+            97949420,
+            97949619
+          ],
+          "window_time": [
+            1795629600,
+            1795629900
+          ]
+        },
+        {
+          "cash_log_residual": 0.0,
+          "cash_residual": 0.0,
+          "causes": [],
+          "chain_legs": 16,
+          "collateral_residual_micro": {
+            "0x2791bca1f2de4661ed88a30c99a7a9449aa84174": 0,
+            "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb": 0
+          },
+          "economic_event_counts": {
+            "buy": 8
+          },
+          "economic_status": "reconciled",
+          "fill_checks": {
+            "chain_fill_txs_missing_in_goldsky": 0,
+            "goldsky_fill_txs_without_chain_legs": 0,
+            "order_filled": {
+              "amount_mismatch": 0,
+              "chain": 8,
+              "chain_only": 0,
+              "goldsky_only": 0,
+              "matched": 8
+            },
+            "other_collateral_fill_txs": 0,
+            "tx_asset_mismatches": 0,
+            "unexplained_gross_cash_movements": 0,
+            "unexplained_gross_share_movements": 0
+          },
+          "goldsky_fills": 8,
+          "identity": {
+            "code_kind": "delegated_eoa",
+            "delegation_target": "0x63c0c19a282a1b52b07dd5a65b58948a07dae32b",
+            "is_contract": false,
+            "safe_owners": null,
+            "sig_types": {
+              "0": 8
+            },
+            "signer_coverage": {
+              "chain_orders": 8,
+              "conflicting_orders": 0,
+              "status": "complete",
+              "verified_orders": 8
+            },
+            "signers": {
+              "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": 8
+            },
+            "trading_account": "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c"
+          },
+          "known_conditions": 1,
+          "max_abs_collateral_residual_micro": 0,
+          "max_abs_share_residual": 0.0,
+          "nonfill_tx_counts": {},
+          "orders": {
+            "all_provider_fill_rows_linked": true,
+            "conflicting_signed_role_keys": 0,
+            "creation_time_flags_by_matched_row": {
+              "after_block": 8
+            },
+            "distinct_provider_order_keys": 8,
+            "matched_distinct_order_keys": 8,
+            "matched_key_count_equals_identity_receipt": true,
+            "matched_signed_rows": 8,
+            "provider_fill_rows": 8,
+            "provider_fills_without_signed_order": 0,
+            "provider_roles_by_fill": {
+              "maker": 8
+            },
+            "provider_signed_role_disagreements_by_fill": 0,
+            "signed_roles_by_matched_row": {
+              "maker": 8
+            },
+            "unmatched_verified_rows": 0,
+            "verified_account_order_rows": 8
+          },
+          "paired_conditions": 1,
+          "pairing": {
+            "completing_share_of_buys": 0.4752,
+            "coverage": "complete",
+            "event_time_anchors_consistent": true,
+            "interpolated_event_blocks": 0,
+            "log_timestamp_event_blocks": 6,
+            "longest_one_sided_s": 77,
+            "paired_share_of_holding_time": 0.7631
+          },
+          "receipt": {
+            "path": "signed-five/wallet-0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c.json",
+            "sha256": "e28b727adea10d9322a34368dc89e46c16a32b9306ce190dfa7aa7c624e497b4"
+          },
+          "source_checks": {
+            "block_time_window_verified": true,
+            "chain_error": null,
+            "chain_next_block": null,
+            "chain_scan_complete": true,
+            "chain_window_timestamps": [
+              1795629598,
+              1795629600,
+              1795629898,
+              1795629900
+            ],
+            "goldsky_complete": true,
+            "goldsky_pagination_complete": true,
+            "goldsky_store_verified": true,
+            "receipts_missing": 0
+          },
+          "tokens": 2,
+          "tokens_without_pair": 0,
+          "wallet": "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c",
+          "window_blocks": [
+            97949420,
+            97949619
+          ],
+          "window_time": [
+            1795629600,
+            1795629900
+          ]
+        }
+      ]
+    }
+  }
+}

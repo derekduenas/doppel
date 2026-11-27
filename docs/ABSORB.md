@@ -1,7 +1,7 @@
 # Absorption ledger (`doppel-absorb`)
 
-The first stage of DOPPEL is absorbing a wallet completely and exactly. A wallet's history is
-usable (for G0, G1, census rankings, extraction) only when three independent sources agree:
+Layer 1 reconstructs the wallet's economic movements within a specified interval. A wallet
+receipt is eligible for downstream checks when three sources of evidence agree:
 
 1. **Goldsky fills** from the fill store, with proof that the pull that produced them read every page.
 2. **Chain events** from free public Polygon JSON-RPC (`eth_getLogs`, no keys).
@@ -25,12 +25,12 @@ doppel-absorb --store LAB/fills --wallets 0x... 0x... --from T0 --to T1 --out DI
 
 - **Window.** `--from`/`--to` are unix seconds. The window is the block range `[first block with ts ≥ from, last block with ts < to]`. `--from-block`/`--to-block` set it in blocks directly.
 - **Outputs.** `DIR/wallet-<addr>.json` per wallet, `DIR/cohort.tsv` and `DIR/cohort.json` with the cohort table and RPC statistics.
-- **Cache.** Every RPC answer is cached in `DIR/_chain/rpc-cache.jsonl`. A run stopped by `--max-requests` or by endpoint errors is resumed by running the same command again. Answers already received are never requested again, so a resumed scan adds no duplicate logs: they are keyed by (tx, logIndex).
+- **Cache.** Historical reads are reusable from `DIR/_chain/rpc-cache.jsonl`. A UTC run reads the current chain head again. A run stopped by a request limit can resume with the same historical cache. The scanner checks the block range, contract, topics, ABI and conflicting log positions on replay.
 - **Endpoint roles.** By default logs go to publicnode and historical balance/code reads to drpc. Use `--rpc` to override all roles, or `--log-rpc` and `--state-rpc` for role-specific overrides. All routes share the same per-run request budget and per-endpoint rate state.
 - **Block span.** `--chunk-blocks` is the `eth_getLogs` span. 1rpc.io allows 50 blocks. Find the largest span publicnode or drpc accept on Apex before a large run.
 - **Pagination file.** Without `--pages`, Goldsky counts as incomplete and no wallet can be `reconciled`.
-- **Token pairs.** `--tokens` is the ledger's Gamma cache (token → condition, idx). Pairs are also learned from split, merge and redemption batches on chain. A token with no known pair is listed in `pairing.tokens_without_pair`, and no pairing is claimed for it.
-- **Signers.** `--orders` is a `doppel-ordertape` output directory. It gives each order's signer and signature type.
+- **Token pairs.** `--tokens` supplies token, condition and outcome index. A wallet-attributed binary CTF operation with an unambiguous batch and partition can supply both siblings. Contradictory cache mappings fail validation. Whole-wallet pairing fractions require a reconciled ledger and both outcomes for every observed position. The report lists missing siblings and counts event blocks whose timing was interpolated.
+- **Signers.** `--orders` accepts committed order-tape parts. Signer attribution requires a verified decoded order matching the account, transaction, block, order hash, token and side of a chain fill. `identity.signer_coverage` counts distinct order observations, including conflicts. The cohort file lists verified keys seen across multiple accounts. Funding, transaction submission and beneficial ownership are distinct from order signing.
 
 ## Contracts and events (Polygon 137)
 
@@ -58,9 +58,7 @@ Hence:
 
 - **Share movements.** Every share movement is a wallet leg of an ERC-1155 log on the CTF contract. Every cash movement is a wallet leg of an ERC-20 `Transfer` on pUSD or USDC.e. The task's event list omitted the ERC-20 legs, but cash cannot reconcile without them: deposits, withdrawals, wraps and rewards would all be unexplained.
 - **Fill transactions.** A fill transaction is any tx with a Goldsky fill of the wallet or an `OrderFilled` naming it. In a fill transaction the Goldsky rows are the reconstruction and the chain legs are the check.
-- **Other transactions.** Any other tx that moves shares is classified from its receipt's CTF events, whoever the stakeholder:
-  - `redeem` > `merge` > `split` > `transfer` (no CTF event).
-  - `unclassified` if the receipt was not fetched.
+- **Other transactions.** The classifier checks the receipt against the wallet's scanned transfers. A direct CTF event must name the wallet. An adapter event must correspond to the wallet's share counterparty. A transaction with no attributable CTF event is a transfer. Ambiguous mixed operations, inconsistent receipts and missing receipts are unclassified.
   - Collateral-only txs are `cash` (external flows).
 - **Not covered.** V1 exchanges and the V1 NegRiskAdapter are not covered. Their activity would surface as `transfer` / `unclassified` movements, and as a residual if Goldsky reports them as fills.
 
@@ -69,14 +67,14 @@ Hence:
 Amounts are integers in micro-units (1 share = 1 USDC = 10⁶). Goldsky floats are rounded once per row.
 
 - **Fill cash.** V2 convention (`Trading.sol`): a BUY pays `usdc + fee`; a SELL receives `usdc − fee`.
-- **Opening inventory.** Balances at `b0 − 1` for every touched token and all its known condition partners. Positions start there, not at zero, so inventory from before the window is no longer "left-censored".
+- **Opening inventory.** Balances at `b0 − 1` for every touched token and all its known condition partners. A position held throughout the interval in an unrelated, untouched market lies outside this inventory.
 - **`residual`.** Per token and for cash (pUSD + USDC.e together, since wrapping moves value between them): `(end − start balance) − reconstructed`.
 - **`log_residual`.** Uses all chain legs instead of the reconstruction. Zero proves the log scan explains the balances.
 - **Tolerance.** One micro-unit per Goldsky row touching the asset.
 - **`reconciled`.** Requires all of the following:
-  - Goldsky complete: complete pagination records for the wallet cover `[from, to]`.
+  - Explicit terminal pagination covers the half-open UTC window. The compacted fills over each entire supporting query must match its canonical trade count and SHA-256 accumulator. Legacy cursor-only receipts require re-attestation from sealed pages.
   - Chain scan complete.
-  - Both balance reads succeeded for the full requested token batch.
+  - The blocks immediately before and after the interval confirm the UTC cutoffs. Both balance reads succeeded for the full requested token set. pUSD and USDC.e each reconcile exactly to their own transfers. The reconstructed trade cash uses the V2 settlement collateral.
   - Every fill-transaction asset total matches its chain transfer legs and every source fill matches one chain OrderFilled event. Equal balances across the whole interval can conceal offsetting transaction errors.
   - Every residual within tolerance.
   - No unclassified tx.
@@ -94,19 +92,20 @@ Amounts are integers in micro-units (1 share = 1 USDC = 10⁶). Goldsky floats a
   - **Imbalance.** `I = pos(idx 0) − pos(idx 1)`.
   - **Fills.** A fill that moves `I` by `d` is `completing` for `min(|d|, |I|)` shares when it moves `I` toward zero, and `directional` for the rest. Sells split the same way into `derisk` and `unpair`. A YES buy at 49c while holding NO at 48c is therefore `completing`.
   - **Time-weighted.** `paired_share_s = ∫ min(pos)`, `one_sided_share_s = ∫ |I|`, `longest_one_sided_s` (the longest spell with `|I| ≥ 1` share), `max_one_sided` and `one_sided_at_end`.
-  - **Ordering.** Events are ordered by block. Goldsky rows within one block are ordered by tx hash, because Goldsky rows have no log index.
+  - **Ordering.** Chain-matched fills use their exchange log index within a block. The holding-time metrics use the requested UTC boundaries. Chain-only event blocks between timestamp anchors use linear interpolation and are counted in the report.
 - **Identities.**
   - `trading_account`: the order maker, which holds funds and tokens.
   - `signers` / `sig_types`: from decoded orders.
   - `tx_senders`: the `from` of the wallet's split, merge, redeem and transfer txs.
   - `is_contract`, and `safe_owners` (`getOwners()`, asked only when the orders show signature type 2).
+  - `code_kind` distinguishes empty code, deployed contract bytecode, a delegated EOA, and an unknown response. The historical delegation marker supplies `delegation_target`. Sharing delegated software does not establish shared control. [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702)
   - A Polymarket proxy's owner is not readable this way and stays unknown.
 
 ## Pagination record (`goldsky_activity/pagination.jsonl`)
 
 There is one line per page and one per stop, written under the pull lock:
 
-`{tw, address, start_time, end_time, job, pages, rows, cursor, stop, complete}`
+`{tw, address, start_time, end_time, job, pages, rows, cursor, stop, complete, trade_binding}`
 
 - **Fields.** `cursor` is the next page to request. `stop` is `done` | `budget` | `error`, or `null` while running.
 - **Stop reasons.**
@@ -120,7 +119,7 @@ There is one line per page and one per stop, written under the pull lock:
 ## What the Mac check proved, and what to validate on Apex
 
 - **Mac.** The real-wallet sanity run had no fill store, so it can only show chain self-consistency: the log scan explains the `balanceOf` deltas, and the `OrderFilled` logs line up with the transfer legs. See the commit report.
-- **Apex, step 1.** For the captured cohort day ending Nov 26 at 18:52:07 UTC, use the recovered pagination proof below. For another interval, verify coverage independently. Paid resumes must use the original window and the shared spending ledger.
+- **Apex, step 1.** For the captured cohort day ending Nov 26 at 18:52:07 UTC, generate a bound receipt from the sealed pages using the command below. For the registered pair the verified artifact already exists at `wallet-absorption.crsLww/reviewed/day-proof` under the archive's research directory. For another interval, verify coverage independently. Paid resumes must use the original window and the shared spending ledger.
 - **Apex, step 2.** Verify availability for the selected historical blocks on the configured log and state routes. An unavailable historical balance prevents reconciliation.
 - **Apex, step 3.** Run on a few G0-passing wallets for one day.
   - Check that `fill_check.order_filled.matched` equals the chain count: Goldsky `amount_*`/`fee` match `OrderFilled`.
@@ -149,5 +148,9 @@ Compact the selected Nov 26 data to an isolated fill store before reconciling a 
 The proof establishes provider pagination over the captured filters. Independent event
 matches and balance agreement remain requirements for wallet reconciliation.
 
-The proof, including wallet-level rows, is on Apex under
+The [Layer 1 walkthrough](WALLET-ABSORPTION.md) records the two-wallet real-data results and reproducible Apex inputs. For a sealed **unfiltered** global capture, use `python -m doppel.lab.global_activity_proof`. It checks the whole original cursor chain and unique activity IDs before writing a small native fill store and a bound terminal receipt per requested wallet. Use the per-address recovery command above for wallet-filtered captures.
+
+The earlier 150-wallet pagination inventory is on Apex under
 `/var/backups/doppel-sealed-20261126/research/pagination-proof.ZN8b5q/proof`.
+It predates trade binding. Re-run the recovery command before using those wallet
+histories for a new ledger.

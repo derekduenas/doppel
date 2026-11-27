@@ -1,5 +1,14 @@
 # Claude Code handoff
 
+## Wallet-by-wallet audit · Layer 1
+
+Resume on `review/wallet-absorption-20261127` in
+`/Users/derekduenas/doppel-wallet-absorption-20261127`. Follow the [Layer 1 audit](WALLET-ABSORPTION.md)
+for the two real ledgers, the uncovered interval, the scratch paths on Apex and instructions
+for Layer 2. Begin inspection with the candidate's first witnessed 60-share order. Its signed
+timestamp falls 896 seconds after the block. Book evidence is necessary to date placement.
+The prospective Layer 0 selection clock continues in parallel.
+
 ## Wallet-by-wallet audit · Layer 0
 
 Resume on `review/wallet-selection-20261127` in
