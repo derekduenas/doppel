@@ -29,6 +29,7 @@ already applied, so a twin adapter can drive ``IntlBook.feed`` live without look
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -95,11 +96,13 @@ def px(x: object) -> float:
 class IntlBook:
     """Level sizes of every asset on one connection (one stream)."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, strict_clocks: bool = False) -> None:
         self.levels: dict[str, dict[tuple[float, str], float]] = {}  # known assets only
         self.market_of: dict[str, str] = {}
         self.spans: dict[str, list[list[int]]] = {}  # asset -> [[from_ms, to_ms], ...]
         self.dropped = 0  # price_change rows for assets with unknown state
+        self.strict_clocks = strict_clocks
+        self.clock_counts: Counter = Counter()
 
     def known(self, asset: str) -> bool:
         return asset in self.levels
@@ -116,15 +119,30 @@ class IntlBook:
         span = self.spans[asset][-1]
         span[1] = max(span[1], ms)
 
+    def _check_depth_time(self, asset: str, ms: int) -> None:
+        if self.strict_clocks and asset in self.levels and ms < self.spans[asset][-1][1]:
+            del self.levels[asset]
+            self.clock_counts["reset:asset_venue_time_reversal"] += 1
+
     def apply(self, m: dict, tw_ns: int) -> list[LevelEvent | Print]:
         """One decoded market-channel message."""
         et = m.get("event_type")
         ts = m.get("timestamp")
+        if self.strict_clocks and et in ("book", "price_change", "last_trade_price"):
+            valid = type(ts) is int or (isinstance(ts, str) and ts.isascii() and ts.isdecimal())
+            if not valid or ts is None or int(ts) <= 0:
+                if et == "last_trade_price":
+                    self.clock_counts["unclocked_prints"] += 1
+                else:
+                    self.reset()
+                    self.clock_counts["reset:invalid_venue_time"] += 1
+                return []
         ms = int(ts) if ts not in (None, "") else tw_ns // 1_000_000
         mk = str(m.get("market") or "")
         out: list[LevelEvent | Print] = []
         if et == "book":
             a = m["asset_id"]
+            self._check_depth_time(a, ms)
             new = {(px(lv["price"]), side): float(lv["size"])
                    for side, key in (("BUY", "bids"), ("SELL", "asks")) for lv in m.get(key) or []}
             new = {k: v for k, v in new.items() if v > 0}
@@ -142,6 +160,7 @@ class IntlBook:
         elif et == "price_change":
             for ch in m.get("price_changes") or []:
                 a = ch.get("asset_id")
+                self._check_depth_time(a, ms)
                 lv = self.levels.get(a)
                 if lv is None:
                     self.dropped += 1
@@ -159,7 +178,7 @@ class IntlBook:
             a = m["asset_id"]
             if mk:
                 self.market_of.setdefault(a, mk)
-            if a in self.levels:
+            if not self.strict_clocks and a in self.levels:
                 self._seen(a, ms)
             out.append(Print(ms, tw_ns, a, px(m["price"]), float(m["size"]), str(m.get("side")),
                              str(m.get("transaction_hash") or ""), mk))
@@ -169,20 +188,28 @@ class IntlBook:
         """Apply one embedded message at a time, exposing its own book state before the next."""
         ctl = (rec.get("meta") or {}).get("ctl")
         if ctl is not None:
-            if ctl in NO_RESET_CTL:
+            if ctl == "subscribe_add" or (not self.strict_clocks and ctl in NO_RESET_CTL):
                 return
             self.reset()
             yield {}, [Reset(int(rec["tw"]), str(ctl))]
             return
         raw = rec.get("raw") or ""
-        if not raw or raw[0] not in "[{":
+        if raw in ("", "PING", "PONG") or (not self.strict_clocks and raw[0] not in "[{"):
             return  # PONG
         try:
             obj = orjson.loads(raw)
         except orjson.JSONDecodeError:
+            if self.strict_clocks:
+                self.reset()
+                yield {}, [Reset(int(rec["tw"]), "malformed_message")]
             return
         for m in obj if isinstance(obj, list) else [obj]:
-            if isinstance(m, dict):
+            if self.strict_clocks and (not isinstance(m, dict) or m.get("event_type") not in
+                    ("book", "price_change", "last_trade_price", "tick_size_change", "best_bid_ask",
+                     "new_market", "market_resolved")):
+                self.reset()
+                yield {}, [Reset(int(rec["tw"]), "unknown_message")]
+            elif isinstance(m, dict):
                 yield m, self.apply(m, int(rec["tw"]))
 
     def feed(self, rec: dict) -> list[Item]:
@@ -198,20 +225,32 @@ class IntlBook:
         return {a: b for pair in by.values() if len(pair) == 2 for a, b in (pair, pair[::-1])}
 
 
-def _records(root: Path, stream: str, t_from: int, t_to: int) -> Iterator[dict]:
+def _records(root: Path, stream: str, t_from: int, t_to: int, *, strict: bool = False) -> Iterator[dict]:
+    prev_seq = prev_tw = None
     for hour in range(t_from - t_from % 3600, t_to, 3600):
         path = segment_path(Path(root), stream, hour * NS)
         if not path.exists():
+            prev_seq = prev_tw = None
             yield {"tw": max(hour, t_from) * NS, "meta": {"ctl": "missing_segment"}}
             continue
-        for rec in read_segment(path, verify=True):
+        for rec in read_segment(path, verify=True, strict=strict):
+            if strict:
+                tw, seq = rec["tw"], rec["seq"]
+                if (rec.get("stream") != stream or type(seq) is not int or seq < 1 or type(tw) is not int
+                        or not hour * NS <= tw < (hour + 3600) * NS):
+                    raise ValueError(f"invalid record scope in {path}")
+                if prev_seq is not None and seq != prev_seq + 1:
+                    yield {"tw": tw, "meta": {"ctl": "sequence_discontinuity"}}
+                if prev_tw is not None and tw < prev_tw:
+                    yield {"tw": tw, "meta": {"ctl": "receive_time_reversal"}}
+                prev_seq, prev_tw = seq, tw
             if t_from * NS <= rec["tw"] < t_to * NS:
                 yield rec
 
 
-def replay(root: Path, stream: str, t_from: int, t_to: int, book: IntlBook) -> Iterator[list[Item]]:
+def replay(root: Path, stream: str, t_from: int, t_to: int, book: IntlBook, *, strict: bool = False) -> Iterator[list[Item]]:
     """Yield events grouped by captured record in [t_from, t_to). Missing segments reset the book."""
-    for rec in _records(root, stream, t_from, t_to):
+    for rec in _records(root, stream, t_from, t_to, strict=strict):
         items = book.feed(rec)
         if items:
             yield items

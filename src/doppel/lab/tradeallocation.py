@@ -102,14 +102,14 @@ COLS = ("tx", "role", "condition_id", "n_makers", "order_id", "token_id", "side"
         "taker_amount", "fill_amount", "verified")
 
 
-def load_allocations(path: Path) -> dict[str, Allocation | str]:
+def load_allocations(path: Path, wanted: set[str] | None = None) -> dict[str, Allocation | str]:
     """Keep one compact split per transaction. A committed ordertape part contains whole calls."""
     index: dict[str, Allocation | str] = {}
 
     def consume(rows):
         by_tx = defaultdict(list)
         for r in rows:
-            if r.get("tx"):
+            if r.get("tx") and (wanted is None or r["tx"] in wanted):
                 by_tx[r["tx"]].append(r)
         for tx, call in by_tx.items():
             index[tx] = allocation(call) if tx not in index else "duplicate_call"

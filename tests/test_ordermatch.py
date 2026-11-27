@@ -1,10 +1,13 @@
 """Order match on synthetic frames where every answer is computable by hand."""
 
 import orjson
+import pytest
 
 from doppel.lab.intlbook import IntlBook, LevelEvent, Print, Reset
+from doppel.lab.tradeallocation import Allocation
 from doppel.lab.ordermatch import (LevelTape, Order, Params, attribute, classify, filled_shares,
-                                   fingerprint, load_orders, main, match_placements, observable, run)
+                                   fingerprint, load_orders, main, match_placements, observable, run,
+                                   _placements, _fill_prints, _evidence, qualified_placement)
 from doppel.tape.segment import SegmentWriter
 
 T0 = 1795629600  # hour-aligned
@@ -25,9 +28,9 @@ def pc(ms, *chs, market="m1"):
                                   for a, p, s, side in chs]}
 
 
-def trade(ms, asset, price, size, tx, market="m1"):
+def trade(ms, asset, price, size, tx, market="m1", side="BUY"):
     return ms, {"event_type": "last_trade_price", "asset_id": asset, "market": market,
-                "price": str(price), "size": str(size), "side": "BUY", "timestamp": str(MS + ms),
+                "price": str(price), "size": str(size), "side": side, "timestamp": str(MS + ms),
                 "transaction_hash": tx}
 
 
@@ -41,7 +44,7 @@ def tape_of(msgs) -> LevelTape:
 
 
 def order(oid, token, side, price, size, created, maker=W, fills=None):
-    return Order(oid, maker, token, side, price, size, MS + created, fills or {})
+    return Order(oid, maker, token, side, price, size, MS + created, fills or {}, verified=True)
 
 
 def orow(o: Order, role="maker"):
@@ -126,6 +129,116 @@ def test_placement_is_one_to_one_and_read_against_placebo():
     assert match_placements([o4], t, Params(size_tol_rel=0.02)) == {"o4": (k, 0)}  # E37 tolerance
 
 
+def evidence(orders, tape, shift=0):
+    prints = {o.order_id: _fill_prints(o, tape) for o in orders}
+    search = _placements(orders, tape, P, shift, prints)
+    return {o.order_id: _evidence(o, tape, P, search, prints[o.order_id], shift) for o in orders}
+
+
+def test_one_physical_add_cannot_support_two_orders_including_mirrors():
+    tape = tape_of([book(0, "A"), book(0, "B"), pc(1150, ("A", 0.4, 10, "BUY"), ("B", 0.6, 10, "SELL")),
+                    trade(1500, "A", 0.4, 1, "tx", side="SELL"),
+                    pc(5000, ("A", 0.3, 1, "BUY"), ("B", 0.7, 1, "SELL"))])
+    own = order("o", "A", "BUY", 0.4, 10, 1000, fills={"tx": (1, T0 + 2)})
+    peer = order("p", "B", "SELL", 0.6, 10, 1100, maker=X, fills={"tx": (1, T0 + 2)})
+    assert evidence([own], tape) == {"o": "unique_candidate"}
+    assert evidence([own, peer], tape) == {"o": "ambiguous", "p": "ambiguous"}
+    assert len(match_placements([own, peer], tape, P)) == 1
+
+
+def test_distinct_times_in_same_tx_do_not_locate_a_fill():
+    o = order("o", "A", "BUY", 0.4, 10, 1000, fills={"tx": (3, T0 + 2)})
+    messages = [book(0, "A"), pc(1150, ("A", 0.4, 10, "BUY")),
+                trade(1300, "A", 0.4, 3, "tx", side="BUY"),  # same token, wrong taker side
+                trade(1400, "A", 0.45, 3, "tx", side="SELL"), trade(1500, "A", 0.4, 2, "tx", side="SELL"),
+                pc(5000, ("A", 0.3, 1, "BUY"))]
+    assert evidence([o], tape_of(messages))["o"] == "fill_time_unknown"
+    exact = trade(1550, "A", 0.4, 3, "tx", side="SELL")
+    assert evidence([o], tape_of(messages + [exact]))["o"] == "unique_candidate"
+    assert evidence([o], tape_of(messages + [exact, trade(1551, "A", 0.4, 3, "tx", side="SELL")]))["o"] == "fill_time_unknown"
+    o.fills = {"tx": (3, T0 + 130)}
+    assert evidence([o], tape_of(messages + [exact]))["o"] == "fill_time_unknown"
+
+
+def test_strict_matcher_depth_clock_and_prints():
+    b = IntlBook(strict_clocks=True)
+    b.apply(book(1000, "A")[1], 1)
+    msg = pc(1250, ("A", 0.5, 1, "BUY"))[1]
+    b.apply(msg, 2)
+    b.apply(trade(9000, "A", 0.5, 1, "tx")[1], 3)
+    assert b.spans["A"][-1][1] == MS + 1250
+    assert b.apply(msg | {"timestamp": str(MS + 1050)}, 4) == [] and not b.known("A")
+    assert b.clock_counts["reset:asset_venue_time_reversal"] == 1
+    b.apply(book(2500, "A")[1], 5)
+    assert b.apply(msg | {"timestamp": None}, 6) == [] and not b.known("A")
+    assert b.clock_counts["reset:invalid_venue_time"] == 1
+    assert b.apply(trade(3000, "A", 0.5, 1, "tx")[1] | {"timestamp": None}, 7) == []
+    assert b.clock_counts["unclocked_prints"] == 1
+
+
+@pytest.mark.parametrize(("event", "expected"), [
+    (pc(900, ("A", 0.4, 10, "BUY")), "chronology_conflict"),
+    (pc(2001, ("A", 0.4, 10, "BUY")), "chronology_conflict"),
+    (book(1150, "A", bids=[(0.4, 10)]), "snapshot_only"),
+    (pc(1150, ("A", 0.4, 10, "BUY")), "unique_candidate"),
+])
+def test_signed_and_fill_clocks_apply_symmetrically_to_placebo(event, expected):
+    o = order("o", "A", "BUY", 0.4, 10, 1000, fills={"tx": (3, T0 + 2)})
+    ms, packet = event
+    later = (ms + P.placebo_ms, packet | {"timestamp": str(MS + ms + P.placebo_ms)})
+    t = tape_of([book(0, "A"), event, trade(2000, "A", 0.4, 3, "tx", side="SELL"),
+                 pc(3000, ("A", 0.4, 0, "BUY")), later, pc(70000, ("A", 0.3, 1, "BUY"))])
+    assert evidence([o], t)["o"] == evidence([o], t, P.placebo_ms)["o"] == expected
+
+
+def test_partial_fill_dust_is_not_a_full_order_even_with_large_book_tolerance():
+    o = order("o", "A", "SELL", 0.4, 10.0, 1000, fills={"tx": (9.999, T0 + 2)})
+    o.maker_amount, o.filled_amount = 10_000_000, 9_999_000
+    t = tape_of([book(0, "A"), pc(1100, ("A", 0.4, 10, "SELL")),
+                 trade(1500, "A", 0.4, 9.999, "tx"), pc(5000, ("A", 0.5, 1, "BUY"))])
+    search = _placements([o], t, P, 0, {"o": _fill_prints(o, t)})
+    row = classify(o, *search.selected["o"], t, set(), P, search=search)
+    assert qualified_placement(row) and row["outcome"] == "unknown" and row["rest_known"] is False
+
+
+def test_saved_age_and_jsonl_order_cannot_hide_earlier_fill(tmp_path):
+    rows = orow(order("o", "A", "BUY", 0.4, 10, 1000, fills={"later": (1, T0 + 2), "earlier": (3, T0)}))
+    path = tmp_path / "orders.jsonl"
+    path.write_bytes(b"".join(orjson.dumps(r | {"age_s": 1, "verified": True}) + b"\n" for r in rows))
+    os_, _, stats = load_orders(path, T0, T0 + 10)
+    assert os_ == [] and stats["screened:bad_age"] == 1
+
+
+def test_full_call_allocation_can_locate_a_maker_inside_an_aggregate_print():
+    o = order("o", "A", "BUY", 0.4, 10, 1000, fills={"tx": (3, T0 + 2)})
+    t = tape_of([book(0, "A"), book(0, "B"), pc(1100, ("A", 0.4, 10, "BUY")),
+                 trade(1500, "A", 0.3, 5, "tx", side="SELL"), pc(5000, ("A", 0.5, 1, "BUY"))])
+    assert evidence([o], t)["o"] == "fill_time_unknown"
+    t.allocations["tx"] = Allocation("m1", "A", "B", "SELL", 0.3, ((0.45, 2), (0.4, 3)), 5, 2e-6)
+    assert evidence([o], t)["o"] == "unique_candidate"
+
+
+def test_missing_segment_is_reported_but_corrupt_segment_fails(tmp_path):
+    from doppel.lab.ordermatch import build_tape
+
+    s = "clob_btc_5m"
+    t = build_tape(tmp_path, [s], T0, T0 + 5, {"A"}, [], P)
+    assert t.counts["reset:missing_segment"] == 1 and not t.spans
+    w = SegmentWriter(tmp_path, s)
+    ms, frame = book(0, "A")
+    w.append(orjson.dumps(frame).decode(), tw=(MS + ms) * 1_000_000)
+    w.close()
+    path, = (tmp_path / s).glob("*/*.dtape.zst")
+    path.write_bytes(path.read_bytes()[:-2])
+    with pytest.raises(ValueError):
+        build_tape(tmp_path, [s], T0, T0 + 5, {"A"}, [], P)
+
+
+def test_overlapping_or_identical_placebo_window_refused():
+    with pytest.raises(ValueError, match="disjoint"):
+        Params(lo_ms=0, hi_ms=60000, placebo_ms=60000)
+
+
 # ---------------------------------------------------------------- follow-forward
 FILLED = order("f", "A", "BUY", 0.4, 50.0, 1_000, fills={"0xf1": (50.0, T0 + 4)})
 CANC = order("c", "E", "SELL", 0.7, 97.0, 1_100, fills={"0xc1": (1.5, T0 + 3)})
@@ -141,8 +254,8 @@ FRAMES = [
     pc(1_300, ("E", 0.3, 297, "BUY"), market="m3"),
     pc(1_350, ("E", 0.2, 597, "BUY"), market="m3"),
     pc(1_400, ("E", 0.25, 197, "BUY"), market="m3"),
-    trade(2_000, "E", 0.7, 1.5, "0xc1", "m3"), trade(2_000, "E", 0.3, 1.5, "0xu1", "m3"),
-    trade(2_000, "E", 0.25, 1.5, "0xp1", "m3"),
+    trade(2_000, "E", 0.7, 1.5, "0xc1", "m3"), trade(2_000, "E", 0.3, 1.5, "0xu1", "m3", "SELL"),
+    trade(2_000, "E", 0.25, 1.5, "0xp1", "m3", "SELL"),
     pc(2_005, ("E", 0.7, 95.5, "SELL"), ("E", 0.3, 295.5, "BUY"), ("E", 0.25, 195.5, "BUY"), market="m3"),
     pc(2_600, ("E", 0.7, 0, "SELL"), market="m3"),  # the 95.5 left, 1.5 printed nearby: cancel
     trade(3_000, "B", 0.6, 50, "0xf1"),             # FILLED's fill prints on the mate at 1 - 0.4
@@ -150,15 +263,16 @@ FRAMES = [
     pc(4_000, ("E", 0.3, 50, "BUY"), market="m3"),  # -245.5: cannot hold AMBIG's 95.5 any more
     pc(5_000, ("E", 0.25, 100, "BUY"), market="m3"),  # -95.5 exactly, but ...
     trade(5_010, "E", 0.25, 95.5, "0xother", "m3"),   # ... 95.5 printed there: maybe a fill
-    pc(9_000, ("E", 0.01, 5, "BUY"), market="m3"),
+    pc(9_000, ("E", 0.01, 5, "BUY"), market="m3"), pc(9_001, ("A", 0.01, 1, "BUY")),
 ]
 
 
 def _classified(t):
-    m = match_placements(CASES, t, P)
+    search = _placements(CASES, t, P, 0, {o.order_id: _fill_prints(o, t) for o in CASES})
+    m = search.selected
     assert set(m) == {o.order_id for o in CASES}
     claimed = set()
-    return {o.order_id: classify(o, *m[o.order_id], t, claimed, P) for o in CASES}
+    return {o.order_id: classify(o, *m[o.order_id], t, claimed, P, search=search) for o in CASES}
 
 
 def test_fill_vs_cancel_vs_ambiguous():
@@ -171,13 +285,13 @@ def test_fill_vs_cancel_vs_ambiguous():
     assert get("f", *rest) == ("filled", "chain", 1900, 1900, True)
     assert get("f", "sign_to_book_ms", "fills_located", "print_price_ok", "print_size_ok") == (100, 1, 1, 1)
     # 1.5 filled, the remaining 95.5 removed in one step with only 1.5 printed near: 2600 - 1200
-    assert get("c", *rest) == ("cancelled", "exact_decrease", 1400, 1400, True)
+    assert get("c", *rest) == ("unknown", "level_zero", 800, 1400, False)
     assert get("c", "remainder", "alone", "prints_near", "end_src") == (95.5, True, 1, "price_change")
     assert not any(x["fill_before_placement"] for x in r.values())
     # level fell below the remainder with no exact decrease: existed to its fill (2000), gone by 4000
-    assert get("u", *rest) == ("unknown", "level_below", 700, 2700, False)
+    assert get("u", *rest) == ("unknown", "level_below", 700, None, False)
     # fill has no print (block time only) and nothing else happens at the level
-    assert get("z", *rest) == ("unknown", "censored", 0, None, False)
+    assert get("z", *rest) == ("unknown", "fill_time_unknown", 0, None, False)
     assert get("z", "fills_located", "filled") == (0, 1.0)
     # an exact decrease that prints explain is not called a cancel
     assert get("p", *rest) == ("unknown", "censored", 600, None, False)
@@ -186,7 +300,7 @@ def test_fill_vs_cancel_vs_ambiguous():
 def test_wrong_match_and_level_gone_before_the_fill_is_known():
     t = tape_of([
         book(0, "A", bids=[(0.5, 10)]),
-        trade(500, "A", 0.5, 2, "0xa"),          # the fill prints ...
+        trade(500, "A", 0.5, 97, "0xa", side="SELL"),  # the fill prints ...
         pc(1_000, ("A", 0.5, 107, "BUY")),       # ... before the increase taken as its placement
         pc(1_100, ("A", 0.3, 97, "BUY")),
         pc(2_000, ("A", 0.3, 1, "BUY")),         # level left with 1 while the fill is only block-timed
@@ -195,11 +309,10 @@ def test_wrong_match_and_level_gone_before_the_fill_is_known():
     bad = order("bad", "A", "BUY", 0.5, 97.0, 900, fills={"0xa": (97.0, T0 + 2)})
     gone = order("gone", "A", "BUY", 0.3, 97.0, 1_000, fills={"0xnoprint": (2.0, T0 + 5)})
     m = match_placements([bad, gone], t, P)
-    rb = classify(bad, *m["bad"], t, set(), P)
-    assert (rb["outcome"], rb["fill_before_placement"], rb["rest_known"]) == ("filled", True, False)
+    assert "bad" not in m  # the transaction already printed before the proposed increase
     # no event after block time 5000, but the level already cannot hold the 95 that should remain
     rg = classify(gone, *m["gone"], t, set(), P)
-    assert (rg["outcome"], rg["reason"], rg["rest_min_ms"], rg["rest_max_ms"]) == ("unknown", "level_below", 0, 3900)
+    assert rg["outcome"] == "unknown" and rg["rest_max_ms"] is None and not qualified_placement(rg)
 
 
 def test_fill_amount_is_in_maker_amount_units():
@@ -254,13 +367,13 @@ def test_attribution_shows_the_known_false_positive_and_the_base_rate():
     # candidate may be the wallet's own unmatched filled order -> net 2 - 1 - 1 = 0
     assert (tot["control_per_token_hour"], tot["expected_by_chance"]) == (0.5, 1.0)
     assert (tot["own_unmatched"], tot["net_estimate"]) == (1, 0.0)
-    assert tot["identity_precision_upper"] == 0.667
+    assert tot["known_match_own_share"] == 0.667 and tot["identity_precision_upper"] is None
     assert doc["per_size"]["98.0"] == tot
     by = {(r["token_id"], r["price"]): r for r in rows}
     assert set(by) == {("A", 0.44), ("B", 0.3)}
     assert all(r["attribution"] == "fingerprint_candidate" for r in rows)
     a, b = by[("A", 0.44)], by[("B", 0.3)]
-    assert (a["outcome"], a["rest_max_ms"], a["rest_known"]) == ("cancelled", 800, True)
+    assert (a["outcome"], a["rest_max_ms"], a["rest_known"]) == ("unknown", 800, False)
     assert (b["outcome"], b["reason"], b["rest_max_ms"], b["rest_known"]) == ("unknown", "censored", None, False)
 
 
@@ -278,7 +391,7 @@ def test_cli_end_to_end(tmp_path, capsys):
     skew = order("skew", "E", "BUY", 0.3, 97.0, 1_000, fills={"0xs": (1.0, T0 - 5)})  # stamped after its block
     rows += orow(late) + orow(skew) + orow(order("tk", "E", "BUY", 0.3, 5.0, 1_000, fills={"0xc1": (5.0, T0 + 3)}), "taker")
     op = tmp_path / "orders.jsonl"
-    op.write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in rows))
+    op.write_bytes(b"".join(orjson.dumps(r | {"verified": True}) + b"\n" for r in rows))
     orders, active, stats = load_orders(op, T0, T0 + 3600)
     assert [o.order_id for o in orders] == ["f", "c", "u", "z", "p"] and active == {W: {"A", "E"}}
     assert dict(stats) == {"screened:out_of_range": 1, "screened:bad_age": 1, "maker_orders": 5}
@@ -291,14 +404,14 @@ def test_cli_end_to_end(tmp_path, capsys):
     doc = orjson.loads((out / "ordermatch.json").read_bytes())
     d = doc["wallets"][W]
     # z's and p's placebo windows end after the last frame (9 s of tape): nothing is observable
-    assert (d["maker_orders"], d["observable"], d["matched_all"]) == (5, 0, 5)
-    assert d["outcomes"] == {"filled:chain": 1, "cancelled:exact_decrease": 1, "unknown:level_below": 1,
-                             "unknown:censored": 2}
-    assert d["rest_ms_known"]["cancelled"]["p50"] == 1400.0 and d["rest_censored"] == 2
+    assert (d["maker_orders"], d["observable"], d["matched_all"], d["diagnostic_rows"]) == (5, 0, 4, 1)
+    assert d["outcomes"] == {"filled:chain": 1, "unknown:level_zero": 1, "unknown:level_below": 1,
+                             "unknown:censored": 1}
+    assert d["rest_ms_known"]["cancelled"] is None and d["rest_censored"] == 2
     assert d["fingerprint"]["sizes"] == [50.0, 97.0]  # 97 alone covers 4 of 5 < 90 %
-    assert d["fingerprint"]["total"]["own"] == 4  # the SELL has no mate on tape, so no BUY view
+    assert d["fingerprint"]["total"]["own"] == 3  # censored fill timing and SELL without a BUY view
     got = {r["order_id"]: r["outcome"] for r in map(orjson.loads, (out / "orders.jsonl").read_bytes().splitlines())}
-    assert got == {"f": "filled", "c": "cancelled", "u": "unknown", "z": "unknown", "p": "unknown"}
+    assert got == {"f": "filled", "c": "unknown", "u": "unknown", "z": "unknown", "p": "unknown"}
     assert (out / "quotes.jsonl").exists()
     assert "placement:" in capsys.readouterr().out
     # same answers as the in-memory tape

@@ -13,53 +13,33 @@ only rows marked true count.
 Directory rows are read oldest fill first, so "first fill" does not depend on the
 order the parts were written in. A cohort run verifies the cohort's own fills only, so other
 makers in the same txs are ``verified == False`` and are left out: ``other_known`` then counts
-only other COHORT wallets, ``identity_precision_upper`` is NOT MEASURED (it reads near 1.0 or
-null) and ``others_pooled`` holds cohort wallets only. Maker rows created outside [--from, --to) are dropped while reading and
+only other loaded wallets, and true identity precision is unmeasured and ``others_pooled`` holds cohort wallets only. Maker rows created outside [--from, --to) are dropped while reading and
 counted in rows (``rows_out_of_range``), not in orders.
 
-WHAT IS IDENTIFIED (from data) AND WHAT IS ASSUMED
+Placement and timing evidence
+-----------------------------
+The signed clock is screened against the earliest fill block. Search the signed window for
+positive changes at the order token, maker side and price within the requested size tolerance.
+Choose a representative add for diagnostics. Only a verified order with one uncontested add
+from a price-change message, complete book coverage and located fills can receive
+`unique_candidate`. Mirrored observations at the same venue time and size compete for the
+same physical add. The label is conditional on the available orders and anonymous book.
+Every qualified add must precede the bound execution on both venue and receive clocks.
+A full bound transaction print can locate the execution even when its total exceeds the
+individual maker fill. Otherwise a direct leg needs the correct token or mirror, aggressor,
+price and filled quantity. Multiple plausible venue times leave execution time unknown.
 
-1. Placement. An order (token, side, limit, size, created_ms) is "matched" to a level increase at
-   (token, limit, side) whose delta equals its size (|delta - size| <= max(size_tol,
-   size_tol_rel * size)) with venue time in created_ms + [lo_ms, hi_ms]. One-to-one: candidate
-   (order, event) pairs are taken smallest |dt| first and each event serves one order. This is
-   evidence, not proof: someone else may have posted that size then. Each matched row records
-   how many size and timestamp candidates exist at its level up to its first located fill.
-   The same test is run
-   with every created_ms shifted by +60 s (placebo). Rates are over "observable" orders: the
-   asset's book state is known (``intlbook`` spans) across BOTH the real and the placebo window,
-   so the two rates share a denominator. (E37 used orders with any level event at their price and
-   a 2 % relative size tolerance; pass --size-tol-rel 0.02 to compare, but at 2 % the sizes
-   97..100 all match each other, so the fingerprint's per-size split then means nothing.)
+The placebo shifts the order and the fill-relative cutoffs together. The two rates use the
+same verified, print-anchored orders with continuous coverage across both requests. Each
+order row records its candidate and contender counts. Unqualified representatives remain
+diagnostic and do not contribute to validated timing and match rates. Missing hour files reset
+coverage. Included frames are read strictly, with CRC verification.
 
-2. Follow-forward of a matched order. Known from chain: its fills (tx, amount).
-   ``fill_amount`` is in maker-amount units, so filled shares = fill_amount * taker_amount /
-   maker_amount / 1e6 for BUY and fill_amount / 1e6 for SELL. A fill is located in time by a
-   print carrying its ``transaction_hash`` on the order's token or its mate (a maker bid on one
-   token is hit by takers of either token: the book is mirrored, BUY A @ p == SELL B @ 1-p);
-   without such a print the block time is used, which trails the match. The print gives time
-   only; quantity comes from chain. R = size - filled is the remainder. A fill printed BEFORE
-   the matched increase proves the placement match wrong: ``fill_before_placement``, counted and
-   kept out of the resting times.
-   - ``filled``: R <= tol. The order ended at its last fill. Exact if every fill has a print.
-   - ``cancelled`` (cancel or replace; they look the same): R > tol and, after the last fill, a
-     single level decrease of R (within tol) at its price that prints do not explain: the volume
-     printed at that level or its mirror within +-print_win_ms is smaller than the decrease.
-     ASSUMED: that exact-size decrease is this order and not another order of the same size
-     (``alone`` = the level held nothing else, which makes it certain); and prints report at
-     least the shares that left the level through trades. ``prints_near`` counts prints in the
-     window so a strict reader can keep only cancels with none. Each decrease serves one order
-     (earliest placed first; among same-size orders at one level the pairing is arbitrary).
-   - ``unknown``: anything else. ``level_below`` = the level fell below R with no such decrease
-     (the order is gone by then: merged with other changes, or filled in txs missing from the
-     orders file, which holds only the fetched txs so chain fills are a lower bound);
-     ``censored`` = the asset's known span ended first (reset, expiry, tape end).
-   Before its last located fill the order is certain to exist, so the level is not examined
-   there beyond checking that it can still hold R once the fills are done. ``end_src`` says
-   whether the cancel was seen as a ``price_change`` or only as a snapshot diff (weaker).
-   Resting time is reported as bounds from placement (venue ms): ``rest_min_ms`` = last
-   moment it certainly existed (last print-located fill, else placement), ``rest_max_ms`` = first
-   moment it certainly did not (None when censored). ``rest_known`` = the two coincide.
+Fully consumed signed maker quantity ends at the last compatible transaction print. For a
+partial fill, a later zero-sized level bounds the end from above. A crowded decline,
+snapshot update or exact-sized removal cannot prove a wallet cancellation. The lower
+rest bound is the last located fill relative to the candidate add. A disconnect or unknown
+continuity censors the upper bound. These bounds assume the proposed placement is correct.
 
 3. Fingerprint attribution of quotes that never filled. Fingerprint = the fewest sizes (2 dp)
    covering >= 90 % of the wallet's decoded maker orders (none if that takes more than 8 sizes).
@@ -67,17 +47,17 @@ WHAT IS IDENTIFIED (from data) AND WHAT IS ASSUMED
    on its mate; counting both would double it): bid-level increases equal to a fingerprint size.
    In the wallet's active tokens (any decoded order of the wallet, plus mates) each is
    ``own`` (matched to the wallet's decoded order), ``other_known`` (matched to another maker's
-   decoded order: a proven false positive) or ``candidate``. In control tokens (no decoded order
+   decoded order: a matching physical add for another observed maker) or ``candidate``. In control tokens (no decoded order
    of the wallet) the count gives a base rate per token-hour of known book. Reported side by
    side, total and per size: candidates, expected by chance (base rate x active token-hours),
    own_unmatched (the wallet's decoded fingerprint-size orders that found no placement: filled
    quotes hiding among the candidates), net = candidates - own_unmatched - expected, and
-   identity precision own / (own + other_known).
+   own share among matched orders = own / (own + other_known).
    NOT IDENTIFIED: which candidates are the wallet's. ``net`` is an estimate under the
    assumption that other participants post these sizes at the control rate in the wallet's
    markets. The base rate is contaminated upward (the wallet may quote in control tokens without
-   filling, and "no fills" is judged from a partial sample), precision is an upper bound (other
-   makers are decoded only when they share a tx with the fetched ones), and round sizes are
+   filling, and "no fills" is judged from a partial sample), the decoded sample excludes
+   other makers outside the fetched transactions, and round sizes are
    generic. Candidates are followed like remainders (R = the increase); their rows carry
    ``attribution: "fingerprint_candidate"`` and are never facts about the wallet.
 
@@ -88,7 +68,9 @@ design, so none of these outputs is a decision input at the time of the quote.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
+from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -101,9 +83,12 @@ import pyarrow.parquet as pq
 from .flow import _ts
 from .intlbook import IntlBook, LevelEvent, Print, px, replay
 from .ordertape import STATE_DIR, committed_parts
+from .tradeallocation import Allocation, load_allocations
 
 Key = tuple[str, float, str]  # asset, price, side
 MAX_AGE_S = 600.0
+PRINT_BLOCK_TOL_MS = 120_000
+PLACEMENT_EVIDENCE_VERSION = 2
 FP_COVER = 0.9
 FP_MAX_SIZES = 8
 
@@ -116,6 +101,12 @@ class Params:
     size_tol_rel: float = 0.0
     placebo_ms: int = 60_000
     print_win_ms: int = 1000
+
+    def __post_init__(self):
+        if self.hi_ms < self.lo_ms or self.placebo_ms <= self.hi_ms - self.lo_ms:
+            raise ValueError("real and forward-shifted search windows must be distinct and disjoint")
+        if self.print_win_ms < 0 or not all(math.isfinite(x) and x >= 0 for x in (self.size_tol, self.size_tol_rel)):
+            raise ValueError("use finite nonnegative tolerances")
 
     def tol(self, size: float) -> float:
         return max(self.size_tol, self.size_tol_rel * size)
@@ -134,6 +125,9 @@ class Order:
     size: float
     created_ms: int
     fills: dict[str, tuple[float, int | None]] = field(default_factory=dict)  # tx -> shares, block_ts
+    verified: bool = False
+    maker_amount: int | None = None
+    filled_amount: int = 0
 
     @property
     def key(self) -> Key:
@@ -217,20 +211,38 @@ def load_orders(path: Path, t_from: int, t_to: int) -> tuple[list[Order], dict[s
         oid = r["order_id"]
         if oid in skip:
             continue
+        c = r.get("created_ms")
+        if type(c) is not int or not t_from * 1000 <= c < t_to * 1000:
+            stats["screened:out_of_range"] += 1
+            skip.add(oid)
+            orders.pop(oid, None)
+            continue
         o = orders.get(oid)
-        if o is None:  # screen on the first row seen
-            age = r.get("age_s")
-            why = ("no_limit" if not r.get("limit") else
-                   "out_of_range" if not t_from * 1000 <= r["created_ms"] < t_to * 1000 else
-                   "bad_age" if age is None or not 0 <= age < MAX_AGE_S else None)
-            if why:
-                stats[f"screened:{why}"] += 1
-                skip.add(oid)
-                continue
+        if not r.get("limit"):
+            stats["screened:no_limit"] += 1
+            skip.add(oid)
+            orders.pop(oid, None)
+            continue
+        if o is None:
             o = orders[oid] = Order(oid, r["maker"].lower(), r["token_id"], r["side"],
-                                    px(r["limit"]), float(r["size"]), int(r["created_ms"]))
+                                    px(r["limit"]), float(r["size"]), c,
+                                    verified=r.get("verified") is True, maker_amount=r.get("maker_amount"))
+        elif ((o.maker, o.token, o.side, o.price, o.size, o.created_ms, o.maker_amount) !=
+              (r["maker"].lower(), r["token_id"], r["side"], px(r["limit"]), float(r["size"]), c, r.get("maker_amount"))):
+            stats["screened:conflicting_signed_fields"] += 1
+            skip.add(oid)
+            del orders[oid]
+            continue
         sh, _ = o.fills.get(r["tx"], (0.0, None))
         o.fills[r["tx"]] = (sh + filled_shares(r), r.get("block_ts"))
+        o.filled_amount += r["fill_amount"]
+    for oid, o in list(orders.items()):
+        # JSONL need not arrive oldest-first. A saved age is derived data; use signed
+        # time and the earliest block directly, including when orders span many fills.
+        stamps = [stamp for _, stamp in o.fills.values() if type(stamp) is int]
+        if len(stamps) != len(o.fills) or not 0 <= min(stamps) * 1000 - o.created_ms < MAX_AGE_S * 1000:
+            stats["screened:bad_age"] += 1
+            del orders[oid]
     stats["maker_orders"] = len(orders)
     return sorted(orders.values(), key=lambda o: (o.created_ms, o.order_id)), dict(active), stats
 
@@ -243,6 +255,7 @@ class LevelTape:
         self.events: dict[Key, list[LevelEvent]] = defaultdict(list)
         self.prints: dict[tuple[str, float], list[Print]] = defaultdict(list)
         self.prints_tx: dict[str, list[Print]] = defaultdict(list)
+        self.allocations: dict[str, Allocation | str] = {}
         self.spans: dict[str, list[list[int]]] = {}
         self.mate: dict[str, str] = {}
         self.counts: Counter = Counter()
@@ -257,13 +270,12 @@ class LevelTape:
 
     def span_end(self, asset: str, ms: int) -> int | None:
         """End of the known span containing ``ms``; None when the state is unknown at ``ms``."""
-        for a, b in self.spans.get(asset, ()):
-            if a <= ms <= b:
-                return b
-        return None
+        ends = [b for a, b in self.spans.get(asset, ()) if a <= ms <= b]
+        return ends[0] if len(ends) == 1 else None
 
     def known_over(self, asset: str, lo: int, hi: int) -> bool:
-        return any(a <= lo and hi <= b for a, b in self.spans.get(asset, ()))
+        spans = [(a, b) for a, b in self.spans.get(asset, ()) if a <= hi and b >= lo]
+        return lo <= hi and len(spans) == 1 and spans[0][0] <= lo and hi <= spans[0][1]
 
     def hours(self, assets: set[str]) -> float:
         return sum(b - a for t in assets for a, b in self.spans.get(t, ())) / 3.6e6
@@ -287,8 +299,8 @@ def build_tape(root: Path, streams: list[str], t_from: int, t_to: int, tokens: s
     tape = LevelTape()
     markets: set[str] = set()
     for s in streams:
-        book = IntlBook()
-        for items in replay(root, s, t_from, t_to, book):
+        book = IntlBook(strict_clocks=True)
+        for items in replay(root, s, t_from, t_to, book, strict=True):
             markets.update(it.market for it in items
                            if isinstance(it, (LevelEvent, Print)) and it.asset in tokens)
             for it in items:
@@ -301,6 +313,7 @@ def build_tape(root: Path, streams: list[str], t_from: int, t_to: int, tokens: s
                 else:
                     tape.counts[f"reset:{it.why}"] += 1
         tape.counts["price_change_unknown_state"] += book.dropped
+        tape.counts.update(book.clock_counts)
         for a, sp in book.spans.items():
             tape.spans.setdefault(a, []).extend(sp)
         tape.mate.update(book.mates())
@@ -308,29 +321,120 @@ def build_tape(root: Path, streams: list[str], t_from: int, t_to: int, tokens: s
 
 
 # ---------------------------------------------------------------- placement
-def match_placements(orders: list[Order], tape: LevelTape, p: Params,
-                     shift_ms: int = 0) -> dict[str, tuple[Key, int]]:
-    """order_id -> (key, index of its placement event). One-to-one, smallest |dt| first."""
+def _fill_prints(o: Order, tape: LevelTape) -> dict[str, Print | None]:
+    """Bind a fill time to a unique venue instant with compatible transaction evidence."""
+    out: dict[str, Print | None] = {}
+    for tx, (shares, block_ts) in o.fills.items():
+        allocation = tape.allocations.get(tx)
+        compatible = []
+        for q in tape.prints_tx.get(tx, ()):
+            if block_ts is None or abs(q.venue_ms - block_ts * 1000) > PRINT_BLOCK_TOL_MS:
+                continue
+            if isinstance(allocation, Allocation):
+                valid = allocation.match(q, tape.mate.get(q.asset)) == "allocated"
+            else:
+                mirror = tape.mate.get(o.token) == q.asset
+                valid = (allocation in (None, "incomplete_call") and (q.asset == o.token or mirror)
+                         and q.price == (px(1 - o.price) if mirror else o.price)
+                         and q.side == (o.side if mirror else ("SELL" if o.side == "BUY" else "BUY"))
+                         and abs(q.size - shares) <= 2e-6)
+            if valid:
+                compatible.append(q)
+        # Several records of the same physical trade can appear on mirrored tokens.
+        out[tx] = (min(compatible, key=lambda q: q.tw_ns)
+                   if len({q.venue_ms for q in compatible}) == 1 else None)
+    return out
+
+
+@dataclass
+class Search:
+    selected: dict[str, tuple[Key, int]]
+    candidates: Counter
+    contenders: dict[str, int]
+    rejected_chronology: Counter
+
+
+def _placements(orders: list[Order], tape: LevelTape, p: Params, shift_ms: int,
+                prints: dict[str, dict[str, Print | None]]) -> Search:
     by_key: dict[Key, list[Order]] = defaultdict(list)
     for o in orders:
         by_key[o.key].append(o)
     pairs = []
+    counts: Counter = Counter()
+    rejected: Counter = Counter()
+    owners: dict[tuple, set[str]] = defaultdict(set)
     for k, os_ in by_key.items():
         evs = tape.events.get(k) or []
+        # Book levels are reconstructed in receive order. Index separately for venue-time search.
+        ordered = sorted((e.venue_ms, i) for i, e in enumerate(evs))
+        stamps = [ms for ms, _ in ordered]
+        mirror = tape.mate.get(k[0])
+        canonical = min(k, (mirror, px(1 - k[1]), "SELL" if k[2] == "BUY" else "BUY")) if mirror else k
         for o in os_:
-            t = o.created_ms + shift_ms
-            for i, e in enumerate(evs):
-                dt = e.venue_ms - t
-                if p.lo_ms <= dt <= p.hi_ms and p.near(e.delta, o.size):
-                    pairs.append((abs(dt), o.order_id, k, i))
-    pairs.sort()
-    out: dict[str, tuple[Key, int]] = {}
-    used: set[tuple[Key, int]] = set()
-    for _, oid, k, i in pairs:
-        if oid not in out and (k, i) not in used:
-            out[oid] = (k, i)
-            used.add((k, i))
-    return out
+            anchor = o.created_ms + shift_ms
+            located = [q for q in prints[o.order_id].values() if q]
+            cutoff_ms = min((q.venue_ms + shift_ms for q in located), default=None)
+            cutoff_tw = min((q.tw_ns + shift_ms * 1_000_000 for q in located), default=None)
+            for ms, i in ordered[bisect_left(stamps, anchor + p.lo_ms):bisect_right(stamps, anchor + p.hi_ms)]:
+                e = evs[i]
+                if e.delta <= 0 or not p.near(e.delta, o.size):
+                    continue
+                if (cutoff_ms is not None and ms > cutoff_ms) or (cutoff_tw is not None and e.tw_ns >= cutoff_tw):
+                    rejected[o.order_id] += 1
+                    continue
+                physical = (canonical, ms, round(e.delta, 6))
+                pairs.append((abs(ms - anchor), o.order_id, k, i, physical))
+                counts[o.order_id] += 1
+                owners[physical].add(o.order_id)
+    selected = {}
+    contenders = {}
+    used = set()
+    for _, oid, k, i, physical in sorted(pairs):
+        if oid not in selected and physical not in used:
+            selected[oid] = (k, i)
+            contenders[oid] = len(owners[physical])
+            used.add(physical)
+    return Search(selected, counts, contenders, rejected)
+
+
+def match_placements(orders: list[Order], tape: LevelTape, p: Params,
+                     shift_ms: int = 0) -> dict[str, tuple[Key, int]]:
+    """One representative per order and physical book change for diagnostics."""
+    return _placements(orders, tape, p, shift_ms, {o.order_id: _fill_prints(o, tape) for o in orders}).selected
+
+
+def qualified_placement(row: dict) -> bool:
+    return (row.get("placement_evidence") == "unique_candidate"
+            and type(row.get("placement_candidates")) is int and row["placement_candidates"] == 1
+            and row.get("fill_before_placement") is False)
+
+
+def _evidence(o: Order, tape: LevelTape, p: Params, search: Search, located: dict[str, Print | None],
+              shift: int = 0) -> str:
+    chosen = search.selected.get(o.order_id)
+    if not chosen:
+        if search.candidates[o.order_id]:
+            return "ambiguous"
+        return "chronology_conflict" if search.rejected_chronology[o.order_id] else "no_candidate"
+    if search.candidates[o.order_id] != 1 or search.contenders[o.order_id] != 1:
+        return "ambiguous"
+    if not o.verified:
+        return "unverified_order"
+    if o.maker_amount is not None and not 0 < o.filled_amount <= o.maker_amount:
+        return "invalid_order_amount"
+    if not located or not all(located.values()):
+        return "fill_time_unknown"
+    key, index = chosen
+    e = tape.events[key][index]
+    if e.venue_ms < o.created_ms + shift:
+        return "chronology_conflict"
+    if e.src != "price_change":
+        return "snapshot_only"
+    if not observable(o, tape, p, shift):
+        return "coverage_incomplete"
+    if not tape.known_over(o.token, e.venue_ms, max(q.venue_ms for q in located.values() if q) + shift):
+        return "coverage_incomplete"
+    return "unique_candidate"
 
 
 def observable(o: Order, tape: LevelTape, p: Params, shift_ms: int = 0) -> bool:
@@ -351,81 +455,69 @@ def placement_candidate_count(events: list[LevelEvent], created_ms: int, size: f
 # ---------------------------------------------------------------- follow-forward
 def follow(tape: LevelTape, key: Key, i0: int, r: float, start_ms: int,
            claimed: set[tuple[Key, int]], p: Params) -> dict:
-    """What happened to ``r`` shares resting at ``key`` since event ``i0``, certain to be there
-    until ``start_ms``. See the module docstring for the rules."""
+    """Bound the end of a placement hypothesis by subsequent visible level evidence."""
     evs = tape.events[key]
-    tol = p.tol(r)
-    end = tape.span_end(key[0], evs[i0].venue_ms)
-    j, level = i0 + 1, evs[i0].new_size
-    while j < len(evs) and evs[j].venue_ms < start_ms and end is not None and evs[j].venue_ms <= end:
-        level = evs[j].new_size  # the order is certain to exist here; only track the level
-        j += 1
-    if level < r - tol:  # ... yet by start_ms the level cannot hold what should be left
-        return {"outcome": "unknown", "reason": "level_below", "end_ms": start_ms}
-    for j in range(j, len(evs)):
+    start = evs[i0]
+    span_end = tape.span_end(key[0], start.venue_ms)
+    if span_end is None or start_ms > span_end:
+        return {"outcome": "unknown", "reason": "censored", "end_ms": None}
+    prev_ms = start.venue_ms
+    below = False
+    for j in range(i0 + 1, len(evs)):
         e = evs[j]
-        if end is None or e.venue_ms > end:
+        if e.venue_ms > span_end:
             break
-        dec = -e.delta
-        if abs(dec - r) <= tol and (key, j) not in claimed:
+        if e.venue_ms < prev_ms:
+            return {"outcome": "unknown", "reason": "venue_time_inversion", "end_ms": None}
+        prev_ms = e.venue_ms
+        if e.venue_ms < start_ms:
+            continue
+        if e.new_size == 0:
+            # There is no resting size left by this observation. A level total does not
+            # identify the owner who withdrew it or the instant their own order ended.
             vol, n = tape.printed(key[0], key[1], e.venue_ms, p.print_win_ms)
-            if vol < dec - tol:
-                claimed.add((key, j))
-                return {"outcome": "cancelled", "reason": "exact_decrease", "end_ms": e.venue_ms,
-                        "end_src": e.src, "alone": e.old_size <= r + tol, "prints_near": n}
-        if e.new_size < r - tol:
-            return {"outcome": "unknown", "reason": "level_below", "end_ms": e.venue_ms}
-    return {"outcome": "unknown", "reason": "censored", "end_ms": None}
+            return {"outcome": "unknown", "reason": "level_zero", "end_ms": e.venue_ms,
+                    "end_src": e.src, "alone": p.near(e.old_size, r), "prints_near": n,
+                    "cancel_compatible": p.near(-e.delta, r) and vol < -e.delta - p.tol(r)}
+        below |= e.new_size < r - p.tol(r)
+    return {"outcome": "unknown", "reason": "level_below" if below else "censored", "end_ms": None}
 
 
 def classify(o: Order, key: Key, i0: int, tape: LevelTape, claimed: set[tuple[Key, int]],
-             p: Params) -> dict:
-    """Per-order row: placement, located fills, outcome and resting-time bounds."""
+             p: Params, *, search: Search | None = None, prints: dict[str, Print | None] | None = None) -> dict:
+    """A representative placement hypothesis and the evidence supporting its timing."""
     place = tape.events[key][i0]
-    level = set(tape.sides(o.token, o.price))
-    assets = {a for a, _ in level}
-    located: list[int] = []
-    fills_at: list[list] = []  # [tx, venue ms of its earliest print or None, shares]
-    late = place.venue_ms  # after this every fill has certainly happened
-    n_price_ok = n_size_ok = 0
-    for tx, (sh, bts) in o.fills.items():
-        ps = [q for q in tape.prints_tx.get(tx, ()) if q.asset in assets]
-        fills_at.append([tx, min(q.venue_ms for q in ps) if ps else None, round(sh, 6)])
-        if ps:
-            t = min(q.venue_ms for q in ps)
-            located.append(t)
-            late = max(late, t)
-            at = [q for q in ps if (q.asset, q.price) in level]
-            n_price_ok += bool(at)
-            n_size_ok += any(p.near(q.size, sh) for q in at)
-        elif bts is not None:
-            late = max(late, bts * 1000)
-    all_located = len(located) == len(o.fills)
-    certain = max(located, default=place.venue_ms)
+    prints = _fill_prints(o, tape) if prints is None else prints
+    stamp = [q.venue_ms for q in prints.values() if q]
+    fills_at = [[tx, q.venue_ms if q else None, round(o.fills[tx][0], 6)] for tx, q in prints.items()]
+    before = any(q and (q.venue_ms < place.venue_ms or q.tw_ns <= place.tw_ns) for q in prints.values())
+    evidence = _evidence(o, tape, p, search, prints) if search else "competition_unchecked"
+    if before:
+        evidence = "chronology_conflict"
     r = o.size - o.filled
+    full = (o.filled_amount == o.maker_amount if o.maker_amount is not None else abs(r) < 1e-6)
+    end = max(stamp, default=place.venue_ms)
     row = {"order_id": o.order_id, "maker": o.maker, "token_id": o.token, "side": o.side,
            "price": o.price, "size": o.size, "created_ms": o.created_ms,
            "placed_venue_ms": place.venue_ms, "placed_tw_ns": place.tw_ns, "placed_src": place.src,
-           "sign_to_book_ms": place.venue_ms - o.created_ms,
-           "placement_candidates": placement_candidate_count(
-               tape.events[key], o.created_ms, o.size, p, min(located, default=None)),
+           "sign_to_book_ms": place.venue_ms - o.created_ms, "placement_evidence": evidence,
+           "placement_candidates": (search.candidates[o.order_id] if search else placement_candidate_count(
+               tape.events[key], o.created_ms, o.size, p, min(stamp, default=None))),
+           "placement_contenders": search.contenders[o.order_id] if search else None,
            "filled": round(o.filled, 6), "remainder": round(r, 6), "n_fills": len(o.fills),
-           "fills_located": len(located), "print_price_ok": n_price_ok, "print_size_ok": n_size_ok,
-           "fills_at": fills_at}
-    if r <= p.tol(o.size):
-        res = {"outcome": "filled", "reason": "chain" if all_located else "chain_block_time",
-               "end_ms": late}
-        lo = late if all_located else certain
-    else:
-        res = follow(tape, key, i0, r, late, claimed, p)
-        lo = res["end_ms"] if res["outcome"] == "cancelled" else certain
-    hi = res["end_ms"]
-    row |= res | {"rest_min_ms": lo - place.venue_ms,
-                  "rest_max_ms": None if hi is None else hi - place.venue_ms}
-    # a fill printed before the matched increase is impossible: the placement match is wrong
-    row["fill_before_placement"] = bool(located) and min(located) < place.venue_ms
-    row["rest_known"] = row["rest_min_ms"] == row["rest_max_ms"] and not row["fill_before_placement"]
-    return row
+           "fills_located": len(stamp), "fill_before_placement": bool(before), "fills_at": fills_at,
+           "print_price_ok": sum(bool(q and (q.asset, q.price) in tape.sides(o.token, o.price)) for q in prints.values()),
+           "print_size_ok": sum(bool(q and abs(q.size - o.fills[tx][0]) <= 2e-6) for tx, q in prints.items())}
+    if not qualified_placement(row):
+        return row | {"outcome": "filled" if full else "unknown", "reason": evidence, "end_ms": None,
+                      "rest_min_ms": 0, "rest_max_ms": None, "rest_known": False}
+    if full:
+        return row | {"outcome": "filled", "reason": "chain", "end_ms": end,
+                      "rest_min_ms": end - place.venue_ms, "rest_max_ms": end - place.venue_ms, "rest_known": True}
+    res = follow(tape, key, i0, r, end, claimed, p)
+    return row | res | {"rest_min_ms": end - place.venue_ms,
+                        "rest_max_ms": None if res["end_ms"] is None else res["end_ms"] - place.venue_ms,
+                        "rest_known": False}
 
 
 # ---------------------------------------------------------------- fingerprint
@@ -464,7 +556,6 @@ def attribute(wallet: str, sizes: list[float], orders: list[Order],
     rows: list[dict] = []
     emit = sink or rows.append
     outcomes: Counter = Counter()
-    lives: list[int] = []  # rest_max_ms of the candidates with a known end
     for key in sorted(k for k in tape.events if k[2] == "BUY"):
         for i, e in enumerate(tape.events[key]):
             s = next((z for z in sizes if p.near(e.delta, z)), None)
@@ -485,15 +576,13 @@ def attribute(wallet: str, sizes: list[float], orders: list[Order],
                 res = follow(tape, key, i, e.delta, e.venue_ms, claimed, p)
                 hi = res["end_ms"]
                 outcomes[f"{res['outcome']}:{res['reason']}"] += 1
-                if res["outcome"] == "cancelled":
-                    lives.append(hi - e.venue_ms)
                 emit({"attribution": "fingerprint_candidate", "wallet": wallet,
                       "token_id": key[0], "price": key[1], "side_view": "BUY",
                       "venue_ms": e.venue_ms, "tw_ns": e.tw_ns, "size": round(e.delta, 6),
                       "fp_size": s} | res | {
-                          "rest_min_ms": (hi - e.venue_ms) if res["outcome"] == "cancelled" else 0,
+                          "rest_min_ms": 0,
                           "rest_max_ms": None if hi is None else hi - e.venue_ms,
-                          "rest_known": res["outcome"] == "cancelled"})
+                          "rest_known": False})
     h_act = tape.hours(active)
     h_ctl = tape.hours(set(tape.spans) - active)
 
@@ -507,7 +596,8 @@ def attribute(wallet: str, sizes: list[float], orders: list[Order],
                 "expected_by_chance": _r(exp),
                 "net_estimate": None if exp is None else _r(
                     max(0.0, c["candidates"] - c["own_unmatched"] - exp)),
-                "identity_precision_upper": _r(c["own"] / ident) if ident else None}
+                "known_match_own_share": _r(c["own"] / ident) if ident else None,
+                "identity_precision_upper": None}
 
     total: Counter = Counter()
     for c in per.values():
@@ -516,9 +606,9 @@ def attribute(wallet: str, sizes: list[float], orders: list[Order],
            "control_token_hours": _r(h_ctl), "total": line(total),
            "per_size": {str(s): line(c) for s, c in per.items()},
            "candidate_outcomes": dict(outcomes),
-           "candidate_rest_ms_cancelled": _q(lives),
+           "candidate_rest_ms_cancelled": None,
            "note": "candidates are NOT identified as the wallet's; read net_estimate against "
-                   "expected_by_chance and identity_precision_upper (see module docstring)"}
+                   "expected_by_chance. True identity precision is unmeasured."}
     return doc, rows
 
 
@@ -534,14 +624,15 @@ def _q(xs: list, qs=(0.1, 0.5, 0.9)) -> dict | None:
     return {f"p{int(q * 100)}": _r(np.quantile(a, q), 1) for q in qs} | {"n": len(xs)}
 
 
-def summarize(name: str, orders: list[Order], matches: dict, placebo: dict, rows: list[dict],
-              tape: LevelTape, p: Params) -> dict:
+def summarize(name: str, orders: list[Order], candidates: dict, placebo: dict, rows: list[dict],
+              comparable: set[str]) -> dict:
     """Match rate vs placebo, latency and outcomes for one set of maker orders."""
-    obs = [o for o in orders if observable(o, tape, p) and observable(o, tape, p, p.placebo_ms)]
-    hit = [o for o in obs if o.order_id in matches]
-    pl = sum(o.order_id in placebo for o in obs)
+    obs = [o for o in orders if o.order_id in comparable]
+    hit = [o for o in obs if candidates[o.order_id] == "unique_candidate"]
+    pl = sum(placebo[o.order_id] == "unique_candidate" for o in obs)
     mine = {o.order_id for o in orders}
-    rs = [r for r in rows if r["order_id"] in mine]
+    selected = [r for r in rows if r["order_id"] in mine]
+    rs = [r for r in selected if qualified_placement(r)]
     canc = [r for r in rs if r["outcome"] == "cancelled"]
     return {
         "wallet": name, "maker_orders": len(orders), "observable": len(obs), "matched": len(hit),
@@ -550,13 +641,16 @@ def summarize(name: str, orders: list[Order], matches: dict, placebo: dict, rows
         "match_rate_by_side": {s: _r(sum(o.side == s for o in hit) / n) for s in ("BUY", "SELL")
                                if (n := sum(o.side == s for o in obs))},
         "matched_all": len(rs),
+        "diagnostic_rows": len(selected) - len(rs),
+        "placement_evidence_counts": dict(Counter(candidates[o.order_id] for o in orders)),
+        "placebo_evidence_counts": dict(Counter(placebo[o.order_id] for o in obs)),
         "sign_to_book_ms": _q([r["sign_to_book_ms"] for r in rs]),
         "tw_minus_created_ms": _q([r["placed_tw_ns"] / 1e6 - r["created_ms"] for r in rs]),
         "outcomes": dict(Counter(f"{r['outcome']}:{r['reason']}" for r in rs)),
         "cancelled_alone": sum(r["alone"] for r in canc),
         "cancelled_no_prints_near": sum(r["prints_near"] == 0 for r in canc),
         "cancelled_seen_as_price_change": sum(r["end_src"] == "price_change" for r in canc),
-        "fill_before_placement": sum(r["fill_before_placement"] for r in rs),
+        "fill_before_placement": sum(r["fill_before_placement"] for r in selected),
         "fills": {"n": sum(r["n_fills"] for r in rs), "located_by_print": sum(r["fills_located"] for r in rs),
                   "print_at_level": sum(r["print_price_ok"] for r in rs),
                   "print_size_equal": sum(r["print_size_ok"] for r in rs)},
@@ -592,19 +686,36 @@ def run(root: Path, orders_path: Path, t_from: int, t_to: int, wallets: list[str
     tape = build_tape(root, streams, t_from, t_to,
                       {t for w, ts in active.items() if not focus or w in chosen for t in ts},
                       sorted({s for f in fps.values() for s in f}), p)
-    matches = match_placements(orders, tape, p)
-    placebo = match_placements(orders, tape, p, p.placebo_ms)
+    tape.allocations = load_allocations(orders_path, {tx for o in orders for tx in o.fills})
+    prints = {o.order_id: _fill_prints(o, tape) for o in orders}
+    search = _placements(orders, tape, p, 0, prints)
+    shifted = _placements(orders, tape, p, p.placebo_ms, prints)
     claimed: set[tuple[Key, int]] = set()
-    rows = [classify(o, *matches[o.order_id], tape, claimed, p) for o in orders if o.order_id in matches]
+    rows = [classify(o, *search.selected[o.order_id], tape, claimed, p, search=search, prints=prints[o.order_id])
+            for o in orders if o.order_id in search.selected]
+    candidates = {o.order_id: _evidence(o, tape, p, search, prints[o.order_id]) for o in orders}
+    candidates.update({r["order_id"]: r["placement_evidence"] for r in rows})
+    placebo = {o.order_id: _evidence(o, tape, p, shifted, prints[o.order_id], p.placebo_ms) for o in orders}
+    matches = {r["order_id"]: search.selected[r["order_id"]] for r in rows if qualified_placement(r)}
+    comparable = set()
+    for o in orders:
+        located = prints[o.order_id]
+        if not o.verified or not located or not all(located.values()):
+            continue
+        last = max(q.venue_ms for q in located.values() if q)
+        if all(tape.known_over(o.token, o.created_ms + p.lo_ms + shift,
+                               max(o.created_ms + p.hi_ms, last) + shift) for shift in (0, p.placebo_ms)):
+            comparable.add(o.order_id)
     doc = {"params": {"from": t_from, "to": t_to, **p.__dict__, "max_age_s": MAX_AGE_S,
-                      "streams": streams},
+                      "streams": streams, "placement_evidence_version": PLACEMENT_EVIDENCE_VERSION},
            "orders": dict(stats), "tape": dict(tape.counts) | {
                "level_keys": len(tape.events), "assets": len(tape.spans),
-               "prints": sum(len(v) for v in tape.prints.values())},
+               "prints": sum(len(v) for v in tape.prints.values()),
+               "integrity": "strict_segment_frames_and_crc", "sealed_manifest_checked": False},
            "wallets": {}}
     quotes: list[dict] = []
     for w in chosen:
-        d = summarize(w, by_maker.get(w, []), matches, placebo, rows, tape, p)
+        d = summarize(w, by_maker.get(w, []), candidates, placebo, rows, comparable)
         d["fingerprint"] = None
         if fps[w]:
             d["fingerprint"], q = attribute(w, fps[w], orders, matches, active.get(w, set()), tape, claimed, p,
@@ -613,7 +724,7 @@ def run(root: Path, orders_path: Path, t_from: int, t_to: int, wallets: list[str
         doc["wallets"][w] = d
     rest = [o for o in orders if o.maker not in chosen]
     if rest:
-        doc["others_pooled"] = summarize("others", rest, matches, placebo, rows, tape, p)
+        doc["others_pooled"] = summarize("others", rest, candidates, placebo, rows, comparable)
     return doc, rows, quotes
 
 
@@ -624,6 +735,7 @@ def card(doc: dict) -> str:
               f"placement: {d['matched']}/{d['observable']} observable orders matched "
               f"(rate {d['match_rate']}) vs placebo {d['placebo_matched']} (rate {d['placebo_rate']}); "
               f"by side {d['match_rate_by_side']}",
+              f"placement evidence: {d['placement_evidence_counts']}; diagnostic rows {d['diagnostic_rows']}",
               f"sign-to-book ms (venue - created): {d['sign_to_book_ms']}; tw - created: {d['tw_minus_created_ms']}",
               f"outcomes: {d['outcomes']} | cancelled alone {d['cancelled_alone']}, "
               f"no prints near {d['cancelled_no_prints_near']}, as price_change "
@@ -636,11 +748,11 @@ def card(doc: dict) -> str:
         if fp:
             t = fp["total"]
             L += [f"fingerprint sizes {fp['sizes']} (ESTIMATE, not identification): "
-                  f"own {t['own']}, other makers proven {t['other_known']}, candidates {t['candidates']} "
+                  f"own {t['own']}, other makers matched {t['other_known']}, candidates {t['candidates']} "
                   f"(own filled-but-unmatched hiding among them: {t['own_unmatched']})",
                   f"  chance: control {t['control']} in {fp['control_token_hours']} token-h -> expected "
                   f"{t['expected_by_chance']} in {fp['active_token_hours']} active token-h; "
-                  f"net {t['net_estimate']}; identity precision <= {t['identity_precision_upper']}",
+                  f"net {t['net_estimate']}; own share among matched orders {t['known_match_own_share']}",
                   f"  per size: { {s: (v['candidates'], v['expected_by_chance'], v['other_known']) for s, v in fp['per_size'].items()} }"
                   " (candidates, expected, other_known)",
                   f"  candidate outcomes {fp['candidate_outcomes']}; resting ms of cancelled {fp['candidate_rest_ms_cancelled']}"]
