@@ -9,7 +9,8 @@ FILLS (format detected per file):
 - a paper journal (``journal-*.jsonl`` directory or file; ``k == "fill"`` rows: slug, t ns, role,
   side, px, qty, fee; chain fields are not verified here);
 - wallet fills as Goldsky TRADE rows (JSONL: token_id, side BUY/SELL, price, amount_shares, fee,
-  block_timestamp, transaction_hash) on Polymarket intl;
+  order_type taker/maker, block_timestamp, transaction_hash) on Polymarket intl, with ``--outcomes``
+  either a JSON {token: {outcome, end}} or the ledger's ``tokens.jsonl`` (payout, ISO end);
 - generic JSONL rows ``{key|slug, t_ns, side buy|sell, px, qty, fee, role?}``.
 ``side`` is always the side of the keyed instrument (PM US: YES = Up; intl: the token itself).
 
@@ -23,7 +24,8 @@ received-raw computation). Goldsky fills carry chain block time, not our receive
 re-anchored to the receive time of the intl print with the same transaction hash when the tape has
 it; otherwise the +0.5 s and +2 s marks are left empty (block time is only second-resolution).
 
-CIs: percentile bootstrap resampling whole market windows (keys), quantity-weighted means.
+CIs: percentile bootstrap resampling whole market windows (PM US slug; intl market, so a token and
+its complement are one window), quantity-weighted means.
 Shape labels (informational only, never a gate), from the GROSS mid curve, 95% CIs:
   INFORMATION  lo(+2 s) > 0 and lo(+60 s) > 0          (positive by <= 5 s and holds)
   REVERSION    hi(+2 s) < 0 and lo(late - (+2 s)) > 0, late = +60 s or settlement (paired draws)
@@ -69,7 +71,8 @@ class MarketPath:
     valid_until: int | None = None          # receive ns after which nothing is known (feed ended)
     fair: Callable[[float], float | None] | None = None     # P(YES) known at unix s (PM US BTC)
     index: Callable[[float], float | None] | None = None    # underlying index known at unix s
-    cluster: int = 0                        # bootstrap block id
+    cluster: int = 0                        # bootstrap block id (mechanisms: 15-min clock block)
+    window: str = ""                        # markout bootstrap unit (default: key); intl: the market
 
     def top_asof(self, t_ns: int) -> tuple[float | None, float | None] | None:
         """(bid, ask) of the last book received at or before t_ns; None if unknown."""
@@ -183,12 +186,12 @@ def intl_paths(root: Path, stream: str, t_from: int, t_to: int, assets: set[str]
                 for p in paths.values():
                     p.gaps.append(it.tw_ns)
                 continue
+            if isinstance(it, Print) and it.tx:      # every print: a maker may be matched on the other token
+                tx.setdefault(it.tx.lower(), it.tw_ns)
             if it.asset not in paths:
                 continue
             last[it.asset] = it.tw_ns
             if isinstance(it, Print):
-                if it.tx:
-                    tx.setdefault(it.tx, it.tw_ns)
                 continue
             touched.add((it.asset, it.tw_ns))
         for a, tw in sorted(touched):
@@ -203,6 +206,7 @@ def intl_paths(root: Path, stream: str, t_from: int, t_to: int, assets: set[str]
             p.asks.append(min(asks) if asks else None)
     for a, p in paths.items():
         p.valid_until = last.get(a)
+        p.window = book.market_of.get(a) or a     # YES and NO of one market are one window
         if p.tws:
             p.cluster = p.tws[0] // NS // 900
     return paths, tx
@@ -279,8 +283,9 @@ def reanchor(fills: list[Fill], tx_tw: dict[str, int]) -> list[Fill]:
     """Block-time fills whose transaction hash has a recorded print -> that print's receive time."""
     out = []
     for f in fills:
-        if f.anchor.startswith("block:") and tx_tw.get(f.anchor[6:]) is not None:
-            f = Fill(f.key, tx_tw[f.anchor[6:]], f.side, f.px, f.qty, f.fee_usd, f.role, "receive")
+        h = f.anchor[6:].lower()
+        if f.anchor.startswith("block:") and tx_tw.get(h) is not None:
+            f = Fill(f.key, tx_tw[h], f.side, f.px, f.qty, f.fee_usd, f.role, "receive")
         out.append(f)
     return out
 
@@ -410,13 +415,16 @@ def analyse(fills: list[Fill], paths: dict[str, MarketPath], horizons=HORIZONS, 
         if p is None:
             missing += 1
             continue
-        rows.append((f, marks(f, p, horizons), p.key))
+        rows.append((f, marks(f, p, horizons), p.window or p.key))
     groups = {"all": rows, "taker": [r for r in rows if r[0].role == "taker"],
               "maker": [r for r in rows if r[0].role == "maker"]}
     out: dict = {"horizons": [_hkey(h) for h in (*horizons, SETTLE)], "fills_in": len(fills),
                  "fills_without_tape": missing,
                  "anchors": {a: sum(1 for f, _, _ in rows if f.anchor.split(":")[0] == a) for a in ("receive", "block")},
                  "groups": {}}
+    if out["anchors"]["block"]:
+        out["note"] = ("block-anchored fills (no recorded print for their transaction) have no +0.5/+2 s "
+                       "marks and their later marks run from chain time; a group made only of them is UNCLEAR")
     for g, rs in groups.items():
         if not rs:
             continue
@@ -425,6 +433,28 @@ def analyse(fills: list[Fill], paths: dict[str, MarketPath], horizons=HORIZONS, 
                             "fair_gross": curve(rs, "fair", False, horizons, n_boot, seed),
                             "fair_net": curve(rs, "fair", True, horizons, n_boot, seed),
                             "shape": classify(gross, maker=g == "maker")}
+    return out
+
+
+def load_outcomes(path: Path) -> dict[str, dict]:
+    """token -> {"outcome", "end"} from a JSON object of that shape, or from the ledger's
+    ``tokens.jsonl`` cache (payout 1/0 of resolved tokens, ISO ``end``)."""
+    raw = Path(path).read_bytes()
+    try:
+        doc = orjson.loads(raw)
+        if isinstance(doc, dict) and "token" not in doc:
+            return doc
+    except orjson.JSONDecodeError:
+        pass
+    from .ledger import _end_ts
+    out = {}
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        r = orjson.loads(line)
+        pay = r.get("payout")
+        out[str(r["token"])] = {"outcome": None if pay not in (0, 0.0, 1, 1.0) else int(pay),
+                                "end": _end_ts(r.get("end"))}
     return out
 
 
@@ -466,7 +496,7 @@ def main(argv=None) -> int:
         if not a.intl_stream:
             print("fills not keyed by PM US slug need --intl-stream", file=sys.stderr)
             return 2
-        meta = orjson.loads(a.outcomes.read_bytes()) if a.outcomes else {}
+        meta = load_outcomes(a.outcomes) if a.outcomes else {}
         lo = min(f.t_ns for f in other) // NS - 300
         hi = max(f.t_ns for f in other) // NS + 600
         ip, tx = intl_paths(a.data, a.intl_stream, lo, hi, {f.key for f in other}, meta)

@@ -16,9 +16,10 @@ here searches for a strategy; the grids are fixed below and their sizes reported
     bid after the venue taker fee. Headline: slope b of (y - mid) = a + b (mid - 0.5) (cents per
     cent). b > 0 = favourites underpriced / longshots overpriced.
 (b) ``final60``: at end - o (o in FINAL_OFFSETS s), mid vs fair-v1: signed error mid - fair,
-    Brier of each against the outcome, and a fixed gap trade: buy YES at the ask when
-    fair - ask - fee > THETA_C, sell YES at the bid when bid - fair - fee > THETA_C. Headline: that
-    trade's net P&L per contract. BTC only (fair-v1 is PM US BTC settlement).
+    Brier of each against the outcome, and a fixed gap trade decided on the book at t: buy YES when
+    fair - ask - fee > THETA_C, sell YES when bid - fair - fee > THETA_C, executed LATENCY_S later as
+    an IOC limited to the decision price (no fill if the book moved away; counted as missed).
+    Headline: that trade's net P&L per contract. BTC only (fair-v1 is PM US BTC settlement).
 (c) ``overreaction``: first trigger per window in [start, end - 60): a mid cross of 50 c, or a
     trailing 15-minute BRTI move of at least X bps (X in BRTI_BPS); direction = sign of the move.
     Entry after LATENCY_S at the then-current book. Follow = take in the move's direction, fade =
@@ -28,9 +29,11 @@ here searches for a strategy; the grids are fixed below and their sizes reported
 
 Venues: PM US only. Fees: ``xvenue.pmus_fee`` (coef * p * (1-p), cent half-even) at a stated
 order size (``--size``, default 100 contracts; rounding makes the per-contract fee size-dependent).
-Kalshi BTC and Polymarket intl books are recorded but their settlement labels are not on the tape
-(Kalshi strike/settlement, intl Chainlink resolution), so (a)-(c) cannot be scored there without an
-outside label source; the loaders are not wired for them.
+Kalshi BTC and Polymarket intl books are recorded, but these studies are not wired for them: their
+settlement labels are not in the recorded market streams (intl resolutions live in the ledger's
+Gamma ``tokens.jsonl`` cache, Kalshi results in ``xvenue``'s metadata cache), the repo has no intl
+fee function, and fair-v1 is the PM US BTC settlement rule only. No depth check: fills assume the
+top level holds ``--size`` contracts.
 """
 
 from __future__ import annotations
@@ -101,12 +104,18 @@ def final60_rows(p: MarketPath, fee: Fee, offsets=FINAL_OFFSETS, theta_c: float 
             continue
         b, a = top
         y, f = p.outcome, 100 * fv
-        pnl = None
+        pnl, missed = None, False
+        land = _top(p, t + LATENCY_S)          # decided on the book at t, executed LATENCY_S later
         if f - 100 * a - fee(a) > theta_c:
-            pnl = 100 * y - 100 * a - fee(a)
+            if land is not None and land[1] <= a + 1e-9:     # IOC with limit = the decision ask
+                pnl = 100 * y - 100 * land[1] - fee(land[1])
+            missed = pnl is None
         elif 100 * b - f - fee(b) > theta_c:
-            pnl = 100 * b - 100 * y - fee(b)
-        out.append({"cell": o, "cluster": p.cluster, "mid": 50 * (a + b), "fair": f, "y": y, "pnl": pnl})
+            if land is not None and land[0] >= b - 1e-9:
+                pnl = 100 * land[0] - 100 * y - fee(land[0])
+            missed = pnl is None
+        out.append({"cell": o, "cluster": p.cluster, "mid": 50 * (a + b), "fair": f, "y": y, "pnl": pnl,
+                    "missed": missed})
     return out
 
 
@@ -255,6 +264,7 @@ def summarize_final60(rows: list[dict], n_boot: int = N_BOOT, seed: int = 0, off
         head = _mean(rs, "pnl", level, n_boot, seed)
         pays = head["ci"][0] is not None and head["ci"][0] > 0
         cells[str(o)] = {"headline_trade_net_c": head, "effect": pays, "n_windows": len(rs),
+                         "missed_fills": sum(1 for r in rs if r["missed"]),
                          "signed_error_mid_minus_fair_c": _mean(ext, "err", 0.95, n_boot, seed),
                          "abs_gap_c": _mean(ext, "abs", 0.95, n_boot, seed),
                          "brier_mid_minus_fair_x1e4": _mean(ext, "dbrier", 0.95, n_boot, seed)}

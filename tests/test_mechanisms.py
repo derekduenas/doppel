@@ -125,3 +125,14 @@ def test_cli_end_to_end(tmp_path, capsys):
     assert fin["cells"]["30"]["n_windows"] == 6                       # fair-v1 known in the final minute
     assert set(doc["studies"]["overreaction"]["cells"]) == set(mech.TRIGGERS)
     assert "flb: effect_any=" in capsys.readouterr().out
+
+
+def test_final60_gap_that_reprices_within_latency_is_missed():
+    st = S
+    t = st + 300 - 10
+    p = _p(st, [(st + 200, 0.40, 0.42), (t + 0.1, 0.79, 0.81)], 1, fair=lambda _: 0.8)
+    (r,) = [x for x in mech.final60_rows(p, FEE) if x["cell"] == 10]
+    assert r["pnl"] is None and r["missed"]
+    q = _p(st, [(st + 200, 0.40, 0.42)], 1, fair=lambda _: 0.8)
+    (r2,) = [x for x in mech.final60_rows(q, FEE) if x["cell"] == 10]
+    assert r2["pnl"] is not None and r2["pnl"] > 50 and not r2["missed"]

@@ -230,3 +230,19 @@ def test_cli_intl_wallet_fill_reanchored_to_print(tmp_path):
     assert by["0.5s"]["mean_c"] == by["2s"]["mean_c"] == -15.0   # book 0.03 / 0.97 -> mid 50, bought at 65
     assert by["settle"]["mean_c"] == 35.0
     assert by["10s"]["n"] == 0                                    # feed ends: nothing claimed after it
+
+
+def test_goldsky_fixture_role_and_tokens_jsonl_outcomes(tmp_path):
+    from pathlib import Path
+    fix = orjson.loads((Path(__file__).parent / "fixtures_formats.json").read_bytes())
+    p = tmp_path / "g.jsonl"
+    p.write_bytes(b"\n".join(orjson.dumps(r) for r in fix["goldsky_rows"]))
+    fs = mo.load_fills(p)
+    assert fs and {f.role for f in fs} <= {"taker", "maker"} and fs[0].role == "taker"
+    assert fs[0].anchor == "block:" + fix["goldsky_rows"][0]["transaction_hash"]
+    tj = tmp_path / "tokens.jsonl"
+    tj.write_bytes(b"\n".join(orjson.dumps(r) for r in (
+        {"token": "a", "idx": 0, "payout": 1.0, "status": "resolved", "end": "2026-11-26T22:25:00Z"},
+        {"token": "b", "idx": 1, "payout": None, "status": "open", "end": None})))
+    oc = mo.load_outcomes(tj)
+    assert oc["a"]["outcome"] == 1 and oc["a"]["end"] == 1795731900 and oc["b"]["outcome"] is None
