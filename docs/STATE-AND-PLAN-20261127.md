@@ -161,6 +161,33 @@ book, paper P&L, audit trail). See `docs/SYSTEM-DESIGN.md`.
 - The simulator can only be as good as the fill model; Phase A item 3 is not optional.
 - Capacity on US venues may be small; scale is earned on measured volume, not assumed.
 
+## 9. Adopted from external review (Neon, 2026-11-27)
+
+Checked against the code. Already present, not re-built: anytime-valid e-processes (`strategy/sequential.py`,
+aGRAPA, Ville), window/condition-clustered inference (block bootstrap; selection resamples whole
+conditions), placebo-block arms (H3), rebate-free profit measure (selection scores settled trading P&L
+after fees), and intent time from the signed order's own `created_ms` (E34, more exact than a
+latency rollback).
+
+Adopted:
+1. **Wallet triage buckets** after Layer 3: A cross-venue / latency, B toxicity-aware maker, C structural,
+   D not explained by public inputs (quarantined; sensor lane at most). Feeds the lanes in BLUEPRINT-V3 §3.
+2. **Hard negatives**: every fit and the simulator score the wallet's skipped eligible moments and markets,
+   not only its trades (participation model; simulator "markets entered vs eligible").
+3. **Simultaneous-entry delta** as an explicit fidelity metric: median (clone fire − wallet signed creation),
+   reported with its CI next to the existing match-lag gate.
+4. **Shared-liquidity replay** before paper: the clone and the source wallet (and visible rivals) consume
+   the same depth; a genome whose edge dies when queue use doubles is rejected.
+5. **Edge-decay watchdog** for paper and live: one-sided Page–Hinkley on post-fee return per window and on
+   paper-vs-wallet agreement; warning halves size, break demotes to shadow; the matrix "fidelity down +
+   P&L down = stale clone, re-absorb; fidelity down + P&L up = standalone structural genome; both
+   down with fidelity up = regime/crowding, throttle".
+
+Deferred to the execution plane (after a genome passes paper): capital ladder (shadow → canary →
+scaled → full), cross-genome netting, orthogonality limit (ρ < 0.30), uncertainty-scaled fractional
+Kelly from the simulator's posterior, Rust policy evaluator. Not adopted: offshore venues whose terms
+exclude US persons (Binance, Bybit, OKX, Deribit); US-lawful perps feeds are being added instead.
+
 ## 8. Decisions needed from the owner
 
 1. Opening-price rule for H1–H4 (bind before Nov 29 00:00 UTC for H1, or keep the old rule).
