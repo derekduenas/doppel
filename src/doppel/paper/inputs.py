@@ -50,10 +50,11 @@ class RefLive:
         self.bounds: dict[str, dict[int, dict[int, float | None]]] = {}
 
     def on_perelman(self, rows, now_ns: int) -> list[int]:
-        """PERELMAN rows, known at max(their documented receive time, ``now_ns`` when first read)."""
+        """PERELMAN rows, known at max(their documented receive time, the relay's copy time
+        ``relay_tw`` when relayed, ``now_ns`` when first read)."""
         out = []
-        floor = now_ns / 1e9
-        for t_ms, v, received in rows:
+        for t_ms, v, received, relay_tw in rows:
+            floor = max(now_ns, relay_tw if isinstance(relay_tw, int) else 0) / 1e9
             rcv = _imported_receive_s(received)
             _first_received(self.brti, t_ms, v, max(rcv, floor) if math.isfinite(rcv) else floor)
             out.append(t_ms // 1000)

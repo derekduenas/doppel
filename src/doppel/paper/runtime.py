@@ -95,7 +95,7 @@ class Settings:
     max_poll_bytes: int = 64 << 20         # per stream per cycle
     stall_s: float = 30.0
     max_book_age_s: float = 30.0           # 0 = no bound
-    perelman_src: str | None = None        # PERELMAN raw BRTI stream directory (read-only)
+    perelman_src: str | None = None        # PERELMAN raw BRTI rows: the relay's output dir (read-only)
 
 
 def check_genome(g: Genome) -> list[str]:

@@ -81,7 +81,8 @@ def main(argv=None) -> int:
                    help="opening-price rule (required; must equal the genome's bound evaluation protocol)")
     r.add_argument("--registry", type=Path, default=Path("."),
                    help="repo root holding registry/genomes.jsonl (protocol bindings are enforced)")
-    r.add_argument("--perelman", type=Path, help="PERELMAN raw BRTI stream directory (read only)")
+    r.add_argument("--perelman", type=Path,
+                   help="raw BRTI rows: doppel-brti-relay's output directory (or PERELMAN's stream dir), read only")
     r.add_argument("--grace-s", type=float, default=Settings().grace_s)
     r.add_argument("--max-loss-usd", type=float, help="global stop (default: genome risk.max_loss_per_day)")
     r.add_argument("--kill-file", type=Path, action="append", default=[])

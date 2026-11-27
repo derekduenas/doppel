@@ -9,7 +9,7 @@ ahead). Every record's CRC is checked; a CRC or JSON error raises ``TapeError``.
 whose unread bytes have not become a complete frame for ``stall_s`` (a recorder that died mid-frame
 or a corrupt tail: the twin's reader would also stop there, so paper stops rather than guess).
 
-PERELMAN. ``lab.brti_import`` reads PERELMAN's stream directory (``*.jsonl`` being appended, older
+PERELMAN (on Apex: the relay's copy, ``paper/relay.py``). ``lab.brti_import`` reads PERELMAN's stream directory (``*.jsonl`` being appended, older
 hours as ``*.jsonl.gz``) with rows ``{"kind": "brti", "new": [[t_ms, v], ...], "received": ...}``.
 The tail reads complete lines from a byte offset per ``.jsonl`` file and each ``.gz`` file once.
 
@@ -163,8 +163,10 @@ class PerelmanTail:
         self.offsets: dict[str, int] = {}
         self.dirty: dict[str, int] = {}
 
-    def poll(self, limits: dict[str, int] | None = None) -> list[tuple[int, str, object]]:
-        out: list[tuple[int, str, object]] = []
+    def poll(self, limits: dict[str, int] | None = None) -> list[tuple[int, str, object, object]]:
+        """Rows (t_ms, value, PERELMAN received, relay_tw or None). Reads PERELMAN's directory or
+        the relay's copy of it (``paper/relay.py``), whose lines carry ``relay_tw``."""
+        out: list[tuple[int, str, object, object]] = []
         if not self.src.is_dir():
             return out
         names = sorted(p.name for p in [*self.src.glob("*.jsonl"), *self.src.glob("*.jsonl.gz")])
@@ -194,7 +196,7 @@ class PerelmanTail:
                 if rec.get("kind") != "brti":
                     continue
                 for t_ms, v in sorted(rec.get("new") or [], key=lambda pair: int(pair[0])):
-                    out.append((int(t_ms), str(v), rec.get("received")))
+                    out.append((int(t_ms), str(v), rec.get("received"), rec.get("relay_tw")))
             if limits is not None and end != lim:
                 raise TapeError(f"replay: {path} no longer holds the bytes a committed cycle read")
             if end != start:

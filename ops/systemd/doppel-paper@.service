@@ -2,15 +2,14 @@
 # The lead installs it through ops/deploy.sh after review. Paper only: the unit has no network at
 # all (no address family, private network namespace), no credentials, no market-data group and no
 # view of the credential directories, so it cannot reach any venue even by mistake. It reads the tape
-# and PERELMAN's raw BRTI stream read-only and writes only its own journal directory.
+# and the BRTI relay's output read-only and writes only its own journal directory.
 #   genome:  /mnt/volume_nyc1_1793485122853/doppel/paper/%i/genome.json  (copy of the sealed genome)
 #   journal: /mnt/volume_nyc1_1793485122853/doppel/paper/%i/              (journal-*.jsonl, checkpoints/)
 #   halt:    touch .../paper/%i/KILL (this genome) or .../paper/KILL (every paper run)
 # --opening must be the genome's bound protocol rule (the runtime checks registry/genomes.jsonl and
 # refuses otherwise): received_raw for H1-H4. First start needs --from-now once (a new journal):
 #   systemctl edit doppel-paper@NAME   (add --from-now for the very first start only)
-# PERELMAN's directory is 0700 under /var/lib/private: check on Apex that User=doppel can read the
-# bind-mounted copy (or grant a read-only ACL) before installing.
+# Raw BRTI comes from doppel-brti-relay's output (PERELMAN's own directory is private to its user).
 [Unit]
 Description=DOPPEL paper runtime (genome %i) on the live tape, no orders
 After=doppel-tape.service
@@ -26,7 +25,7 @@ ExecStart=/opt/doppel/.venv/bin/doppel-paper run \
   --journal /mnt/volume_nyc1_1793485122853/doppel/paper/%i \
   --opening received_raw \
   --registry /opt/doppel \
-  --perelman /run/doppel-paper-perelman \
+  --perelman /mnt/volume_nyc1_1793485122853/doppel/perelman-relay \
   --kill-file /mnt/volume_nyc1_1793485122853/doppel/paper/%i/KILL \
   --kill-file /mnt/volume_nyc1_1793485122853/doppel/paper/KILL
 # An invalid or unbound-mismatched genome (2), a journal that fails recovery, or a tape failure (3)
@@ -59,7 +58,7 @@ ProtectHome=true
 PrivateTmp=true
 InaccessiblePaths=-/etc/edge-engine -/etc/atlas -/etc/doppel -/etc/credstore.encrypted
 ReadOnlyPaths=/mnt/volume_nyc1_1793485122853/doppel/tape
-BindReadOnlyPaths=/var/lib/private/perelman/stream:/run/doppel-paper-perelman
+ReadOnlyPaths=/mnt/volume_nyc1_1793485122853/doppel/perelman-relay
 ReadWritePaths=/mnt/volume_nyc1_1793485122853/doppel/paper/%i
 
 [Install]

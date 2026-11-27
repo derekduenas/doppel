@@ -61,8 +61,9 @@ received by `d`.
 - Each poll reads at most one `max_step` (60 s) of tape past the cursor and at most 64 MiB per stream;
   the watermark never passes what a capped stream has read.
 - Raw BRTI comes from two causal sources: our own Kalshi poller on the tape (`ref_brti_live`,
-  known at its `tw`) and PERELMAN's stream directory read directly (`--perelman`, read only), each
-  row known at max(PERELMAN's receive stamp, the cycle clock that first read it). The imported
+  known at its `tw`) and PERELMAN's rows via `doppel-brti-relay` (`--perelman RELAY_DIR`, read
+  only), each row known at max(PERELMAN's receive stamp, the relay's copy time `relay_tw`, the cycle
+  clock that first read it). The imported
   `ref_brti_raw` tape stream is never read: its rows reach the tape up to 15 min late, so under the
   same rule they could never inform a decision.
 
@@ -164,9 +165,9 @@ what it had actually received, and `agree` reports the effect:
 4. **Settlement value.** The twin uses the last boundary revision. Paper uses the one it had when
    both boundaries were known.
 5. **Raw BRTI receive time.** The twin reads PERELMAN's rows from the tape import (`ref_brti_raw`)
-   at PERELMAN's own receive stamp. Paper reads PERELMAN's files directly and knows a row at
-   max(that stamp, the cycle clock that first read it), so it is later by the poll interval
-   (0.25 s) plus PERELMAN's write lag. Decisions near a BRTI second can differ; `agree` shows it as
+   at PERELMAN's own receive stamp. Paper reads the relay's copy and knows a row at
+   max(that stamp, `relay_tw`, the cycle clock that first read it), so it is later by the relay's
+   (0.1 s) and paper's (0.25 s) poll intervals plus PERELMAN's write lag. Decisions near a BRTI second can differ; `agree` shows it as
    `inputs_identical_share` < 1. Without `--perelman`, paper has only `ref_brti_live` (5 s poller).
 6. **Window exclusions.** The twin decides them after the fact (feed gaps, coverage, unsettled).
    Paper trades every window; `agree` lists such windows under `paper_only`.
@@ -183,6 +184,16 @@ paper and twin counts. Windows the twin excludes are listed with paper's P&L the
 are reported apart from live ones (`by_mode`). The
 synthetic test tape avoids all eight sources: one boundary value, no late prints, no unprinted
 volume, live BRTI only. **The 100% agreement in the tests proves the plumbing, not live agreement.**
+
+## Raw BRTI relay
+
+PERELMAN's stream directory is private to its DynamicUser, and its permissions are left alone.
+`doppel-brti-relay` (`paper/relay.py`) copies each complete line of the current `*.jsonl` (and of
+each new hour file) into a file of the same name in a doppel-readable directory, adding only
+`relay_tw` (ns, strictly increasing). Each batch is one append plus `fsync` per file. A partial line
+waits for its newline. Progress is the output itself: the k-th output line is the k-th source
+line, so a restart recounts the output (cutting a torn line) and never duplicates or skips. It has
+no network, and its unit can see only that one directory under `/var/lib/private`.
 
 ## Footprint for the reconstruction machine (G3)
 
@@ -216,8 +227,11 @@ tape.
 3. `agree` after each settled hour, and record `inputs_identical_share`. Expect it below 1 from
    divergence 5. Decide whether G5 should run the twin with the same causal BRTI stamps. That would
    be a twin-side option, which is frozen until 2026-12-01.
-4. That `User=doppel` can read PERELMAN's stream through the unit's read-only bind
-   (`/var/lib/private` is 0700), and PERELMAN's file naming and rotation (`*.jsonl` → `*.jsonl.gz`).
+4. The relay (`ops/systemd/doppel-brti-relay.service`): it reads PERELMAN's 0700/0600 stream with
+   CAP_DAC_READ_SEARCH only, sees nothing else under `/var/lib/private`, and its output appears in
+   `/mnt/.../doppel/perelman-relay` within ~0.1 s of PERELMAN's write. Check PERELMAN's file naming
+   and rotation (`*.jsonl` → `*.jsonl.gz`); the relay does not read `.gz`, so an hour's tail is lost
+   if the relay is down across that rotation.
 5. Whether PM US sends WS book snapshots on a quiet book often enough for the 30 s stale-book bound.
 6. Kill drill: `touch KILL` → a `halt_all` record within one cycle, cancels only afterwards, exit 0
    once every window settled.

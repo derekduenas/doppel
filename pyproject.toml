@@ -55,6 +55,7 @@ doppel-desk = "doppel.desk.cli:main"
 doppel-answerkey = "doppel.lab.answerkey:main"
 doppel-absorb = "doppel.lab.absorb:main"
 doppel-paper = "doppel.paper.cli:main"
+doppel-brti-relay = "doppel.paper.relay:main"
 doppel-opening-parity = "doppel.lab.opening_parity:main"
 
 [dependency-groups]
