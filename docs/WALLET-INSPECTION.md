@@ -142,7 +142,7 @@ independent raw-tape walk. [Evidence verifier](../evidence/2026-11-27-wallet-ins
 
 ```sh
 /opt/doppel/.venv/bin/python "$src/evidence/2026-11-27-wallet-inspection/summarize.py" --study "$PWD" \
-  --layer1-summary "$summary" --first-case independent-first.json
+  --layer1-summary "$summary" --layer1-root "$ledger" --first-case independent-first.json
 ```
 
 The first 15-minute output at `first15/` came from the superseded print-driven clock
