@@ -204,6 +204,32 @@ worth recovering; and (c) the wallet's own mistakes, which should be dropped, no
    liquidity with the source wallet and rivals, adverse fill skew, and basis/volatility shocks near
    expiry; variants are ranked by their worst case, not their clean-tape result.
 
+### 9.2 Alpha mechanisms and latent fair value (Neon, third review)
+
+Already built: the settlement-average ("Asian") pricing of the final minute is fair-v1 itself
+(accrued 60 s mean plus shrinking remaining variance, E19, `lab/fair.py`); hard negatives are in the
+plan (§9 item 2). Adopted, in order:
+1. **Latent fair-value inversion** (next research build after the pause): treat each take, pass and
+   post as an inequality on the wallet's hidden probability p_w(S) net of its venue fee, and fit
+   p_w = σ(fair-v1 + g(lead, basis, book, time)) by a fee-aware margin loss. It recovers what the wallet
+   believes rather than an if/then rule, ports to another venue by its fee formula, and is a natural
+   likelihood for the simulator. Strongest for takers, where a pass is observable; for makers the
+   "pass" side stays censored and goes through the simulator. Judged by the answer key and forward test.
+2. **Markout curve** at +0.5 s, +2 s, +10 s, +60 s and settlement for every strategy and fill (today's
+   twin reports 1/5/30 s): the shape separates information edge, mean reversion and adverse selection.
+3. **Skill-decay sensor**: rolling log-loss and Brier of a genome's probability against the market
+   mid, as the fast early warning in the edge-decay watchdog (§9 item 5).
+4. **Mechanism studies on existing tape** (cheap, no new recording): favourite–longshot and
+   fee-asymmetry calibration by price bucket; final-minute mispricing vs fair-v1; overreaction after
+   sharp moves and 50 c crosses. Each is a hypothesis to preregister, not a finding.
+5. **Fee-regime split**: score wallets on post-change history only when a venue's fee or rebate regime
+   changes (verify the reported 2026-11-20 intl change against official docs first); our cohort
+   windows (Nov 25–26) already fall after it.
+
+Deferred: cross-breeding chromosomes from several wallets and a meta-ensemble of genome
+probabilities (both are new-strategy searches that need the PBO/DSR controls first); expanding
+recording to hourly/daily intl crypto (disk and owner decision).
+
 Deferred until a genome passes paper: residual-policy optimisation with a KL anchor to the wallet's
 behaviour, and quality-diversity search across volatility × liquidity × time-to-close regimes (both
 multiply the number of variants tried, so they need the overfitting controls above in place first).
