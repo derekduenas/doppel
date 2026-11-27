@@ -58,6 +58,7 @@ doppel-opening-parity = "doppel.lab.opening_parity:main"
 doppel-markout = "doppel.lab.markout:main"
 doppel-skilldecay = "doppel.lab.skilldecay:main"
 doppel-mechanisms = "doppel.lab.mechanisms:main"
+doppel-cohort-v2 = "doppel.lab.cohort_v2:main"
 
 [dependency-groups]
 dev = [
