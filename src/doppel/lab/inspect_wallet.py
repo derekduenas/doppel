@@ -148,16 +148,17 @@ def anchor(order, book, owner):
 def search(order, book, anchor_ms, anchor_tw):
     key = order["token"], order["price"], order["side"]
     lo = anchor_ms - LOOKBACK_MS
+    first_tw = anchor_tw - LOOKBACK_MS * 1_000_000
     token_spans = book.spans.get(order["token"], [])
     covered = [s for s in token_spans if s.start_ms <= lo and anchor_ms <= s.end_ms
-               and s.start_tw <= anchor_tw <= s.end_tw]
+               and s.start_tw <= first_tw and anchor_tw <= s.end_tw]
     if len(covered) != 1:
         return None
     # For the synthetic time, use the same receipt lag as the real print. Both clocks
     # must precede their endpoint. No delayed evidence enters just the placebo arm.
     span = covered[0]
     candidates = [e for e in book.events.get(key, ()) if e.span_id == span.span_id
-                  and e.src == "price_change" and lo <= e.venue_ms < anchor_ms and e.tw_ns < anchor_tw
+                  and e.src == "price_change" and lo <= e.venue_ms < anchor_ms and first_tw <= e.tw_ns < anchor_tw
                   and abs(e.new_size - e.old_size - order["size"]) <= SIZE_TOL + 1e-9]
     return span, candidates
 
