@@ -60,7 +60,8 @@ assets / horizons that share a start move together)
 - P&L per window from in-window fills, both sides with the SAME outcome and the genome's fee model
   (taker / maker coefficient by role): ``corr``, ``slope`` (clone on wallet), ``level_ratio`` =
   sum clone / sum wallet; scale-free ``slope_scaled``, ``level_ratio_scaled`` (times k = the ratio
-  of net per contract).
+  of net per contract). ``paired_diff`` = mean over windows of (k * clone P&L - wallet P&L) divided
+  by the wallet's mean |window P&L|: a level comparison that does not divide by a near-zero total.
 - k = wallet gross shares / clone gross shares over the eligible windows.
 - A score with an empty denominator or zero variance is null, and null never supports PASS.
 
@@ -133,7 +134,11 @@ THRESHOLDS = (
     ("fills.precision_shares_scaled", 0.5, INF, True),
     ("pnl.corr", 0.3, INF, False),                  # the null keeps the wallet's directions, hence most of
                                                     # its P&L: it cannot test P&L, only timing and price
-    ("pnl.level_ratio_scaled", 0.5, 2.0, False),    # net per contract within 2x of the wallet's
+    ("pnl.level_ratio_scaled", 0.5, 2.0, False),    # net per contract within 2x of the wallet's (stays open,
+                                                    # never fails alone, when the wallet's total is near zero)
+    ("pnl.paired_diff", -0.25, 0.25, False),        # PAIRED rule, not a plain range: mean over windows of
+    # (k * clone P&L - wallet P&L), in units of the wallet's mean |window P&L|. pass = the CI contains 0
+    # OR |value| <= 0.25; fail = the whole CI is on one side of 0 AND |value| > 0.25; else open.
     ("path.end_mad_scaled", -INF, 0.5, False),      # closing inventory gap, in wallet volumes per window
 )
 # Data gates: (measured quantity, lowest allowed, highest allowed). One outside its range, or not
@@ -446,6 +451,7 @@ def window_record(clone: list[Fill], wallet: list[Fill], start: int, end: int, o
         "e_x": ex, "e_y": ey, "e_xx": ex * ex, "e_yy": ey * ey, "e_xy": ex * ey, "e_ad": abs(ex - ey),
         "e_ad_k": abs(k * ex - ey),
         "g_x": gx, "g_y": gy, "g_xx": gx * gx, "g_yy": gy * gy, "g_xy": gx * gy,
+        "g_d": k * gx - gy, "g_ay": abs(gy),
     }, [clone[i].t - timed[j].t for i, j in pairs]
 
 
@@ -493,6 +499,7 @@ def metrics(S: dict, k: float) -> dict[str, np.ndarray]:
         "pnl.slope_scaled": slope * k,
         "pnl.level_ratio": level,
         "pnl.level_ratio_scaled": level * k,
+        "pnl.paired_diff": _div(S["g_d"], S["g_ay"]),
     }
 
 
@@ -560,6 +567,10 @@ def decide(scores: dict, null: dict | None, gates: dict) -> dict:
         ok = failed = False
         if ci is not None and None not in ci:
             ok, failed = lo <= ci[0] and ci[1] <= hi, ci[1] < lo or ci[0] > hi
+            if name == "pnl.paired_diff" and v is not None:
+                apart = ci[0] > 0 or ci[1] < 0
+                ok = not apart or abs(v) <= hi
+                failed = apart and abs(v) > hi
         nl = (null or {}).get(name) or {}
         note = None
         if ok and beat and not (nl.get("n") == N_NULL and nl.get("max") is not None and v > nl["max"]):

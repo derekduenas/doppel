@@ -209,7 +209,8 @@ def test_a_clone_on_the_opposite_side_fails(tmp_path):
     assert val(doc, "pnl.corr") == pytest.approx(-1.0) and val(doc, "path.corr") == pytest.approx(-1.0)
     assert val(doc, "path.end_mad") == pytest.approx(20.0)   # +10 vs -10 in every comparable window
     v = doc["verdict"]
-    assert v["decision"] == "FAIL" and v["binding"] == GATED[1:]   # everything but activity
+    # everything but activity and the paired P&L difference (its CI straddles 0: the wallet's P&L does)
+    assert v["decision"] == "FAIL" and v["binding"] == [n for n in GATED[1:] if n != "pnl.paired_diff"]
 
 
 def test_a_clone_trading_windows_the_wallet_did_not_fails(tmp_path):
@@ -440,29 +441,40 @@ def test_size_gates_catch_a_clone_with_the_right_fills_and_the_wrong_position(tm
 
 
 def test_a_clone_that_loses_what_the_wallet_earns_does_not_pass():
-    """Audit case: 40 windows, zero fees, equal gross volume. The wallet buys 10 Up at 0.495 and
-    earns +$2 in total; the clone buys the same 10 a cent higher at the same moments and LOSES $2.
-    Every fill matches and the per-window P&L correlation is exactly 1, but the P&L level has the
-    opposite sign: the level-ratio row (-1, allowed 0.5..2) must keep it from passing."""
+    """Audit case: 40 windows, zero fees, equal gross volume, wallet +$2, clone -$2, P&L correlation
+    exactly 1, every fill matched. Both buy 0.6 Up at 5/12 and hold (+0.35 / -0.25 by outcome) and
+    both round-trip 10 shares bought at 0.50: the wallet sells them at 0.50, the clone at 0.49
+    (-$0.10 in EVERY window). The paired difference is -0.10 against a mean |wallet window P&L| of
+    0.30: the whole CI is below 0 and |-1/3| > 0.25, a hard FAIL that needs no ratio of totals."""
     wins, wallet, clone, prints = {}, {}, {}, {}
     for i in range(40):
         s = 1000 + 300 * i
         key = ("btc", "5m", s)
         wins[key] = (s, s + 300, i % 2)
-        wallet[key] = [Fill(s + 50.0, 1, 0.495, 10.0, "maker")]
-        clone[key] = [Fill(s + 50.1, 1, 0.505, 10.0, "maker")]
-        prints[key] = [(s + 150.0 + 10 * j, 0.5, "sell") for j in range(6)]
+        both = [Fill(s + 50.0, 1, 5 / 12, 0.6, "maker"), Fill(s + 100.0, 1, 0.50, 10.0, "maker")]
+        wallet[key] = both + [Fill(s + 200.0, -1, 0.50, 10.0, "maker")]
+        clone[key] = both + [Fill(s + 200.0, -1, 0.49, 10.0, "maker")]
+        prints[key] = [(s + 250.0 + j, 0.3, "sell" if j % 2 else "buy") for j in range(6)]
     doc = F.evaluate(clone, wallet, wins, C0, OK_GATES, others=prints)
     sc = {k: v["value"] for k, v in doc["scores"].items()}
     assert sum(F.pnl_usd(wallet[k], o, C0) for k, (_, _, o) in wins.items()) == pytest.approx(2.0)
     assert sum(F.pnl_usd(clone[k], o, C0) for k, (_, _, o) in wins.items()) == pytest.approx(-2.0)
-    assert doc["clone_shares"] == doc["wallet_shares"] == 400.0 and sc["pnl.corr"] == pytest.approx(1.0)
+    assert doc["clone_shares"] == doc["wallet_shares"] == pytest.approx(824.0) and sc["pnl.corr"] == pytest.approx(1.0)
     assert sc["fills.recall_count"] == sc["fills.precision_count"] == 1.0
     assert sc["pnl.level_ratio_scaled"] == pytest.approx(-1.0)
+    assert doc["scores"]["pnl.paired_diff"]["value"] == pytest.approx(-1 / 3, abs=1e-6)
+    assert doc["scores"]["pnl.paired_diff"]["ci95"][1] < 0
     by = {c["score"]: c["result"] for c in doc["verdict"]["checks"]}
-    assert by["pnl.level_ratio_scaled"] != "pass" and all(r == "pass" for n, r in by.items()
-                                                          if n != "pnl.level_ratio_scaled")
-    assert doc["verdict"]["decision"] != "PASS" and "pnl.level_ratio_scaled" in doc["verdict"]["binding"]
+    assert by["pnl.paired_diff"] == "fail" and by["pnl.level_ratio_scaled"] == "open"   # near-zero total
+    assert all(r == "pass" for n, r in by.items() if n not in ("pnl.paired_diff", "pnl.level_ratio_scaled"))
+    assert doc["verdict"]["decision"] == "FAIL" and doc["verdict"]["binding"] == ["pnl.paired_diff"]
+    # the same shortfall of a cent a share on windows worth dollars is not a level difference:
+    # |mean d| = 0.10 against a mean |window P&L| of 5 passes the paired row
+    big = {k: [Fill(f.t, f.d, f.px, f.qty * (20 if f.qty < 1 else 1), f.role) for f in fs] for k, fs in wallet.items()}
+    big_c = {k: [Fill(f.t, f.d, f.px, f.qty * (20 if f.qty < 1 else 1), f.role) for f in fs] for k, fs in clone.items()}
+    d2 = F.evaluate(big_c, big, wins, C0, OK_GATES, others=prints)
+    assert d2["scores"]["pnl.paired_diff"]["value"] == pytest.approx(-0.1 / 6, abs=1e-6)
+    assert {c["score"]: c["result"] for c in d2["verdict"]["checks"]}["pnl.paired_diff"] == "pass"
 
 
 def test_pseudo_wallet_keeps_count_direction_and_size_on_other_peoples_prints():
@@ -487,7 +499,8 @@ def test_without_enough_other_prints_there_is_no_null_and_no_pass():
 
 def test_decide_uses_the_whole_ci_all_null_draws_and_every_gate():   # S1
     good = {t[0]: {"value": 0.9, "ci95": [0.8, 1.0]} for t in F.THRESHOLDS} | {
-        "path.end_mad_scaled": {"value": 0.1, "ci95": [0.0, 0.2]}}
+        "path.end_mad_scaled": {"value": 0.1, "ci95": [0.0, 0.2]},
+        "pnl.paired_diff": {"value": 0.05, "ci95": [-0.1, 0.2]}}
     null = {t[0]: {"max": 0.1, "n": F.N_NULL} for t in F.THRESHOLDS}
     gates = OK_GATES | {"comparable_starts": 40, "wallet_fills": 100, "located_share": 1.0}
     assert F.decide(good, null, gates)["decision"] == "PASS"
@@ -498,6 +511,11 @@ def test_decide_uses_the_whole_ci_all_null_draws_and_every_gate():   # S1
     assert F.decide(good | {"pnl.level_ratio_scaled": {"value": 3.0, "ci95": [2.5, 3.5]}}, null, gates)["decision"] == "FAIL"
     assert F.decide(good | {"pnl.level_ratio_scaled": {"value": 1.8, "ci95": [1.2, 2.4]}}, null, gates)["binding"] \
         == ["pnl.level_ratio_scaled"]
+    # the paired P&L difference: a CI off zero only fails when the difference is also large
+    paired = lambda v, ci: F.decide(good | {"pnl.paired_diff": {"value": v, "ci95": ci}}, null, gates)  # noqa: E731
+    assert paired(0.1, [0.05, 0.15])["decision"] == "PASS" and paired(0.6, [-0.1, 1.3])["decision"] == "PASS"
+    assert paired(-0.4, [-0.6, -0.2])["binding"] == ["pnl.paired_diff"] and paired(-0.4, [-0.6, -0.2])["decision"] == "FAIL"
+    assert paired(None, None)["decision"] == "INCONCLUSIVE"
     # the null: every draw must exist and be beaten
     few = null | {"fills.recall_count": {"max": 0.1, "n": 1}}
     assert F.decide(good, few, gates)["binding"] == ["fills.recall_count"]
