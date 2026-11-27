@@ -58,6 +58,54 @@ therefore has a different denominator from the fill-anchored study above. Its pr
 wallet clock gate needs at least 30 comparable orders, 90% actual and at most 10% placebo.
 [Native matcher receipt](../evidence/2026-11-27-wallet-inspection/standard-first15.json)
 
+## Full-day comparison
+
+The primary replication covered Nov 25 18:52:07 through Nov 26 18:52:07 UTC.
+The retrospective market identity receipt gives 239 candidate conditions
+and 250 control conditions with signed orders. All 3,711 orders mapped to BTC five-minute
+markets. The earlier ledger counted additional candidate conditions touched by nonfill
+activity. The unit in the paired comparison is one signed order. Several fills can belong
+to that order.
+
+| Day measure | Candidate | Control |
+|---|---:|---:|
+| Reconciled fills → distinct signed orders | 4,556 → 2,713 | 2,082 → 998 |
+| Located first executions | 2,470 | 811 |
+| Continuous ten-second actual windows | 1,974 | 627 |
+| Orders eligible in both arms / distinct conditions | 1,650 / 201 | 537 / 182 |
+| Any compatible addition, actual / shifted | 1,649 / 213 | 473 / 48 |
+| Sole uncontested addition, actual / shifted | 59 / 60 | 241 / 25 |
+| Upper bounds on continuous displayed residence | 1,974 | 499 |
+| Sole actual additions ruled out by an intervening empty level¹ | 9 | 38 |
+| Sole actual additions still possible with unknown owner¹ | 60 | 246 |
+| Owner-identified placements | 0 | 0 |
+
+¹ These two rows use all sole actual additions uncontested by any other observed order in the actual arm, including orders with missing placebo coverage. A possible addition still has no owner identifier.
+
+Almost every comparable candidate order had a matching increase before execution.
+Requiring just one uncontested increase reduced the result to 59/1,650 (3.58%),
+compared with 60/1,650 (3.64%) in the shifted windows. Across the same set of orders,
+57 had a sole addition only in the actual window and 58 only in the shifted window.
+This evidence cannot identify the candidate’s posting decisions. The control showed
+a larger separation, 241/537 (44.88%) against 25/537 (4.66%). The public additions
+still carry no order-owner identifier. Neither wallet has a known cancellation in this study.
+
+The candidate's signed creation field was **888–900 seconds later** than its first observed block second. The median offset was 898 seconds.
+The ordinary signer-time screen admitted zero candidate orders and 981 control orders across the day.
+The separate native book comparison and end-to-end draft check used the 15-minute interval.
+A day-wide native control match rate was not measured.
+
+The reader verified 24 present files containing 56,916,744
+records and 5,469,452,766 compressed bytes. The longest gap between receipts
+at consecutive available file boundaries ran from Nov 25 19:00:04.928 to
+Nov 25 21:30:01.628 UTC. For 101 candidate
+and 120 control orders with a missing transaction
+print, the entire block-centred ±120-second window falls inside such a between-file gap.
+In total, 243 candidate and 187 control orders lacked a transaction print. The others
+remain unexplained by this gap test. The 37m 07s between the
+two ledger samples is a separate gap in source fills.
+[Full-day receipt](../evidence/2026-11-27-wallet-inspection/day-summary.json) · [Cross-check of both windows](../evidence/2026-11-27-wallet-inspection/verification.json)
+
 ## How the comparison works
 
 - Select by the verified fill interval and group on account and signed order hash.
@@ -98,6 +146,12 @@ no owner-linked cancellation. The replay and fidelity book adjustment consume qu
 placement hypotheses. Older summary formats and stale cached reconstruction outputs
 must be regenerated before a trusted handoff.
 
+Two interim development builds also printed the version-2 label. Their Apex comparison
+receipts contain aggregates only. The sole native versioned output under the sealed
+research tree was the final `consumer-8c44ca1/match` directory. For external standalone
+row exports from these development builds, confirm the producing revision or regenerate
+with the final matcher. The row format alone cannot distinguish the interim semantics.
+
 Rule fitting can retain its diagnostics when evidence is thin. Publishing a maker
 draft requires the existing wallet-level clock and placebo gate plus its side, price and
 participation evidence. Losing coverage or token mapping clears a prior draft from
@@ -122,7 +176,8 @@ The working copies and computed per-order results are on the root disk. The seal
 archive is on Apex. The registration was mirrored at `33a967c` before placement results
 were read. The paired studies ran from `016d7ceb2e0d3e4fa7961567de42a72ca6edf586`.
 They used a 1,100 MiB memory cap, no swap, nice 19, and idle I/O. The short run took
-106 seconds and used 165,600 KiB peak RSS. All inputs come from the retained archive.
+106 seconds and used 165,600 KiB peak RSS. The full day took 1h 06m 55s and peaked at
+265,236 KiB RSS. It used zero swap. All inputs come from the retained archive.
 
 From the research directory, set `src` to `$PWD/rev2000dac` for the final residence labels, `arc` to
 `/var/backups/doppel-sealed-20261126`, and `ledger` to
@@ -193,6 +248,19 @@ decision features. A wallet with inadequate evidence stays unclassified.
 The prospective selection study closes its first week Dec 4 at 03:30 UTC and its fourth
 week Dec 25 at 03:30 UTC. These November replays provide historical evidence about the
 measurement system. Strategy, persistence and a real-wallet twin remain open.
+
+## Apex at 06:22 UTC, Nov 27
+
+The production recorder and the separate six-hour baseline were active. The installed
+release was `44aa7e2`. The 15-stream comparison that began at 05:05 stopped and started
+again at 06:12:33 UTC. Its JSON verdict was still pending at
+`/mnt/volume_nyc1_1793485122853/doppel/lab/shadow-compare-20261127.json`.
+The retained inspection scratch occupied 26 MiB.
+
+The hot tape had 13,307,527,168 free bytes (12.39 GiB), **0.39 GiB above its
+12 GiB reserve**. The root/archive disk had 34,516,058,112 free bytes (32.15 GiB)
+against a 35 GiB archive reserve. Expanding Apex capacity is the outstanding owner
+action for retaining future recordings. The original archive remains on Apex.
 
 ## Build verification
 

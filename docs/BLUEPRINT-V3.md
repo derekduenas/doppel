@@ -89,7 +89,8 @@ Goldsky capture. Stage 2 starts with a signed order whose timestamp is later tha
 Stage 2 has now followed those same wallets from signed fill to public book. Execution
 anchors, eligible search windows, ambiguous placements and unknown cancellations have
 separate counts. The first candidate buy has two compatible additions and a 1.329-second
-upper bound on continuous displayed residence. Layer 3 needs a decision-time anchor before
+upper bound on continuous displayed residence. The day had 59 sole additions versus 60
+shifted for the candidate and 241 versus 25 shifted for the control. Layer 3 needs a decision-time anchor before
 it can label posting behaviour. [Layer 2 audit and receipts](WALLET-INSPECTION.md)
 
 ## 5. Genome v2

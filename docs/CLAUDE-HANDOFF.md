@@ -7,7 +7,10 @@ Use `review/wallet-inspection-20261127` in
 control went from reconciled fills to a sealed book. The candidate's first 60-share
 buy has an independently located execution, two competing bid additions and a
 1,329 ms upper bound on continuous displayed residence. Its placement owner and
-posting time remain unknown. The [Layer 2 report](WALLET-INSPECTION.md) contains
+posting time remain unknown. In the day, 1,650 candidate orders had comparable windows.
+A sole uncontested addition appeared 59 times before execution and 60 times in the shifted
+comparison. The control had 241 versus 25 among 537. Both real short-window rule fits
+wrote an abstention report. The [Layer 2 report](WALLET-INSPECTION.md) contains
 the wallet-level denominators, independent comparator, retained Apex commands and
 the four decision-time checks that start Layer 3. Keep the November research sample
 separate from the December selection checkpoints.

@@ -1,0 +1,156 @@
+{
+  "qualified-day": {
+    "largest_between_file_gap_ns": {
+      "duration": 8996700469065,
+      "last_receipt": 1795633204928489351,
+      "next_receipt": 1795642201628958416
+    },
+    "missing_source_files": [
+      "20261125/20.dtape.zst"
+    ],
+    "per_order_sha256": "54796acb439ce576450f26ef678dc7902f1d42ce420e73f67ec32a28840b537a",
+    "source_bytes": 5469452766,
+    "source_files": 24,
+    "summary_sha256": "64f7c40e24ac44bb34746a65bbc72199f9d8b33f8ff2d25d2e2de2248f2c1474",
+    "wallets": {
+      "0x28cc505fb60501dbb2199a9662ba175919af904f": {
+        "conditions": 250,
+        "fully_filled_by_observed_trades": 288,
+        "known_cancellations": 0,
+        "maximum_displayed_residence_bounds_ms": {
+          "max": 149089,
+          "median": 590,
+          "min": 1
+        },
+        "missing_prints_with_block_window_inside_capture_gap": 120,
+        "orders_by_retrospective_market_family": {
+          "btc-updown-5m": 998
+        },
+        "orders_without_numeric_clock": 0,
+        "owner_identified_placements": 0,
+        "paired_sole_against_all_observed_orders": {
+          "actual": 241,
+          "placebo": 25
+        },
+        "paired_sole_by_arm": {
+          "actual_only": 230,
+          "both": 11,
+          "neither": 282,
+          "placebo_only": 14
+        },
+        "signed_minus_first_block_seconds": {
+          "max": 0.355,
+          "median": -1.8575,
+          "min": -513.967
+        },
+        "unique_signed_orders": 998
+      },
+      "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": {
+        "conditions": 239,
+        "fully_filled_by_observed_trades": 1046,
+        "known_cancellations": 0,
+        "maximum_displayed_residence_bounds_ms": {
+          "max": 10867,
+          "median": 456.5,
+          "min": 1
+        },
+        "missing_prints_with_block_window_inside_capture_gap": 101,
+        "orders_by_retrospective_market_family": {
+          "btc-updown-5m": 2713
+        },
+        "orders_without_numeric_clock": 0,
+        "owner_identified_placements": 0,
+        "paired_sole_against_all_observed_orders": {
+          "actual": 59,
+          "placebo": 60
+        },
+        "paired_sole_by_arm": {
+          "actual_only": 57,
+          "both": 2,
+          "neither": 1533,
+          "placebo_only": 58
+        },
+        "signed_minus_first_block_seconds": {
+          "max": 900.0,
+          "median": 898.0,
+          "min": 888.0
+        },
+        "unique_signed_orders": 2713
+      }
+    }
+  },
+  "qualified-first15": {
+    "largest_between_file_gap_ns": null,
+    "missing_source_files": [],
+    "per_order_sha256": "0cb300eddb24a68a267d813d8ac4fd6859fe3a4c902a80ab058ad5033eae4f63",
+    "source_bytes": 236324236,
+    "source_files": 1,
+    "summary_sha256": "9e33e16eb058a238ae0b3c1d949b5aec307b43d3e506e624406e00603f31e860",
+    "wallets": {
+      "0x28cc505fb60501dbb2199a9662ba175919af904f": {
+        "conditions": 3,
+        "fully_filled_by_observed_trades": 3,
+        "known_cancellations": 0,
+        "maximum_displayed_residence_bounds_ms": {
+          "max": 65,
+          "median": 40.0,
+          "min": 15
+        },
+        "missing_prints_with_block_window_inside_capture_gap": 0,
+        "orders_by_retrospective_market_family": {
+          "btc-updown-5m": 18
+        },
+        "orders_without_numeric_clock": 0,
+        "owner_identified_placements": 0,
+        "paired_sole_against_all_observed_orders": {
+          "actual": 2,
+          "placebo": 0
+        },
+        "paired_sole_by_arm": {
+          "actual_only": 2,
+          "both": 0,
+          "neither": 0,
+          "placebo_only": 0
+        },
+        "signed_minus_first_block_seconds": {
+          "max": -0.226,
+          "median": -1.962,
+          "min": -324.999
+        },
+        "unique_signed_orders": 18
+      },
+      "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c": {
+        "conditions": 3,
+        "fully_filled_by_observed_trades": 5,
+        "known_cancellations": 0,
+        "maximum_displayed_residence_bounds_ms": {
+          "max": 1394,
+          "median": 267,
+          "min": 83
+        },
+        "missing_prints_with_block_window_inside_capture_gap": 0,
+        "orders_by_retrospective_market_family": {
+          "btc-updown-5m": 17
+        },
+        "orders_without_numeric_clock": 0,
+        "owner_identified_placements": 0,
+        "paired_sole_against_all_observed_orders": {
+          "actual": 0,
+          "placebo": 1
+        },
+        "paired_sole_by_arm": {
+          "actual_only": 0,
+          "both": 0,
+          "neither": 5,
+          "placebo_only": 1
+        },
+        "signed_minus_first_block_seconds": {
+          "max": 899.0,
+          "median": 898.0,
+          "min": 896.0
+        },
+        "unique_signed_orders": 17
+      }
+    }
+  }
+}
