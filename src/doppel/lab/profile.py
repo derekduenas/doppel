@@ -419,9 +419,14 @@ def _ob(status: str, source: str | None, *, n=None, value=None, rate=None, resol
             "resolve": resolve, "evidence": evidence, "source": source}
 
 
-def _stamps_validated(om: dict | None) -> bool:
-    return bool(om and om["observable"] >= T["min_observable"] and om["match_rate"] is not None
-                and om["match_rate"] >= T["match_min"] and om["placebo_rate"] <= T["placebo_max"])
+def stamps_validated(om: dict | None) -> bool:
+    """The shared placement clock gate, evaluated with the matched counts before display rounding."""
+    if not om or "placement_evidence_counts" not in om:
+        return False
+    n, matched, placebo = (om.get(k) for k in ("observable", "matched", "placebo_matched"))
+    return (type(n) is int and type(matched) is int and type(placebo) is int
+            and n >= T["min_observable"] and 0 <= matched <= n and 0 <= placebo <= n
+            and matched / n >= T["match_min"] and placebo / n <= T["placebo_max"])
 
 
 def footprint(om: dict | None) -> dict | None:
@@ -535,7 +540,7 @@ def ledger(wallet: str, w: dict, fp: dict, om: dict | None = None, dos: dict | N
            "sign_to_book_ms_p50": ((om or {}).get("sign_to_book_ms") or {}).get("p50"),
            "note": "gaps between FILLED orders: an upper bound on the re-post cadence"}
     ratio = ft["fill_ratio"] if ft else None
-    if n_ts >= N and _stamps_validated(om) and ft and ratio is not None:
+    if n_ts >= N and stamps_validated(om) and ft and ratio is not None:
         gap = val["filled_order_gap_ms_same_token_p50"]
         ob["placement_cadence"] = _ob(ESTIMATED, S_om, n=n_ts, evidence=ev, rate=ft["chance_share"], bias=BIAS_UPPER, value=val | {
             "est_quotes_per_token_hour": ft["quotes_per_token_hour"], "fill_ratio": ratio,
@@ -563,7 +568,7 @@ def ledger(wallet: str, w: dict, fp: dict, om: dict | None = None, dos: dict | N
                "rest_ms_p50": {k: v and v["p50"] for k, v in om["rest_ms_known"].items()},
                "unfilled_candidate_life_ms_p50": ((om.get("fingerprint") or {}).get("candidate_rest_ms_cancelled")
                                                   or {}).get("p50"),
-               "clean": bool(_stamps_validated(om) and fol >= N and oc["unknown"] <= T["unknown_outcomes_max"] * fol
+               "clean": bool(stamps_validated(om) and fol >= N and oc["unknown"] <= T["unknown_outcomes_max"] * fol
                              and om["cancelled_alone"] >= T["alone_min"] * canc),
                "note": "every followed order filled at least once, so a cancel here is the cancel of a remainder: "
                        "its life over-samples long-lived quotes (an upper bound on the quote life)"}

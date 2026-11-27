@@ -81,7 +81,9 @@ INPUTS
    the reasons, exit 1) when: no order is on an asset with fair-v1; no expressible rule could be
    fitted; half_spread_c < 0.5 (rounds to a self-cross); fewer than 2 windows; the emitted
    genome would quote on < 70 % of the wallet's fitting observations; or held-out price,
-   timing or side evidence cannot support the draft's policy.
+   timing or side evidence cannot support the draft's policy. The maker's placement clock
+   also requires the current, interval-matched real and shifted-placebo counts to pass the
+   profile clock gate.
    ``fit_report.json`` -> ``cannot_express`` lists every measured behaviour the schema drops, each
    with its number.
 
@@ -117,8 +119,8 @@ from .census import LEN, window_of
 from .flow import RTDS_STREAMS, _ts, hours_between, iter_rtds
 from .intlbook import NS, IntlBook, LevelEvent, Print, px
 from .ledger import TokenMap
-from .ordermatch import filled_shares, qualified_placement
-from .profile import BIAS_LENGTH, BIAS_UPPER, _size, load_rows, prepare
+from .ordermatch import PLACEMENT_EVIDENCE_VERSION, filled_shares, qualified_placement
+from .profile import BIAS_LENGTH, BIAS_UPPER, T as PROFILE_THRESHOLDS, _size, load_rows, prepare, stamps_validated
 
 TRAIN_FRAC = 0.7
 INNER_FRAC = 0.8          # of the training slice: fit on the first 80 %, select on the last 20 %
@@ -465,7 +467,7 @@ def load_orders(path: Path, summary: Path | None, wallet: str, bounds: tuple[int
         period = params.get("from"), params.get("to")
         if period == bounds:
             current = (report.get("wallets") or {}).get(wallet) or {}
-            if "placement_evidence_counts" in current:
+            if params.get("placement_evidence_version") == PLACEMENT_EVIDENCE_VERSION and "placement_evidence_counts" in current:
                 doc = current
             else:
                 stats["legacy_match_summary_ignored"] = 1
@@ -1698,6 +1700,8 @@ def taker_report(T: dict, wallet: str) -> dict:
     why = ["no maker order of this wallet has a qualified placement in a mapped window"]
     if T["takes"]:
         why.append(tk["reason"] or "a taker rule was found; taker genomes are not emitted by rulefit v1")
+    elif not T["stats"]["mapped_maker_fills"]:
+        why.append("no wallet fills could be placed in a market window for this input, token map and interval")
     label = "taker fills: no maker order located" if T["takes"] else "insufficient maker placement evidence"
     return {"wallet": wallet, "label": label, "selection_caveat": CAVEAT,
             "inputs": T["inputs"] | {"counts": dict(T["stats"]), "rows_orders": 0, "rows_candidates": 0, "pairs": T["pairs"]},
@@ -1904,7 +1908,15 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
         why_not.append(f"timing: held-out participation skill interval must exceed {SKILL_MIN} "
                        f"(skill {timing_skill.get('value')}, CI {timing_ci})")
     side_ok = True if side["kind"] == "two_sided" else side["explained"]
-    explained = {"verdict": joint_evidence(side_ok, price_ok, timing_ok), "reasons": why_not, "side": side,
+    match_summary = T["om_doc"]
+    clock_ok = stamps_validated(match_summary)
+    if not clock_ok:
+        why_not.append("placement clock lacks a passing real and shifted-placebo comparison for the fit interval")
+    clock = {k: match_summary.get(k) for k in ("observable", "matched", "placebo_matched")}
+    clock.update(passed=clock_ok, thresholds={k: PROFILE_THRESHOLDS[k]
+                                              for k in ("min_observable", "match_min", "placebo_max")})
+    explained = {"verdict": joint_evidence(side_ok, price_ok, timing_ok) if clock_ok else None,
+                 "placement_clock": clock, "reasons": why_not, "side": side,
                  "price": psk | {"explained": price_ok},
                  "timing": timing_skill | {"explained": timing_ok, "skill_min": SKILL_MIN},
                  "rule": "A draft requires positive held-out price skill, timing skill above the "
@@ -2138,7 +2150,7 @@ def run(root: Path, om_dir: Path | None, orders_path: Path | None, wallet: str, 
     if reconstruct_manifest is not None:
         T["inputs"]["reconstruct_manifest"] = str(reconstruct_manifest)
         T["inputs"]["candidates"]["unavailable"] = "reconstruction does not publish per-wallet candidate quotes"
-    if not any(r["kind"] == "order" for r in T["rows"]) and (T["takes"] or T["stats"]["mapped_maker_fills"]):
+    if not any(r["kind"] == "order" for r in T["rows"]):
         report = _clean(taker_report(T, wallet))
         if out is not None:
             out.mkdir(parents=True, exist_ok=True)
@@ -2146,11 +2158,10 @@ def run(root: Path, om_dir: Path | None, orders_path: Path | None, wallet: str, 
             (out / "fit_report.json").write_bytes(orjson.dumps(report, option=orjson.OPT_INDENT_2))
             (out / "rule.md").write_text(taker_card(report))
             (out / "decision_table.jsonl").write_bytes(b"")
+        if not T["takes"] and not T["stats"]["mapped_maker_fills"]:
+            raise SystemExit(f"doppel-rulefit: no order of {wallet} could be put in a window ({dict(T['stats'])}). "
+                             "Check the token map, wallet and requested interval.")
         return None, report, []
-    if not any(r["kind"] == "order" for r in T["rows"]):
-        raise SystemExit(f"doppel-rulefit: no order of {wallet} could be put in a window ({dict(T['stats'])}). "
-                         "Token -> window needs rtds_* rows on --data or a tokens.jsonl (--tokens, or "
-                         "<--brti-lab>/tokens.jsonl); also check --wallet and --from/--to.")
     if precision is None:
         precision = ((T["om_doc"].get("fingerprint") or {}).get("total") or {}).get("identity_precision_upper")
     genome, report = build(T, wallet, precision)

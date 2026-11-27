@@ -114,6 +114,14 @@ def jl(rows):
     return b"".join(orjson.dumps(r) + b"\n" for r in rows)
 
 
+def fixture_match_controls(orders):
+    """Assume perfect placements only for tests isolating model fit on the synthetic known-rule world."""
+    n = len(orders)
+    return {"params": {"from": T0, "to": T0 + 3600, "placement_evidence_version": rulefit.PLACEMENT_EVIDENCE_VERSION},
+            "wallets": {W: {"placement_evidence_counts": {"unique_candidate": n},
+                            "observable": n, "matched": n, "placebo_matched": 0}}}
+
+
 def write(tmp, frames, orders, tape, quotes=None, om_doc=None, windows=6, asset="btc"):
     tmp.mkdir(parents=True, exist_ok=True)
     w = SegmentWriter(tmp / "tape", f"clob_{asset}_5m")
@@ -160,7 +168,8 @@ def fit(tmp, out=None, **kw):
 @pytest.fixture(scope="module")
 def fitted(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("rulefit")
-    write(tmp, *world()[:3])
+    frames, orders, fills, _ = world()
+    write(tmp, frames, orders, fills, om_doc=fixture_match_controls(orders))
     return fit(tmp, tmp / "out") + (tmp,)
 
 
@@ -371,7 +380,8 @@ def test_no_genome_when_it_could_never_quote_or_would_not_act_like_the_wallet(tm
     genome, rep, _ = fit(tmp_path / "one")
     assert genome is None and any("1 market window" in x for x in rep["genome"]["reasons"])
     # the 70 % rule: a genome that would stay silent where the wallet quoted is not emitted
-    write(tmp_path / "ok", *world(seed=4, windows=6)[:3], windows=6)
+    frames, orders, tape, _ = world(seed=4, windows=6)
+    write(tmp_path / "ok", frames, orders, tape, windows=6, om_doc=fixture_match_controls(orders))
     assert fit(tmp_path / "ok")[0] is not None
     monkeypatch.setattr(rulefit, "MIN_QUOTE_SHARE", 1.01)
     genome, rep, _ = fit(tmp_path / "ok")
@@ -479,7 +489,7 @@ def test_manifest_cli_uses_per_wallet_matches_and_separate_summary(fitted, tmp_p
     own = tmp_path / "wallet-orders.jsonl"
     own.write_bytes((data / "om" / "orders.jsonl").read_bytes())
     summary = tmp_path / "match-summary.json"
-    summary.write_bytes(orjson.dumps({"wallets": {W: {"fingerprint": {"total": {"identity_precision_upper": 0.8}}}}}))
+    summary.write_bytes((data / "om" / "ordermatch.json").read_bytes())
 
     def read(path, wallet, start, end):
         assert (path, wallet, start, end) == (manifest_path, W, T0, T0 + 3600)
@@ -524,7 +534,7 @@ def test_up_terms_mirror_the_down_token():
 # ---------------------------------------------------------------- candidates
 def test_selection_refit_moves_the_rule_when_unfilled_quotes_sit_elsewhere(tmp_path):
     frames, orders, tape, quotes = world(seed=5, windows=4, candidates=2)
-    doc = {"params": {"from": T0, "to": T0 + 3600},
+    doc = {"params": {"from": T0, "to": T0 + 3600, "placement_evidence_version": rulefit.PLACEMENT_EVIDENCE_VERSION},
            "wallets": {W: {"placement_evidence_counts": {"unique_candidate": len(orders)},
                             "fingerprint": {"total": {"identity_precision_upper": 0.8}}}}}
     write(tmp_path, frames, orders, tape, quotes, doc, windows=4)
@@ -745,8 +755,13 @@ def test_triggers_and_the_state_just_before_a_cancel(tmp_path):
     cli = ["--data", str(tmp_path / "tape"), "--ordermatch-dir", str(tmp_path / "om"), "--orders",
            str(tmp_path / "ordertape.jsonl"), "--from", str(T0), "--to", str(T0 + 3600), "--out", str(tmp_path / "out")]
     assert main(cli + ["--wallet", W, "--tokens", str(tmp_path / "tokens.jsonl")]) == 1
+    (tmp_path / "out" / "genome.json").write_text("older draft")
     with pytest.raises(SystemExit, match="no order of .* could be put in a window"):
         main(cli + ["--wallet", W])  # no token map at all
+    assert not (tmp_path / "out" / "genome.json").exists()
+    assert (tmp_path / "out" / "decision_table.jsonl").read_bytes() == b""
+    report = orjson.loads((tmp_path / "out" / "fit_report.json").read_bytes())
+    assert report["genome"]["status"] == "not_emitted" and "token map" in report["genome"]["reason"]
 
 
 def test_ladders_are_counted_from_overlapping_lives_at_distinct_prices():
@@ -953,7 +968,8 @@ def test_no_genome_for_a_wallet_whose_side_follows_a_hidden_signal(tmp_path):
     coin = np.random.default_rng(1).random(12) < 0.5
     keep = [o for o in orders if o["token_id"].startswith("U") == bool(coin[int(o["token_id"][1:])])]
     ids = {o["order_id"] for o in keep}
-    write(tmp_path, frames, keep, [r for r in tape if r["order_id"] in ids], windows=12)
+    write(tmp_path, frames, keep, [r for r in tape if r["order_id"] in ids],
+          windows=12, om_doc=fixture_match_controls(keep))
     (tmp_path / "out").mkdir()
     (tmp_path / "out" / "genome.json").write_text("{}")
     genome, rep, _ = run(tmp_path / "tape", tmp_path / "om", tmp_path / "ordertape.jsonl", W, T0, T0 + 3600,
@@ -1101,7 +1117,7 @@ def test_ladder_depth_requires_one_shared_confirmed_interval():
 
 def test_positive_price_fit_requires_proven_side_and_held_out_timing(tmp_path, monkeypatch):
     frames, orders, tape, _ = world(observe_open=False)  # constant activity wherever the book is visible
-    write(tmp_path, frames, orders, tape)
+    write(tmp_path, frames, orders, tape, om_doc=fixture_match_controls(orders))
     genome, report, _ = fit(tmp_path)
     ex = report["explained_by_observed_inputs"]
     assert ex["side"]["kind"] == "two_sided" and ex["price"]["explained"]
@@ -1126,6 +1142,31 @@ def test_holdout_match_statistics_cannot_enter_training(tmp_path):
     path.write_bytes(orjson.dumps(data))  # legacy input permits rows, excludes unscoped aggregates
     _, doc, counts = rulefit.load_orders(orders, path, W, (T0, T0 + 3600))
     assert not doc and counts["unscoped_match_summary_ignored"] == 1
+
+
+@pytest.mark.parametrize("control", ["missing", "high_placebo", "too_few", "low_real"])
+def test_passing_model_cannot_emit_a_draft_without_a_passing_placement_clock(fitted, tmp_path, control):
+    positive, _, _, data = fitted
+    assert positive is not None
+    om = tmp_path / "om"
+    om.mkdir()
+    (om / "orders.jsonl").symlink_to(data / "om" / "orders.jsonl")
+    if control != "missing":
+        summary = orjson.loads((data / "om" / "ordermatch.json").read_bytes())
+        # Rounded display rates alone look acceptable. The gate uses the raw paired counts.
+        counts = {"high_placebo": (10001, 10001, 1001), "too_few": (29, 29, 0), "low_real": (10001, 9000, 0)}
+        n, real, decoy = counts[control]
+        summary["wallets"][W].update(observable=n, matched=real, placebo_matched=decoy, match_rate=0.9, placebo_rate=0.1)
+        (om / "ordermatch.json").write_bytes(orjson.dumps(summary))
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "genome.json").write_bytes(orjson.dumps(positive))
+    genome, report, rows = run(data / "tape", om, data / "ordertape.jsonl", W, T0, T0 + 3600, out,
+                               token_files=[data / "tokens.jsonl"])
+    ex = report["explained_by_observed_inputs"]
+    assert rows and ex["price"]["explained"] and ex["timing"]["explained"]
+    assert ex["placement_clock"]["passed"] is False and ex["verdict"] is None
+    assert genome is None and not (out / "genome.json").exists() and "placement clock" in report["genome"]["reason"]
 
 
 def test_observable_side_switch_does_not_emit_an_unconditional_two_sided_genome(fitted, monkeypatch):
