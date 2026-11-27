@@ -8,9 +8,9 @@
 //! - the **control** task owns the write half and the venue state: subscriptions, 1 s ticks, app
 //!   keepalives, protocol pings, the message-gap watchdog and shutdown.
 //!
-//! Only data frames (and app-level keepalive replies, as in Python) reset the watchdog. Protocol
-//! Ping/Pong frames do not, unless the venue opts in (Kalshi only pings when idle), because RTDS is
-//! exactly the case where pings keep flowing while data silently stops.
+//! Data frames reset the watchdog. App-level keepalives also reset it unless the venue opts out.
+//! Protocol pings are ignored for liveness unless the venue opts in (Kalshi only pings when idle).
+//! This lets the watchdog detect feeds that keep heartbeating while market data stops.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
@@ -63,6 +63,10 @@ pub trait WsVenue: Send + 'static {
     }
     fn pings_are_liveness(&self) -> bool {
         false
+    }
+    /// Whether a classified non-data text frame resets the connection watchdog.
+    fn keepalives_are_liveness(&self) -> bool {
+        true
     }
     fn expect_traffic(&self) -> bool {
         true
@@ -224,6 +228,7 @@ async fn session<V: WsVenue>(
         let classify = v.classifier();
         let feedback = v.wants_feedback();
         let ping_live = v.pings_are_liveness();
+        let keepalive_live = v.keepalives_are_liveness();
         tokio::spawn(async move {
             while let Some(m) = stream.next().await {
                 let (tw, tm) = (wall_ns(), mono_ns());
@@ -240,8 +245,11 @@ async fn session<V: WsVenue>(
                     Ok(Message::Close(_)) => return Ok(()),
                     Err(e) => return Err(ws_err(&e)),
                 };
-                last_rx.store(tm, Ordering::Relaxed);
-                match classify(&raw) {
+                let kind = classify(&raw);
+                if kind == Frame::Data || keepalive_live {
+                    last_rx.store(tm, Ordering::Relaxed);
+                }
+                match kind {
                     Frame::Data => {
                         if feedback && fb_tx.try_send(raw.clone()).is_err() {
                             overflow.store(true, Ordering::Relaxed);

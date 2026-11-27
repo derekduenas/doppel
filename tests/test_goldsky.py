@@ -78,7 +78,7 @@ def test_cohort_reports_cursor_at_effective_run_limit(tmp_path, monkeypatch, cap
     assert rows[1] == {"wallet": "w", "role": "cand", "rows": 2, "truncated": bool(cursor)}
 
 
-async def test_pull_pages_ledgers_and_stops_at_cap(tmp_path):
+async def test_pull_pages_ledgers_and_stops_at_cap(tmp_path, monkeypatch):
     pages = {None: ("c1", 3), "c1": ("c2", 3), "c2": (None, 2)}
     seen_keys = []
 
@@ -95,8 +95,8 @@ async def test_pull_pages_ledgers_and_stops_at_cap(tmp_path):
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
     port = site._server.sockets[0].getsockname()[1]
-    gs.BASE = f"http://127.0.0.1:{port}/data/polymarket/activity"
-    gs.RPS = 1000.0
+    monkeypatch.setattr(gs, "BASE", f"http://127.0.0.1:{port}/data/polymarket/activity")
+    monkeypatch.setattr(gs, "RPS", 1000.0)
     try:
         led = gs.Ledger(tmp_path / "l.jsonl", cap_rows=100)
         w = SegmentWriter(tmp_path, "goldsky_activity")

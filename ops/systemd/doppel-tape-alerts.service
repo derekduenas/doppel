@@ -1,0 +1,18 @@
+[Unit]
+Description=DOPPEL recorder and disk alerts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=doppel
+StateDirectory=doppel-tape-alerts
+StateDirectoryMode=0700
+LoadCredential=discord-webhook:/etc/doppel/discord-webhook
+EnvironmentFile=-/etc/doppel/tape-alerts.env
+ExecStart=/usr/bin/python3 /opt/doppel/ops/tape_alerts.py --state /var/lib/doppel-tape-alerts/state.json --webhook-file %d/discord-webhook --disk / --disk /mnt/volume_nyc1_1793485122853 --recorder doppel-tape.service=/mnt/volume_nyc1_1793485122853/doppel/tape $DOPPEL_ADDITIONAL_RECORDERS
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+TimeoutStartSec=25
