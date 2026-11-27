@@ -101,7 +101,7 @@ class FakeChain:
         if method == "eth_blockNumber":
             return hex(self.head)
         if method == "eth_getBlockByNumber":
-            return {"timestamp": hex(1000 + 2 * int(params[0], 16))}
+            return {"number": params[0], "timestamp": hex(1000 + 2 * int(params[0], 16))}
         if method == "eth_getTransactionReceipt":
             return self.receipts.get(params[0])
         if method == "eth_getCode":
@@ -131,12 +131,18 @@ class FakeChain:
         raise RpcError("unsupported")
 
 
+def _pages(wallet, start, end, fills):
+    return {(wallet, start, end): {"address": wallet, "start_time": start, "end_time": end,
+                                   "complete": True, "cursor": None, "stop": "done", "pages": 1,
+                                   "rows": len(fills), "trade_binding": ab.trade_binding(fills)}}
+
+
 def _run(chain, fills, window=(10, 100), pages=None, pairs=None, max_requests=None, out=None):
     pool = Pool(["fake"], chain, rate=1e9, max_requests=max_requests, sleep=lambda s: None,
                 backoff_s=0, bench_s=0)
     c = ab.Chain(pool, out or chain.cache)
-    pages = {(W, 0, 10**6): {"complete": True}} if pages is None else pages
-    times = (1000 + 2 * window[0], 1000 + 2 * window[1])
+    pages = _pages(W, 0, 10**6, fills) if pages is None else pages
+    times = (1000 + 2 * window[0], 1000 + 2 * window[1] + 1)
     return ab.absorb_wallet(c, W, fills, window, times, 25, pages, {} if pairs is None else pairs)
 
 
@@ -257,9 +263,9 @@ def test_goldsky_incomplete_blocks_reconciliation(chain):
     fills = [chain.fill("0x01", 20, "BUY", NO, 10, 0.48)]
     r = _run(chain, fills, pages={(W, 0, 10**6): {"complete": False}})
     assert r["causes"] == ["goldsky_incomplete"] and r["status"] == "not_reconciled"
-    assert ab.goldsky_complete({(W, 0, 50): {"complete": True}, (W, 50, 99): {"complete": True}},
+    assert ab.goldsky_complete(_pages(W, 0, 50, []) | _pages(W, 50, 99, []),
                                W, 10, 90)
-    assert not ab.goldsky_complete({(W, 0, 50): {"complete": True}, (W, 60, 99): {"complete": True}},
+    assert not ab.goldsky_complete(_pages(W, 0, 50, []) | _pages(W, 60, 99, []),
                                    W, 10, 90)
 
 
@@ -277,8 +283,7 @@ def test_cli_end_to_end_with_fill_store(chain, tmp_path):
     w.close()
     compact(tmp_path / "tape", tmp_path / "store")
     pages = tmp_path / "pagination.jsonl"
-    pages.write_bytes(orjson.dumps({"address": W, "start_time": 0, "end_time": 5000, "complete": True,
-                                    "cursor": None, "stop": "done", "pages": 1, "rows": 2}) + b"\n")
+    pages.write_bytes(orjson.dumps(_pages(W, 0, 5000, rows)[W, 0, 5000]) + b"\n")
     tokens = tmp_path / "tokens.jsonl"
     tokens.write_bytes(b"".join(orjson.dumps({"token": t, "condition": "0x" + COND, "idx": i,
                                               "status": "open"}) + b"\n"

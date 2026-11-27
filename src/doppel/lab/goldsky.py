@@ -12,7 +12,7 @@ request URL (minus the key) and both clocks.
 Pagination state (``goldsky_activity/pagination.jsonl``, one line per page and per stop): for each
 (address, start_time, end_time) it records pages and rows received, the cursor of the next page
 (``cursor``), the stop reason (``done`` | ``budget`` | ``error``; null while running) and
-``complete``, true only when the source returned a page with no ``next_cursor``. A pull with the
+``complete``, true only when the source returned an explicit null ``next_cursor``. A pull with the
 same address and interval resumes from the recorded cursor and skips an interval already complete.
 A resume needs the same interval: give ``cohort`` an explicit ``--end``.
 """
@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import fcntl
+import hashlib
 import os
 import sys
 import time
@@ -35,6 +36,7 @@ import orjson
 
 from ..tape.segment import SegmentWriter
 from ..tape.sources.base import SSL_CTX, UA
+from .ledger import KEEP
 
 BASE = "https://edge.goldsky.com/data/polymarket/activity"
 USD_PER_ROW = 10.0 / 1_000_000
@@ -43,6 +45,50 @@ STARTER_CREDIT_ROWS = 10_000_000  # $100 at the recorded $10 per million rows
 PAGE = 1000
 RPS = 4.0  # Starter limit is 5 req/s per project
 PAGES = "pagination.jsonl"
+EMPTY_BINDING = {"trades": 0, "sha256_sum": "0" * 64}
+
+
+def trade_binding(rows, previous: dict | None = None) -> dict:
+    """Order-independent multiset of the exact fill-store projection, including row IDs.
+
+    SHA-256 per row is added modulo 2**256 so a bounded capture can checkpoint between pages.
+    Numeric projection matches the fill store's float64 columns. Order on the wire is immaterial.
+    """
+    base = previous if previous is not None else EMPTY_BINDING
+    count, total = base["trades"], int(base["sha256_sum"], 16)
+    for r in rows:
+        if not isinstance(r.get("id"), str) or not r["id"]:
+            raise ValueError("missing Goldsky trade ID")
+        values = [r["id"]]
+        for k in KEEP:
+            v = r.get(k)
+            if k in ("amount_shares", "amount_usdc", "fee", "price") and v is not None:
+                v = float(v)
+            elif k in ("block_number", "block_timestamp") and isinstance(v, float) and v.is_integer():
+                v = int(v)
+            values.append(v)
+        total += int.from_bytes(hashlib.sha256(orjson.dumps(values)).digest(), "big")
+        count += 1
+    return {"trades": count, "sha256_sum": f"{total % (1 << 256):064x}"}
+
+
+def page_binding(rows: list, key: tuple[str, int, int], previous: dict | None) -> dict | None:
+    """Bind only full wallet queries, using half-open UTC intervals at the store boundary."""
+    wallet, start, end = key
+    if previous is None or not wallet:
+        return None
+    trades = []
+    for row in rows:
+        if not isinstance(row, dict) or not all(k in row for k in ("event_type", "address", "block_timestamp")):
+            return None  # legacy response without enough data to bind a wallet's fills
+        stamp = row["block_timestamp"]
+        if (not isinstance(row["event_type"], str) or not row["event_type"] or
+                not isinstance(row["address"], str) or row["address"].lower() != wallet or
+                type(stamp) not in (int, float) or int(stamp) != stamp or not start <= stamp <= end):
+            raise ValueError("Goldsky response differs from the requested wallet or interval")
+        if row["event_type"] == "TRADE" and stamp < end:
+            trades.append(row)
+    return trade_binding(trades, previous)
 
 
 class BudgetExceeded(RuntimeError):
@@ -146,6 +192,12 @@ def _interval(params: dict) -> tuple[str, int, int]:
             int(params["end_time"]))
 
 
+def terminal_page(record: dict) -> bool:
+    return (record.get("complete") is True and "cursor" in record and record["cursor"] is None
+            and record.get("stop") == "done" and type(record.get("pages")) is int and record["pages"] > 0
+            and type(record.get("rows")) is int and record["rows"] >= 0)
+
+
 def pagination_state(path: Path) -> dict[tuple[str, int, int], dict]:
     """Latest pagination record per (address, start_time, end_time); address "" = all activity."""
     out: dict[tuple[str, int, int], dict] = {}
@@ -158,12 +210,12 @@ def pagination_state(path: Path) -> dict[tuple[str, int, int], dict]:
 
 
 def _record(path: Path | None, key: tuple[str, int, int], job: str, pages: int, rows: int,
-            cursor: str | None, stop: str | None) -> None:
+            cursor: str | None, stop: str | None, binding: dict | None) -> None:
     if path is None:
         return
     rec = {"tw": time.time_ns(), "address": key[0], "start_time": key[1], "end_time": key[2],
            "job": job, "pages": pages, "rows": rows, "cursor": cursor, "stop": stop,
-           "complete": stop == "done"}
+           "complete": stop == "done", "trade_binding": binding}
     with Path(path).open("ab") as fh:
         fh.write(orjson.dumps(rec) + b"\n")
         fh.flush()
@@ -185,13 +237,23 @@ async def _pull_pages(job: str, params: dict, key: str, ledger: Ledger, writer: 
     pagination.jsonl), progress is recorded after every page and the pull resumes from the last
     recorded cursor of the same (address, start_time, end_time)."""
     ikey = _interval(params)
+    if pages is not None and set(params) - {"address", "start_time", "end_time"}:
+        raise ValueError("a filtered query cannot share a wallet pagination checkpoint")
     prev = pagination_state(pages).get(ikey) if pages is not None else None
-    if prev and prev["complete"]:
+    if prev and prev["complete"] is not False:
+        if not terminal_page(prev):
+            raise ValueError("inconsistent Goldsky terminal checkpoint")
         return 0, False
+    if prev and prev["pages"] and not prev["cursor"]:
+        raise ValueError("cannot resume a nonterminal Goldsky checkpoint without a cursor")
     n_pages, n_rows = (prev["pages"], prev["rows"]) if prev else (0, 0)
     cursor = prev["cursor"] if prev else None
+    binding = prev.get("trade_binding") if prev and n_pages else EMPTY_BINDING
+    if set(params) != {"address", "start_time", "end_time"}:
+        binding = None
+    seen_cursors = {cursor} if cursor else set()
     if max_rows <= 0:  # nothing may be read: the interval stays incomplete
-        _record(pages, ikey, job, n_pages, n_rows, cursor, "budget")
+        _record(pages, ikey, job, n_pages, n_rows, cursor, "budget", binding)
         return 0, True
     own = session is None
     if own:
@@ -233,16 +295,25 @@ async def _pull_pages(job: str, params: dict, key: str, ledger: Ledger, writer: 
             writer.append(body, meta={"job": job, "url": url, "status": status, "rows": rows,
                                       "sent_tw": sent_w, "sent_tm": sent_m})
             writer.flush()
+            if "next_cursor" not in doc:
+                raise ValueError("missing Goldsky continuation field")
+            next_cursor = doc["next_cursor"]
+            if next_cursor is not None and (not isinstance(next_cursor, str) or not next_cursor
+                                            or next_cursor in seen_cursors or not rows):
+                raise ValueError("invalid Goldsky continuation cursor")
+            binding = page_binding(doc["data"], ikey, binding)
             got += rows
             n_pages += 1
             n_rows += rows
-            cursor = doc.get("next_cursor") or None
+            cursor = next_cursor
+            if cursor:
+                seen_cursors.add(cursor)
             # done only when the source reports no further page; an empty page that still
             # advertises a cursor is an error, not the end
-            stop = "done" if not cursor else "error" if rows == 0 else None
+            stop = "done" if cursor is None else None
             if stop or got >= max_rows:
                 break
-            _record(pages, ikey, job, n_pages, n_rows, cursor, None)
+            _record(pages, ikey, job, n_pages, n_rows, cursor, None, binding)
             await asyncio.sleep(1.0 / RPS)
         stop = stop or "budget"
     except BudgetExceeded:
@@ -253,7 +324,7 @@ async def _pull_pages(job: str, params: dict, key: str, ledger: Ledger, writer: 
         raise
     finally:
         writer.flush()
-        _record(pages, ikey, job, n_pages, n_rows, cursor, stop)
+        _record(pages, ikey, job, n_pages, n_rows, cursor, stop, binding)
         if own:
             await session.close()
     return got, stop != "done"

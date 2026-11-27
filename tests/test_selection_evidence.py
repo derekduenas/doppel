@@ -7,7 +7,7 @@ import pytest
 from doppel.lab import absorb as ab
 from doppel.lab.ordertape import Pool
 from doppel.lab.selection_evidence import WEEK, window_profit
-from test_absorb import AD, COND, NO, O, U, W, YES, FakeChain
+from test_absorb import AD, COND, NO, O, U, W, YES, FakeChain, _pages
 
 START = 1002
 END = START + WEEK
@@ -30,7 +30,7 @@ def chain(tmp_path):
 def absorb(chain, fills=(), pairs=None):
     client = ab.Chain(Pool(["local"], chain, rate=1e9, sleep=lambda _: None), chain.cache)
     return ab.absorb_wallet(client, W, list(fills), (1, 302400), (START, END), 302400,
-                            {(W, START, END): {"complete": True}},
+                            _pages(W, START, END, fills),
                             {YES: (COND, 0), NO: (COND, 1)} if pairs is None else pairs)
 
 
@@ -69,7 +69,7 @@ def test_ctf_cash_counted_once_across_both_outcomes(chain, finish, profit):
 def test_no_trade_is_only_zero_if_coverage_proves_it(chain):
     report = absorb(chain)
     assert window_profit(report, {}, W, START, END) == {}
-    for key in ("goldsky_complete", "chain_scan_complete"):
+    for key in ("goldsky_complete", "chain_scan_complete", "goldsky_store_verified", "block_time_window_verified"):
         bad = deepcopy(report)
         bad["completeness"][key] = False
         with pytest.raises(ValueError, match="incomplete pagination"):

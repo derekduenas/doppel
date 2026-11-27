@@ -120,6 +120,7 @@ def _profit(report, tokens, wallet, start, end):
              "absorption did not reconcile")
     coverage = report["completeness"]
     _require(coverage["goldsky_complete"] is True and coverage["chain_scan_complete"] is True and
+             coverage.get("goldsky_store_verified") is True and coverage.get("block_time_window_verified") is True and
              coverage["chain_error"] is None and coverage["chain_next_block"] is None and coverage["receipts_missing"] == 0,
              "incomplete pagination, chain scan or receipts")
     fill = report["fill_check"]

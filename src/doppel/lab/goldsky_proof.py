@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlsplit
 import orjson
 
 from ..tape.segment import read_segment
-from .goldsky import BASE, PAGES
+from .goldsky import BASE, EMPTY_BINDING, PAGES, page_binding
 from .goldsky import _interval
 
 
@@ -62,19 +62,24 @@ def recover(tape: Path, cohort: Path, start: int, end: int, segments: list[str],
             if wallet not in wallets or (lo, hi) != (start, end):
                 continue
             state = states.setdefault(wallet, {"address": wallet, "start_time": lo, "end_time": hi,
-                       "pages": 0, "rows": 0, "cursor": None, "complete": False, "stop": "archived_prefix"})
+                       "pages": 0, "rows": 0, "cursor": None, "complete": False, "stop": "archived_prefix",
+                       "trade_binding": EMPTY_BINDING})
             request_cursor = q["cursor"][0] if "cursor" in q else None
             if state["complete"] or request_cursor != state["cursor"]:
                 raise ValueError(f"discontinuous query for {wallet} in {name}")
             page = orjson.loads(rec["raw"])
-            rows, cursor = page["data"], page.get("next_cursor")
-            if (not isinstance(rows, list) or not 0 <= len(rows) <= int(q["limit"][0])
+            if "next_cursor" not in page:
+                raise ValueError(f"missing Goldsky continuation field for {wallet} in {name}")
+            rows, cursor = page["data"], page["next_cursor"]
+            limit = int(q["limit"][0])
+            if (limit < 1 or not isinstance(rows, list) or len(rows) > limit
                     or any(r["address"].lower() != wallet or not start <= r["block_timestamp"] <= end for r in rows)):
                 raise ValueError(f"rows differ from wallet query for {wallet} in {name}")
             if cursor is not None and (not isinstance(cursor, str) or not cursor or not rows or cursor in cursors[wallet]):
                 raise ValueError(f"invalid next cursor for {wallet} in {name}")
             if cursor:
                 cursors[wallet].add(cursor)
+            state["trade_binding"] = page_binding(rows, (wallet, lo, hi), state["trade_binding"])
             state.update(pages=state["pages"] + 1, rows=state["rows"] + len(rows), tw=rec["tw"],
                          job=meta.get("job"), cursor=cursor, complete=cursor is None,
                          stop="done" if cursor is None else "archived_prefix")

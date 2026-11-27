@@ -6,7 +6,7 @@ import orjson
 
 from doppel.lab import absorb, selection, selection_plan
 from doppel.lab.ordertape import Pool
-from test_absorb import EX, O, U, FakeChain, _w
+from test_absorb import EX, O, U, FakeChain, _pages, _w
 from test_selection import CANDIDATE, CONTROLS, sources
 
 
@@ -19,7 +19,7 @@ def buy(network, wallet, token, block, tx_id, usd):
     network.cash(tx, block, wallet, EX, fee)
     network._log(EX, [absorb.T_FILLED, oid, absorb.topic(wallet), absorb.topic(O)],
                  _w(0, int(token), usd * U, 10 * U, fee, 0, 0), tx, block)
-    return {"transaction_hash": tx, "order_id": oid, "token_id": token, "address": wallet,
+    return {"id": tx, "transaction_hash": tx, "order_id": oid, "token_id": token, "address": wallet,
             "block_number": block, "block_timestamp": 1000 + 2 * block, "side": "BUY",
             "order_type": "maker", "price": usd / 10, "amount_shares": 10,
             "amount_usdc": usd, "fee": fee / U}
@@ -61,7 +61,7 @@ def test_absorption_receipts_to_wallet_selection_cli(tmp_path, capsys):
                                          event * 10 + member_idx, usd))
         blocks = (chain.block_at(start, network.head), chain.block_at(end, network.head) - 1)
         for wallet in members:
-            pages = {(wallet, start, end): {"complete": True}}
+            pages = _pages(wallet, start, end, fills[wallet])
             report = absorb.absorb_wallet(chain, wallet, fills[wallet], blocks, (start, end), 302400, pages, pairs)
             assert report["status"] == "reconciled" and report["fill_check"]["order_filled"]["matched"] == 2
             (output / f"wallet-{wallet}.json").write_bytes(orjson.dumps(report))
