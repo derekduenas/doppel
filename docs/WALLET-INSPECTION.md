@@ -150,11 +150,11 @@ run from the raw short tape reproduced the qualified per-order output byte for b
 cross-check from the research directory with the script and the independent first case
 from this review branch. It validates the SHA-256 of the per-order results against each
 summary, the signed manifests against Layer 1, and the first-order result against the
-independent raw-tape walk. `verify-market-results.py` is the copy of `summarize.py` at
-`69e94a25f5cab29dacf6c5b3d07da9f1a5080213`. [Evidence verifier](../evidence/2026-11-27-wallet-inspection/summarize.py)
+independent raw-tape walk. `verify-wallet-results.py` is the copy of `summarize.py` at
+`8f90754b063f0f91d418041515579e9d1965f737`. [Evidence verifier](../evidence/2026-11-27-wallet-inspection/summarize.py)
 
 ```sh
-/opt/doppel/.venv/bin/python verify-market-results.py --study "$PWD" \
+/opt/doppel/.venv/bin/python verify-wallet-results.py --study "$PWD" \
   --layer1-summary "$summary" --layer1-root "$ledger" --first-case independent-first.json
 ```
 
@@ -193,3 +193,15 @@ decision features. A wallet with inadequate evidence stays unclassified.
 The prospective selection study closes its first week Dec 4 at 03:30 UTC and its fourth
 week Dec 25 at 03:30 UTC. These November replays provide historical evidence about the
 measurement system. Strategy, persistence and a real-wallet twin remain open.
+
+## Build verification
+
+All 759 Python tests passed together in 556.70 seconds after the final fixture correction
+at `f281e4c`. Two earlier integration assertions had exposed stale assumptions. The
+legacy Parquet fixture now demonstrates that publishing flush manifests changes verified
+eligibility. The chunk-boundary fixture carries five bids across the hourly snapshot so
+they can genuinely remain live until their later executions. The one-hour replay censors
+them and the two-hour replay scores them. Pyright reported zero issues. The 72 Rust tests,
+Clippy with warnings denied, rustfmt, offline dependency lock and wheel/source build all
+passed. The built wheel exposes `doppel-inspect`. The 21-line sealed genome registry and
+its expression semantics verified.
