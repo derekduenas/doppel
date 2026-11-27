@@ -47,6 +47,22 @@ def test_after_block_order_survives_and_unique_anonymous_add_stays_conditional()
     assert iw.summary([row])["paired_sole_uncontested"] == {"actual": 1, "placebo": 0}
 
 
+def test_empty_level_after_a_sole_add_excludes_continuous_residence():
+    owner, book_ = evidence()
+    book_.empty[KEY].append(mark(T - 400, old=60., new=0.))
+    result, = iw.inspect([owner], book_)
+    actual = result["actual"]
+    assert actual["sole_uncontested_add"] and actual["add_to_endpoint_ms"] == 8000
+    assert actual["residence_compatibility"] == "excluded_by_empty_level"
+    assert "conditional_add_to_anchor_ms" not in actual
+    assert iw.summary([result])["sole_actual_residence_by_depth"] == {"excluded_by_empty_level": 1}
+    # A zero immediately before the candidate itself is consistent with the hypothesis.
+    book_.empty[KEY][-1] = mark(T - 8000, src="before_price_change", old=0., new=0.)
+    result, = iw.inspect([owner], book_)
+    assert result["actual"]["residence_compatibility"] == "possible_owner_unknown"
+    assert result["actual"]["conditional_add_to_anchor_ms"] == 8000
+
+
 def test_two_candidates_and_shared_add_cannot_supply_unique_placement():
     o, b = evidence()
     b.events[KEY].append(mark(T - 7000))

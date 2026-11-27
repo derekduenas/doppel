@@ -203,6 +203,26 @@ def mark(e):
             "span_id": e.span_id, "old_size": e.old_size, "new_size": e.new_size, "source": e.src}
 
 
+def qualify_residence(row):
+    """Keep the registered size comparison distinct from the continuous-residence hypothesis."""
+    for name, shift in (("actual", 0), ("placebo", PLACEBO_MS)):
+        arm = row.get(name)
+        if not arm or "candidate" not in arm:
+            continue
+        event = arm["candidate"]
+        elapsed = row["anchor"]["venue_ms"] + shift - event["venue_ms"]
+        arm["add_to_endpoint_ms"] = elapsed
+        if name != "actual":
+            continue
+        zero = row.get("last_empty_evidence")
+        sequence = ("venue_ms", "tw_ns", "seq", "ordinal")
+        if zero and tuple(zero[k] for k in sequence) > tuple(event[k] for k in sequence):
+            arm["residence_compatibility"] = "excluded_by_empty_level"
+        else:
+            arm["residence_compatibility"] = "possible_owner_unknown"
+            arm["conditional_add_to_anchor_ms"] = elapsed
+
+
 def inspect(owners, book):
     rows, work = [], []
     claims = [Counter(), Counter()]
@@ -259,8 +279,7 @@ def inspect(owners, book):
                 row["residence_upper_ms"] = a.venue_ms - last.venue_ms
 
     for row, arms in work:
-        for name, result, counter, paired_counts, shift in zip(("actual", "placebo"), arms, claims,
-                                                               paired_claims, (0, PLACEBO_MS)):
+        for name, result, counter, paired_counts in zip(("actual", "placebo"), arms, claims, paired_claims):
             if result is None:
                 continue
             _, matches = result
@@ -271,8 +290,8 @@ def inspect(owners, book):
             if unique:
                 e = matches[0]
                 info["candidate"] = mark(e)
-                info["conditional_add_to_anchor_ms"] = row["anchor"]["venue_ms"] + shift - e.venue_ms
             row[name] = info
+        qualify_residence(row)
     return sorted(rows, key=lambda r: (r["wallet"], r["first_block"], r["order_id"]))
 
 
@@ -290,6 +309,8 @@ def summary(rows):
             "paired_add_multiplicity": {arm: dict(Counter(str(r[arm]["size_compatible_adds"]) for r in paired))
                                         for arm in ("actual", "placebo")},
             "residence_upper_bounds": sum(r["residence_upper_ms"] is not None for r in rows),
+            "sole_actual_residence_by_depth": dict(Counter(r["actual"]["residence_compatibility"] for r in rows
+                                                          if r.get("actual", {}).get("sole_uncontested_add"))),
             "wallet_identified_placements": 0}
 
 
@@ -322,7 +343,7 @@ def run(specs, data, stream, out, layer1_summary):
         dest.mkdir()
         evidence = dest / "orders.jsonl"
         evidence.write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in rows))
-        doc = {"schema": "wallet-inspection/1", "use": "retrospective_diagnostic",
+        doc = {"schema": "wallet-inspection/2", "use": "retrospective_diagnostic",
                "layer1_summary_sha256": hashlib.sha256(binding).hexdigest(),
                "window_time": [start, end], "stream": stream, "source_segments": book.sources,
                "missing_segments": book.missing, "book_counts": dict(book.counts),

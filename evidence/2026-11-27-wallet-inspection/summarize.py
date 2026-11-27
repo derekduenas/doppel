@@ -50,6 +50,8 @@ def collect(folder, study, first=None):
     rows = [json.loads(line) for line in order_file.read_bytes().splitlines()]
     if len({(r["wallet"], r["order_id"]) for r in rows}) != len(rows):
         raise ValueError("duplicate signed order")
+    if doc["schema"] != "wallet-inspection/2":
+        raise ValueError("the study predates the continuous-residence check")
     wallets = {}
     for source in doc["inputs"]:
         w = source["wallet"]
@@ -93,6 +95,6 @@ if __name__ == "__main__":
     cli.add_argument("--layer1-summary", required=True, type=Path)
     cli.add_argument("--first-case", required=True, type=Path)
     args = cli.parse_args()
-    out = {name: collect(args.study / name, args.layer1_summary, args.first_case if name == "paired-first15" else None)
-           for name in ("paired-first15", "paired-day")}
+    out = {name: collect(args.study / name, args.layer1_summary, args.first_case if name == "qualified-first15" else None)
+           for name in ("qualified-first15", "qualified-day")}
     print(json.dumps(out, sort_keys=True, indent=2, allow_nan=False))
