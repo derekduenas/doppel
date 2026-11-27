@@ -5,9 +5,10 @@ that traces every number. Plain-language description: ``docs/RECONSTRUCTION.md``
 STEPS (run in process, in this order; each can be left out with ``--steps``)
   ordertape    ``ordertape.run``: the cohort's txs in [--from, --to) from the fill store, decoded
                from chain calldata into ``<orders>`` (default ``<out>/ordertape``). It resumes per
-               tx by itself. Called again while its last call left txs failed, missing,
-               undecodable or not attempted; until then every wallet carries
-               ``ordertape:incomplete``.
+               tx by itself. It is complete only when every selected tx has decoded rows on
+               the tape (checked on disk, not taken from the call's summary). Until then it is
+               called again by every run (which retries the failed, missing and undecodable
+               txs) and every wallet carries ``ordertape:incomplete``.
   ordermatch   ``ordermatch.run`` once per unit (a chunk x a wallet batch), then a merge.
   orderreplay  ``orderreplay.run`` once per unit on that unit's ordermatch output, then a merge.
   profile      ``profile.run`` on the parquet directory and the merged ``ordermatch.json``
@@ -464,8 +465,18 @@ def step_ordertape(x: _Ctx, transport: Callable) -> dict:
             if con is not None:
                 con.close()
         left = {k: res[k] for k in ("txs_failed", "txs_missing", "txs_undecodable", "txs_not_attempted") if res[k]}
+        # Judged from the tape itself, not from the call's own counts: every selected tx must have
+        # decoded rows on disk. This also catches txs recorded as done without orders
+        # (``not_match_orders``: a call this decoder does not know).
+        selected = {t[0] for t in todo}
+        on_tape = {tx for p in ordertape.committed_parts(c.orders)
+                   for tx in pq.read_table(p, columns=["tx"])["tx"].to_pylist()}
+        if selected - on_tape:
+            left["txs_selected_not_decoded"] = len(selected - on_tape)
         prev = {"key": key, "summary": res, "wall_s": round(time.monotonic() - t0, 1),
-                "complete": res["stopped"] is None and not left, "left": left, "parts": prev.get("parts", {})}
+                "complete": res["stopped"] is None and not left, "left": left,
+                "txs_selected": len(selected), "txs_decoded_on_tape": len(selected & on_tape),
+                "parts": prev.get("parts", {})}
         status = "ran"
         missing_parts = ordertape.has_missing_parts(c.orders)
     elif "ordertape" not in c.steps:
@@ -479,6 +490,7 @@ def step_ordertape(x: _Ctx, transport: Callable) -> dict:
     return {"status": status, "stale": bool(prev.get("key")) and prev["key"] != key,
             "wall_s": prev.get("wall_s"), "complete": False if missing_parts else prev.get("complete"),
             "left": prev.get("left"),
+            "txs_selected": prev.get("txs_selected"), "txs_decoded_on_tape": prev.get("txs_decoded_on_tape"),
             "inputs": {"store_state_sha256": sha_file(store_state) if store_state.is_file() else None,
                        "store": str(c.store), "wallets": len(c.wallets), "max_txs_per_wallet": c.max_txs},
             "outputs": {"orders": out}, "summary": prev.get("summary")}
@@ -1066,7 +1078,8 @@ def build_report(c: Cfg, man: dict) -> tuple[dict, str]:
     if man["stopped"]:
         L += [f"**RUN STOPPED: {man['stopped']}** Everything below is partial.", ""]
     if ot["complete"] is False:
-        L += [f"**ORDER TAPE INCOMPLETE** ({ot['left']}; stopped: {(ot['summary'] or {}).get('stopped')}): chain "
+        L += [f"**ORDER TAPE INCOMPLETE** ({ot['txs_decoded_on_tape']} of {ot['txs_selected']} selected txs decoded; "
+              f"{ot['left']}; stopped: {(ot['summary'] or {}).get('stopped')}): chain "
               "fills are missing for some txs, so every wallet is UNTRUSTED until the same command is run again "
               "and the tape completes. The tape coverage column says how much of each wallet was decoded.", ""]
     L += ["Read first: UNTRUSTED = a gate behind the cell failed, or a step is stale, incomplete or stopped; "

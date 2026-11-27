@@ -926,3 +926,55 @@ def test_wallet_gates_use_exact_counts_at_thresholds():
     g = reconstruct.wallet_gates(GATES, None, None, rp)
     for k in ("bracket_violation_share", "placement_not_found_share", "routed_share", "delivered_share"):
         assert g[f"orderreplay.{k}"]["status"] == "fail", k
+
+
+@pytest.mark.parametrize("how", ["missing", "not_match_orders"])
+def test_audit_one_of_35_txs_decoded_is_never_complete(tmp_path, how):
+    """Audit 2026-11-26: 1 of 35 selected txs decoded was reported complete with 100% verified and
+    the retry was skipped. The node lacks 34 txs (or answers them with a call that is not
+    matchOrders): the tape is incomplete, every wallet says so, and the next run asks again."""
+    root = tmp_path
+    txs = _cand_world(root, 0)
+    first = sorted(txs)[0]
+    extra = [f"0x{k:064x}" for k in range(900, 903)]  # 35 selected txs in all
+    for i, tx in enumerate(extra):
+        txs[tx] = (txs[first][0], BLOCK + 900 + i)
+    g = SegmentWriter(root / "tape", "goldsky_activity")
+    g.append(orjson.dumps({"data": [
+        {"id": f"x{i}", "address": W1, "event_type": "TRADE", "token_id": "101", "side": "BUY",
+         "amount_shares": 1.0, "amount_usdc": 0.5, "fee": 0.0, "block_timestamp": T0 + 100,
+         "block_number": BLOCK + 900 + i, "order_type": "maker", "price": 0.5, "order_id": "0x" + "ee" * 32,
+         "transaction_hash": tx} for i, tx in enumerate(extra)]}).decode(), tw=(T0 + 3600) * 10**9,
+        meta={"job": "cohort-a", "status": 200, "rows": 3})
+    g.close()
+    compact(root / "tape", root / "lab" / "fills")
+    assert len(txs) == 35
+    good = Chain(txs)
+
+    def flaky(url, method, params):
+        if params[0] == first:
+            return good(url, method, params)
+        return None if how == "missing" else {"input": "0xdeadbeef", "to": EX, "blockNumber": hex(BLOCK)}
+
+    c = one(root, t_to=T0 + 3600, steps=("ordertape",))
+    man = run(c, flaky)
+    s = man["steps"]["ordertape"]
+    assert (s["txs_selected"], s["txs_decoded_on_tape"], s["complete"]) == (35, 1, False)
+    assert s["left"]["txs_selected_not_decoded"] == 34
+    g1 = man["wallets"][W1]["gates"]["ordertape.verified_share"]
+    assert (g1["value"], g1["n"], g1["status"]) == (1.0, 1, "pass")  # the one decoded tx verifies; not enough:
+    assert "ordertape:incomplete" in man["wallets"][W1]["untrusted"]["ordertape"]
+    assert man["wallets"][W1]["tape"]["coverage"] == round(1 / 35, 6)
+    md = (root / "lab" / "reconstruct" / "run1" / "report.md").read_text()
+    assert "ORDER TAPE INCOMPLETE** (1 of 35 selected txs decoded" in md
+    # the next run is not skipped
+    again: list[str] = []
+    man = run(c, lambda url, method, params: again.append(params[0]) or good(url, method, params))
+    if how == "missing":  # ordertape retries exactly the 34 txs it does not have
+        assert sorted(again) == sorted(set(txs) - {first})
+        assert man["steps"]["ordertape"]["complete"] is True and man["steps"]["ordertape"]["left"] == {}
+        assert "ordertape:incomplete" not in man["wallets"][W1]["untrusted"]["ordertape"]
+    else:  # ordertape recorded them as done: it cannot refetch, so the tape stays incomplete, loudly
+        assert again == [] and man["steps"]["ordertape"]["status"] == "ran"
+        assert man["steps"]["ordertape"]["complete"] is False
+        assert man["steps"]["ordertape"]["left"] == {"txs_selected_not_decoded": 34}
