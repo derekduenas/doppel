@@ -29,14 +29,14 @@ def captured(tmp_path):
     tape, out = tmp_path / "tape", tmp_path / "out"
     writer = SegmentWriter(tape, "goldsky_activity")
 
-    def page(rows, current=None, nxt=None, params=None, body=None, status=200):
+    def page(rows, current=None, nxt=None, params=None, body=None, status=200, sent=25 * 10**9):
         query = {"start_time": 10, "end_time": 20, "limit": 3}
         if current is not None:
             query["cursor"] = current
         query.update(params or {})
         payload = {"data": rows, "next_cursor": nxt, "limit": 3} if body is None else body
         writer.append(orjson.dumps(payload), tw=1795716000 * 10**9,
-                      meta={"job": JOB, "url": BASE + "?" + urlencode(query), "status": status})
+                      meta={"job": JOB, "url": BASE + "?" + urlencode(query), "status": status, "sent_tw": sent})
 
     def run():
         writer.close()
@@ -67,7 +67,7 @@ def test_projects_bound_parent_interval_and_proves_idle_wallet(captured):
 
 @pytest.mark.parametrize("case", ["filtered", "gap", "cycle", "incomplete", "missing_cursor",
                                   "after_done", "duplicate_outsider", "bad_owner", "bad_time",
-                                  "bad_kind", "bad_id", "bad_token", "failed", "body_limit"])
+                                  "bad_kind", "bad_id", "bad_token", "failed", "body_limit", "premature", "no_clock"])
 def test_rejects_broken_archive_including_unselected_population(captured, case):
     page, run, out = captured
     r = row(O, 1)
@@ -89,6 +89,8 @@ def test_rejects_broken_archive_including_unselected_population(captured, case):
         page([deepcopy(r)], current="next")
     elif case == "body_limit":
         page([], body={"data": [], "next_cursor": None, "limit": 9})
+    elif case in ("premature", "no_clock"):
+        page([], sent=19 * 10**9 if case == "premature" else None)
     elif case == "failed":
         page([], status=403)
     else:

@@ -51,7 +51,7 @@ def _row(row, start, end):
             raise ValueError("invalid trade identity, block, side or liquidity role")
         for k in ("amount_shares", "amount_usdc", "fee", "price"):
             v = row.get(k)
-            if type(v) not in (float, int) or not math.isfinite(v) or v < 0:
+            if isinstance(v, bool) or not isinstance(v, (float, int)) or not math.isfinite(v) or v < 0:
                 raise ValueError(f"invalid trade {k}")
         if row["price"] > 1 or row["amount_shares"] <= 0:
             raise ValueError("invalid trade price or size")
@@ -60,6 +60,9 @@ def _row(row, start, end):
 
 def _page(rec, start, end, cursor, limit):
     meta = rec["meta"]
+    sent, received = meta.get("sent_tw"), rec.get("tw")
+    if (type(sent) is not int or type(received) is not int or sent < end * 10**9 or received < sent):
+        raise ValueError("request preceded the end of the claimed interval or lacks capture time")
     url = urlsplit(meta["url"])
     q = parse_qs(url.query, keep_blank_values=True, strict_parsing=True)
     required = {"start_time", "end_time", "limit"} | ({"cursor"} if cursor is not None else set())
@@ -164,10 +167,11 @@ def project(tape: Path, start: int, end: int, job: str, segments: list[str],
         fillstore._save_state(fills, {"version": fillstore.STATE_VERSION, "job_prefix": job,
                                       "segments": store_segments})
         # Re-read the native representation before publishing the matching pagination receipts.
-        reread = dict(fillstore.iter_wallet_fills(fills, selected))
-        for w in selected:
-            if trade_binding(reread.get(w, [])) != bindings[w]:
-                raise ValueError(f"written fill store differs from archive for {w}")
+        stored_bindings = {w: EMPTY_BINDING for w in selected}
+        for w, wallet_fills in fillstore.iter_wallet_fills(fills, selected):
+            stored_bindings[w] = trade_binding(wallet_fills)
+        if stored_bindings != bindings:
+            raise ValueError("written fill store differs from the archived trade bindings")
         states = [{"address": w, "start_time": start, "end_time": end, "pages": pages, "job": job,
                    "rows": counts[w], "cursor": None, "complete": True, "stop": "done",
                    "tw": last_tw, "source": "sealed_global_activity_projection",
@@ -175,7 +179,7 @@ def project(tape: Path, start: int, end: int, job: str, segments: list[str],
         pagination = stage / PAGES
         pagination.write_bytes(b"".join(orjson.dumps(s) + b"\n" for s in states))
         summary = {"source": "sealed_global_activity_projection", "job": job, "interval": [start, end],
-                   "source_pages": pages, "source_rows": total, "projected_wallet_rows": dict(counts),
+                   "source_pages": pages, "source_rows": total, "projected_wallet_rows": {w: counts[w] for w in selected},
                    "trade_bindings": bindings, "segments": archived,
                    "manifest_sha256": hashlib.sha256(manifest).hexdigest(),
                    "pagination_sha256": digest(pagination)}

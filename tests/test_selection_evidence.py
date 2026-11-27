@@ -178,3 +178,53 @@ def test_cash_swapped_between_same_kind_fills_does_not_transfer_profit_between_e
     first["cash"], second["cash"] = second["cash"], first["cash"]
     with pytest.raises(ValueError, match="per-token cash or fees disagree"):
         window_profit(report, tmap, W, START, END)
+
+
+def test_exact_contract_receipts_and_both_aggregate_endpoints_are_required(chain):
+    report = absorb(chain, [chain.fill("0x01", 101, "BUY", YES, 10, .4)])
+    for fault, reason in [("missing", "missing collateral contract"), ("offsetting", "does not reconcile"),
+                          ("unreported_residual", "does not reconcile"), ("inconsistent_total", "total cash")]:
+        bad = deepcopy(report)
+        contracts = bad["collateral_reconciliation"]
+        if fault == "missing":
+            del contracts[ab.USDCE]
+        elif fault == "offsetting":
+            contracts[ab.USDCE]["residual_micro"] = 1
+            contracts[ab.PUSD]["residual_micro"] = -1
+        elif fault == "unreported_residual":
+            contracts[ab.PUSD]["chain_legs_micro"] -= 1
+        else:
+            contracts[ab.PUSD]["open_micro"] += 1
+            contracts[ab.PUSD]["close_micro"] += 1
+        with pytest.raises(ValueError, match=reason):
+            window_profit(bad, metadata(), W, START, END)
+
+
+@pytest.mark.parametrize("name", ["unexplained_gross_share_movements", "unexplained_gross_cash_movements",
+                                  "other_collateral_fill_txs"])
+def test_weekly_profit_requires_an_explicit_clean_fill_check(chain, name):
+    report = absorb(chain)
+    for value in (1, False, None):
+        report["fill_check"][name] = value
+        with pytest.raises(ValueError, match="fill-level"):
+            window_profit(report, {}, W, START, END)
+    del report["fill_check"][name]
+    with pytest.raises(ValueError, match="fill-level"):
+        window_profit(report, {}, W, START, END)
+
+
+def test_missing_sibling_chain_balance_cannot_be_ranked(chain):
+    # The surviving observed token has valid metadata, P&L and both aggregate balances.
+    report = absorb(chain, [chain.fill("0x01", 101, "BUY", YES, 10, .4)])
+    assert window_profit(report, metadata(), W, START, END) == {COND: 6_000_000}
+    del report["tokens"][NO]
+    del report["reconciliation"][NO]
+    with pytest.raises(ValueError, match="missing for a binary outcome"):
+        window_profit(report, metadata(), W, START, END)
+
+
+def test_matching_block_numbers_cannot_hide_conflicting_boundary_timestamps(chain):
+    report = absorb(chain)
+    report["completeness"]["chain_window_timestamps"][-1] = END - 1
+    with pytest.raises(ValueError, match="block timestamps"):
+        window_profit(report, {}, W, START, END)

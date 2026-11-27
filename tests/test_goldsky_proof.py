@@ -14,7 +14,7 @@ def captured(tmp_path):
     cohort.write_bytes(orjson.dumps({"candidates": ["wallet"], "controls": ["other", "absent"]}))
     tape = tmp_path / "tape"
     writer = SegmentWriter(tape, "goldsky_activity")
-    def page(wallet, current, nxt, *, row_wallet=None, filter_=None):
+    def page(wallet, current, nxt, *, row_wallet=None, filter_=None, sent=1795715999 * 10**9):
         params = {"address": wallet, "start_time": 10, "end_time": 20, "limit": 1}
         if current is not None:
             params["cursor"] = current
@@ -22,7 +22,7 @@ def captured(tmp_path):
             params.update(filter_)
         body = {"data": [{"address": row_wallet or wallet, "block_timestamp": 14}], "next_cursor": nxt}
         writer.append(orjson.dumps(body).decode(),
-                      meta={"url": BASE + "?" + urlencode(params), "status": 200, "job": "cohort-wallet"},
+                      meta={"url": BASE + "?" + urlencode(params), "status": 200, "job": "cohort-wallet", "sent_tw": sent},
                       tw=1795716000 * 10**9)
     def run():
         writer.close()
@@ -66,3 +66,12 @@ def test_rejects_unsealed_segment_even_if_original_pages_are_readable(captured, 
     with pytest.raises(ValueError, match="unsealed"):
         recover(source, tmp_path / "cohort.json", 10, 20, [segment], out.parent / "new")
     assert not (out.parent / "new").exists()
+
+
+@pytest.mark.parametrize("when", [19 * 10**9, 1795716001 * 10**9, None])
+def test_missing_premature_or_reversed_capture_time_publishes_no_proof(captured, when):
+    page, run, out = captured
+    page("wallet", None, None, sent=when)
+    with pytest.raises(ValueError, match="page request must follow"):
+        run()
+    assert not out.exists()

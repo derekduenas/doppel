@@ -114,9 +114,9 @@ def _addr(word: str) -> str:
 
 
 def _words(data: str) -> list[int]:
-    h = data[2:] if data.startswith("0x") else data
-    if len(h) % 64:
-        raise ValueError("incomplete ABI word")
+    h = data[2:]
+    if not data.startswith("0x") or len(h) % 64 or not re.fullmatch(r"[0-9a-fA-F]*", h):
+        raise ValueError("invalid ABI words")
     return [int(h[i:i + 64], 16) for i in range(0, len(h), 64)]
 
 
@@ -133,7 +133,7 @@ def _enc(*words: int) -> str:
 
 def legs_of(log: dict, wallet: str) -> list[dict]:
     """The wallet's signed share or cash movements in one transfer log."""
-    t, addr = log["topics"], log["address"].lower()
+    t, addr = [word.lower() for word in log["topics"]], log["address"].lower()
     base = {"tx": log["transactionHash"].lower(), "block": int(log["blockNumber"], 16),
             "li": int(log["logIndex"], 16)}
     if addr == CTF and t[0] in (T_SINGLE, T_BATCH):
@@ -141,8 +141,11 @@ def legs_of(log: dict, wallet: str) -> list[dict]:
         if wallet not in (frm, to):
             return []
         w = _words(log["data"])
+        if t[0] == T_SINGLE and len(w) != 2:
+            raise ValueError("invalid TransferSingle data")
         ids, vals = ([w[0]], [w[1]]) if t[0] == T_SINGLE else (_array(w, w[0]), _array(w, w[1]))
-        if len(ids) != len(vals):
+        if t[0] == T_BATCH and (len(ids) != len(vals) or w[0] != 64 or w[1] != 96 + 32 * len(ids)
+                                or len(w) != 4 + 2 * len(ids)):
             raise ValueError("inconsistent ERC1155 batch")
         batch = [str(i) for i in ids] if t[0] == T_BATCH else None
         out = []
@@ -155,7 +158,7 @@ def legs_of(log: dict, wallet: str) -> list[dict]:
         frm, to = _addr(t[1]), _addr(t[2])
         if wallet not in (frm, to):
             return []
-        v = _words(log["data"])[0]
+        v, = _words(log["data"])
         d = (v if to == wallet else 0) - (v if frm == wallet else 0)
         return [base | {"asset": "cash", "contract": addr, "delta": d, "cp": frm if to == wallet else to,
                         "batch": None}]
@@ -165,6 +168,8 @@ def legs_of(log: dict, wallet: str) -> list[dict]:
 def order_filled(log: dict) -> dict:
     """One V2 OrderFilled: amounts from the order maker's side (shares, usdc, fee)."""
     w = _words(log["data"])
+    if len(w) != 7:
+        raise ValueError("invalid OrderFilled data")
     side = "BUY" if w[0] == 0 else "SELL"
     usdc, shares = (w[2], w[3]) if side == "BUY" else (w[3], w[2])
     if w[0] not in (0, 1):
@@ -182,21 +187,27 @@ def ctf_events(receipt: dict) -> list[dict]:
     for lg in receipt.get("logs") or []:
         if lg["address"].lower() != CTF or not lg["topics"]:
             continue
-        t, w = lg["topics"], _words(lg["data"])
+        t = [word.lower() for word in lg["topics"]]
+        if t[0] not in (T_SPLIT, T_MERGE, T_REDEEM):
+            continue
+        w = _words(lg["data"])
+        if len(t) != 4 or len(w) < 4 or w[1] != 96 or len(w) != 4 + w[3]:
+            raise ValueError("invalid CTF operation")
         if t[0] in (T_SPLIT, T_MERGE):
             out.append({"kind": "split" if t[0] == T_SPLIT else "merge",
-                        "stakeholder": _addr(t[1]), "condition": t[3][2:].lower(), "amount": w[2]})
+                        "stakeholder": _addr(t[1]), "condition": t[3][2:].lower(), "amount": w[2],
+                        "index_sets": w[4:]})
         elif t[0] == T_REDEEM:
             out.append({"kind": "redeem", "stakeholder": _addr(t[1]),
-                        "condition": f"{w[0]:064x}", "amount": w[2]})
+                        "condition": f"{w[0]:064x}", "amount": w[2], "index_sets": w[4:]})
     return out
 
 
 def _receipt_matches(receipt: dict, tx: str, wallet: str, scanned: list[dict]) -> bool:
     """The receipt used for classification must contain the same wallet movements as getLogs."""
     try:
-        if (receipt["transactionHash"].lower() != tx or receipt.get("status", "0x1") != "0x1"
-                or ("blockNumber" in receipt and int(receipt["blockNumber"], 16) != scanned[0]["block"])):
+        if (receipt["transactionHash"].lower() != tx or receipt["status"] != "0x1"
+                or int(receipt["blockNumber"], 16) != scanned[0]["block"]):
             return False
         for log in receipt["logs"]:
             if (log["transactionHash"].lower() != tx or log.get("removed")
@@ -300,9 +311,12 @@ def scan(chain: Chain, wallet: str, b0: int, b1: int, chunk: int) -> dict:
                 addresses = {address} if isinstance(address, str) else set(address)
                 for lg in batch:
                     block = int(lg["blockNumber"], 16)
-                    ts = lg["topics"]
+                    ts = [word.lower() for word in lg["topics"]]
+                    lg = {**lg, "topics": ts}
                     if (lg.get("removed") or not nxt <= block <= hi or lg["address"].lower() not in addresses
-                            or len(ts) < len(topics) or any(want is not None and ts[i].lower() not in
+                            or len(ts) != (3 if lg["address"].lower() in CASH else 4)
+                            or not all(re.fullmatch(r"0x[0-9a-f]{64}", t) for t in ts)
+                            or any(want is not None and ts[i] not in
                                 (want if isinstance(want, list) else [want]) for i, want in enumerate(topics))):
                         raise RpcError("unexpected_log")
                     key = (lg["transactionHash"].lower(), int(lg["logIndex"], 16))
@@ -352,7 +366,7 @@ def balances(chain: Chain, wallet: str, tokens: list[str], block: int) -> dict[s
         if not isinstance(encoded, str) or len(encoded) != 66 or not encoded.startswith("0x"):
             raise RpcError("invalid_cash_balance")
         try:
-            out[contract] = int(encoded, 16)
+            out[contract], = _words(encoded)
         except ValueError as exc:
             raise RpcError("invalid_cash_balance") from exc
         out["cash"] += out[contract]
@@ -407,7 +421,7 @@ def _ts_fn(known: dict[int, int]) -> Callable[[int], float]:
 def reconstruct(wallet: str, fills: list[dict], legs: list[dict], filled: list[dict],
                 receipts: dict[str, dict | None], start: dict[str, int] | None,
                 end: dict[str, int] | None, pairs: dict[str, tuple[str, int]],
-                block_ts: dict[int, int], window: tuple[int, int]) -> dict:
+                block_ts: dict[int, int], window: tuple[int, int], *, times: tuple[int, int] | None = None) -> dict:
     """Pure core: positions, cash, pairing and reconciliation of one wallet (see module doc)."""
     b0, b1 = window
     pairs = dict(pairs)  # inferences from one wallet's receipts are local to that reconstruction
@@ -469,13 +483,16 @@ def reconstruct(wallet: str, fills: list[dict], legs: list[dict], filled: list[d
                 kind = "unclassified"
             else:
                 kind = next(iter(ev))
-            for e in ctf:  # infer a pair only from a single, unambiguous binary batch
-                for lg in ls:
-                    if (lg["batch"] and len(lg["batch"]) == 2 and set(lg["batch"]) == set(shares)
-                            and e["kind"] == kind and not any(
-                                t in pairs and pairs[t] != (e["condition"], i) for i, t in enumerate(lg["batch"]))):
-                        for idx, tok in enumerate(lg["batch"]):
-                            pairs.setdefault(str(tok), (e["condition"], idx))
+            if len(ctf) == 1 and ctf[0]["kind"] == kind and sorted(ctf[0]["index_sets"]) == [1, 2]:
+                event = ctf[0]
+                batches = {tuple(lg["batch"]) for lg in ls if lg["batch"]}
+                if len(batches) == 1:
+                    batch = next(iter(batches))
+                    if len(batch) == len(shares) == 2 and set(batch) == set(shares):
+                        inferred = {t: (event["condition"], mask - 1)
+                                    for t, mask in zip(batch, event["index_sets"], strict=True)}
+                        if all(t not in pairs or pairs[t] == value for t, value in inferred.items()):
+                            pairs.update(inferred)
         kinds[kind] += 1
         events.append({"block": ls[0]["block"], "tx": tx, "kind": kind, "src": "chain",
                        "chain_log_index": min(lg["li"] for lg in ls),
@@ -523,13 +540,17 @@ def reconstruct(wallet: str, fills: list[dict], legs: list[dict], filled: list[d
     ch_tx: dict[tuple[str, str], int] = defaultdict(int)
     ch_gross: Counter = Counter()
     cash_out: Counter = Counter()
+    other_collateral_txs: set[str] = set()
     for tx in fill_txs:
         for lg in by_tx.get(tx, []):
             ch_tx[(tx, lg["asset"])] += lg["delta"]
             if lg["asset"] != "cash":
                 ch_gross[(tx, lg["asset"])] += abs(lg["delta"])
-            elif lg["delta"] < 0:
-                cash_out[tx] -= lg["delta"]
+            else:
+                if lg["delta"] and lg.get("contract") != PUSD:
+                    other_collateral_txs.add(tx)
+                if lg["delta"] < 0:
+                    cash_out[tx] -= lg["delta"]
     mism = sorted(k for k in set(gs_tx) | set(ch_tx) if gs_tx.get(k, 0) != ch_tx.get(k, 0))
     hidden = sorted(k for k in gs_gross.keys() | ch_gross.keys()
                     if gs_tx[k] == ch_tx[k] and gs_gross[k] != ch_gross[k])
@@ -589,6 +610,8 @@ def reconstruct(wallet: str, fills: list[dict], legs: list[dict], filled: list[d
         causes.append("fill_transaction_has_unexplained_share_movements")
     if hidden_cash:
         causes.append("fill_transaction_has_unexplained_cash_movements")
+    if other_collateral_txs:
+        causes.append("v2_fill_has_other_collateral_movements")
     if matched != len(fills) or matched != len(filled):
         causes.append("fill_orders_disagree")
     if start is None or end is None:
@@ -612,7 +635,8 @@ def reconstruct(wallet: str, fills: list[dict], legs: list[dict], filled: list[d
     if kinds["unclassified"]:
         causes.append("unclassified_chain_txs")
 
-    pairing = _pairing(events, open_, pairs, ts, (ts(b0), ts(b1)))
+    pairing = _pairing(events, open_, pairs, ts, times or (ts(b0), ts(b1)))
+    pairing["interpolated_event_blocks"] = len({e["block"] for e in events if e["shares"] and e["block"] not in known_ts})
     to_f = lambda x: round(x / U, 6)  # noqa: E731
     out_tokens = {}
     for t, s in tok.items():
@@ -636,6 +660,8 @@ def reconstruct(wallet: str, fills: list[dict], legs: list[dict], filled: list[d
                            "examples_unexplained_gross_shares": [list(k) for k in hidden[:20]],
                            "unexplained_gross_cash_movements": len(hidden_cash),
                            "examples_unexplained_gross_cash": hidden_cash[:20],
+                           "other_collateral_fill_txs": len(other_collateral_txs),
+                           "examples_other_collateral_fill_txs": sorted(other_collateral_txs)[:20],
                            "order_filled": of, "chain_fill_txs_missing_in_goldsky": len(missing_in_goldsky),
                            "goldsky_fill_txs_without_chain_legs": len(no_legs),
                            "examples_missing": missing_in_goldsky[:20]},
@@ -650,11 +676,12 @@ def _pairing(events: list[dict], open_: dict[str, int], pairs: dict[str, tuple[s
     for t, (cond, idx) in pairs.items():
         if t in open_:
             markets[cond][idx] = t
-    unpaired = sorted(t for t in open_ if t != "cash" and (t not in pairs or len(markets[pairs[t][0]]) < 2))
+    unpaired = sorted(t for t in open_ if t != "cash" and
+                      (t not in pairs or set(markets[pairs[t][0]]) != {0, 1}))
     out: dict[str, dict] = {}
     tot: defaultdict[str, float] = defaultdict(float)
     for cond, sides in markets.items():
-        if len(sides) < 2:
+        if set(sides) != {0, 1}:
             continue
         a, b = sides[0], sides[1]
         pos = {a: open_[a], b: open_[b]}
@@ -687,7 +714,8 @@ def _pairing(events: list[dict], open_: dict[str, int], pairs: dict[str, tuple[s
                     m[good] += toward
                     m[bad] += abs(di) - toward
                 pos[t] += d
-                m["max_one_sided"] = max(m["max_one_sided"], abs(pos[a] - pos[b]))
+            # A split or merge moves both siblings in the same operation.
+            m["max_one_sided"] = max(m["max_one_sided"], abs(pos[a] - pos[b]))
             if abs(pos[a] - pos[b]) < SPELL_MIN:
                 spell_start = None
             elif spell_start is None:
@@ -710,12 +738,20 @@ def _pairing(events: list[dict], open_: dict[str, int], pairs: dict[str, tuple[s
 def load_pairs(path: Path | None) -> dict[str, tuple[str, int]]:
     """token -> (condition id without 0x, outcome index) from a ledger ``tokens.jsonl`` cache."""
     out: dict[str, tuple[str, int]] = {}
+    slots = {}
     if path and Path(path).exists():
-        for line in Path(path).read_bytes().splitlines():
-            if line.strip():
+        with Path(path).open("rb") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
                 d = orjson.loads(line)
                 if d.get("condition") and d.get("idx") is not None:
-                    out[d["token"]] = (d["condition"].lower().removeprefix("0x"), int(d["idx"]))
+                    token, idx = d["token"], d["idx"]
+                    if type(idx) is not int or idx < 0:
+                        raise ValueError(f"invalid venue outcome index for token {token}")
+                    slot = (d["condition"].lower().removeprefix("0x"), idx)
+                    if out.setdefault(token, slot) != slot or slots.setdefault(slot, token) != token:
+                        raise ValueError(f"conflicting venue outcome mapping for token {token}")
     return out
 
 
@@ -829,7 +865,7 @@ def absorb_wallet(chain: Chain, wallet: str, fills: list[dict], window: tuple[in
         start = end = None
     if not bts:
         bts = {b0: times[0], b1: times[1]}
-    res = reconstruct(wallet, fills, legs, filled, receipts, start, end, pairs, bts, window)
+    res = reconstruct(wallet, fills, legs, filled, receipts, start, end, pairs, bts, window, times=times)
     bounds_ok = bool(boundaries and boundaries[b0 - 1] < times[0] <= bts[b0]
                      and bts[b0] <= bts[b1] < times[1] <= boundaries[b1 + 1])
     causes = res.pop("causes")
@@ -843,6 +879,12 @@ def absorb_wallet(chain: Chain, wallet: str, fills: list[dict], window: tuple[in
         causes.insert(0, "goldsky_store_unverified")
     if not sc["complete"]:
         causes.insert(0, "chain_scan_incomplete")
+    pairing = res["pairing"]
+    pairing["coverage"] = ("unreconciled" if causes else "incomplete" if pairing["tokens_without_pair"]
+                           else "complete" if pairing["markets"] else "no_positions_observed")
+    if pairing["coverage"] != "complete":
+        for key in ("completing_share_of_buys", "paired_share_of_holding_time", "longest_one_sided_s"):
+            pairing[key] = None
     res = {"status": "not_reconciled" if causes else "reconciled", "not_reconciled": bool(causes),
            "causes": causes, "window_time": list(times),
            "completeness": {"goldsky_complete": store_ok, "goldsky_pagination_complete": pagination_ok,

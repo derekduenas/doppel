@@ -4,7 +4,7 @@ from copy import deepcopy
 import pytest
 
 from doppel.lab import absorb as ab
-from test_absorb import AD, COND, NO, O, U, W, YES, FakeChain, _run
+from test_absorb import AD, COND, NO, O, U, W, YES, FakeChain, _run, _w
 
 
 def network(tmp_path, cls=FakeChain):
@@ -58,6 +58,17 @@ def test_same_tx_extra_opposing_cash_movements_are_visible(tmp_path):
     assert "fill_transaction_has_unexplained_cash_movements" in result["causes"]
 
 
+def test_v2_proceeds_must_be_in_the_exchange_collateral(tmp_path):
+    chain = network(tmp_path)
+    chain.open[(ab.CTF, W, YES)] = 10 * U
+    row = chain.fill("0x01", 20, "SELL", YES, 10, 0.4)
+    next(lg for lg in chain.logs if lg["address"] == ab.PUSD)["address"] = ab.USDCE
+    result = _run(chain, [row])
+    assert result["reconciliation"]["cash"]["residual"] == 0
+    assert all(r["residual_micro"] == 0 for r in result["collateral_reconciliation"].values())
+    assert "v2_fill_has_other_collateral_movements" in result["causes"]
+
+
 def test_same_block_fills_follow_exchange_log_index(tmp_path):
     chain = network(tmp_path)
     buy = chain.fill("0xff", 20, "BUY", YES, 10, 0.4)
@@ -71,7 +82,8 @@ def test_same_block_fills_follow_exchange_log_index(tmp_path):
     assert result["tokens"][YES]["min_position"] == 0
 
 
-@pytest.mark.parametrize("fault", ["wrong_transaction", "missing_transfer", "foreign_event", "malformed_event"])
+@pytest.mark.parametrize("fault", ["wrong_transaction", "missing_transfer", "foreign_event", "malformed_event",
+                                   "missing_status", "missing_block", "failed_status", "wrong_block"])
 def test_receipt_must_match_observed_wallet_transfers(tmp_path, fault):
     chain = network(tmp_path)
     chain.batch("0x10", 20, AD, W, [YES, NO], [3 * U, 3 * U])
@@ -83,6 +95,14 @@ def test_receipt_must_match_observed_wallet_transfers(tmp_path, fault):
         receipt["logs"].pop(0)
     elif fault == "foreign_event":
         receipt["logs"][1]["transactionHash"] = "0x99"
+    elif fault == "missing_status":
+        del receipt["status"]
+    elif fault == "missing_block":
+        del receipt["blockNumber"]
+    elif fault == "failed_status":
+        receipt["status"] = "0x0"
+    elif fault == "wrong_block":
+        receipt["blockNumber"] = "0x21"
     else:
         receipt["logs"][1]["data"] = "0x"
     chain.receipts["0x10"] = receipt
@@ -109,6 +129,21 @@ def test_one_wallet_cannot_change_caller_pair_metadata(tmp_path):
     pairs = {}
     assert _run(chain, [], pairs=pairs)["tokens"][YES]["condition"] == COND
     assert pairs == {}
+
+
+@pytest.mark.parametrize("partition", [[2, 1], [1, 4]])
+def test_indices_come_from_the_actual_binary_partition(tmp_path, partition):
+    chain = network(tmp_path)
+    chain.cash("0x10", 20, W, ab.CTF, 3 * U)
+    chain.batch("0x10", 20, ab.ZERO, W, [NO, YES], [3 * U, 3 * U])
+    chain.ctf_event("0x10", 20, "split", W, 3 * U)
+    chain.logs[-1]["data"] = _w(int(ab.USDCE, 16), 96, 3 * U, 2, *partition)
+    result = _run(chain, [])
+    assert result["status"] == "reconciled", result["causes"]
+    if partition == [2, 1]:
+        assert [result["tokens"][t]["idx"] for t in [YES, NO]] == [0, 1]
+    else:
+        assert sorted(result["pairing"]["tokens_without_pair"]) == sorted([YES, NO])
 
 
 def test_fill_order_with_wrong_block_fails_even_if_window_balances_agree(tmp_path):

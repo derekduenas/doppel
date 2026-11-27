@@ -237,6 +237,8 @@ async def _pull_pages(job: str, params: dict, key: str, ledger: Ledger, writer: 
     pagination.jsonl), progress is recorded after every page and the pull resumes from the last
     recorded cursor of the same (address, start_time, end_time)."""
     ikey = _interval(params)
+    if ikey[1] >= ikey[2] or time.time_ns() < ikey[2] * 10**9:
+        raise ValueError("Goldsky query interval must be nonempty and already ended")
     if pages is not None and set(params) - {"address", "start_time", "end_time"}:
         raise ValueError("a filtered query cannot share a wallet pagination checkpoint")
     prev = pagination_state(pages).get(ikey) if pages is not None else None

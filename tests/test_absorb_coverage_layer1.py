@@ -26,7 +26,8 @@ def test_smaller_idle_window_still_requires_the_matching_wallet_store(tmp_path):
         if cursor:
             query["cursor"] = cursor
         writer.append(orjson.dumps({"data": rows, "next_cursor": nxt}).decode(),
-                      meta={"url": goldsky.BASE + "?" + urlencode(query), "status": 200, "job": "cohort-x"},
+                      meta={"url": goldsky.BASE + "?" + urlencode(query), "status": 200, "job": "cohort-x",
+                            "sent_tw": 1795715999 * 10**9},
                       tw=1795716000 * 10**9)
     writer.close()
     proof = tmp_path / "recovered"
@@ -135,3 +136,16 @@ async def test_live_cursor_resume_binds_each_page_and_requires_explicit_end(tmp_
         await goldsky._pull_pages("cohort-y", q | {"end_time": 1100}, "", ledger, writer, 1, Session(), pages)
     assert not goldsky.pagination_state(pages)[W, 1010, 1100]["complete"]
     writer.close()
+
+def test_future_interval_cannot_reserve_credit(tmp_path, monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(goldsky.time, "time_ns", lambda: 19 * 10**9)
+    ledger = goldsky.Ledger(tmp_path / "ledger", cap_rows=1000)
+    writer = SegmentWriter(tmp_path / "tape", "goldsky_activity")
+    query = {"address": W, "start_time": 10, "end_time": 20}
+    pages = tmp_path / "pages.jsonl"
+    with pytest.raises(ValueError, match="already ended"):
+        asyncio.run(goldsky._pull_pages("cohort-x", query, "", ledger, writer, 1, pages=pages))
+    writer.close()
+    assert not pages.exists() and ledger.summary()["reserved_rows"] == ledger.summary()["rows"] == 0

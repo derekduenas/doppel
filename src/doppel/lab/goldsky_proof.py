@@ -61,6 +61,9 @@ def recover(tape: Path, cohort: Path, start: int, end: int, segments: list[str],
             wallet, lo, hi = _interval({key: vals[0] for key, vals in q.items()})
             if wallet not in wallets or (lo, hi) != (start, end):
                 continue
+            sent, received = meta.get("sent_tw"), rec.get("tw")
+            if type(sent) is not int or type(received) is not int or not hi * 10**9 <= sent <= received:
+                raise ValueError(f"page request must follow the entire query interval for {wallet} in {name}")
             state = states.setdefault(wallet, {"address": wallet, "start_time": lo, "end_time": hi,
                        "pages": 0, "rows": 0, "cursor": None, "complete": False, "stop": "archived_prefix",
                        "trade_binding": EMPTY_BINDING})

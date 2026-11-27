@@ -38,7 +38,8 @@ class FakeChain:
         lg = {"address": address, "topics": topics, "data": data, "transactionHash": tx,
               "blockNumber": hex(block), "logIndex": hex(li)}
         self.logs.append(lg)
-        self.receipts.setdefault(tx, {"transactionHash": tx, "from": "0x" + "ee" * 20, "logs": []})
+        self.receipts.setdefault(tx, {"transactionHash": tx, "blockNumber": hex(block), "status": "0x1",
+                                      "from": "0x" + "ee" * 20, "logs": []})
         self.receipts[tx]["logs"].append(lg)
         return lg
 
@@ -56,7 +57,7 @@ class FakeChain:
     def ctf_event(self, tx, block, kind, who, amount):
         if kind == "redeem":
             self._log(ab.CTF, [ab.T_REDEEM, ab.topic(who), ab.topic(ab.USDCE), "0x" + "0" * 64],
-                      _w(int(COND, 16), 64, amount, 2, 1, 2), tx, block)
+                      _w(int(COND, 16), 96, amount, 2, 1, 2), tx, block)
         else:
             t = ab.T_SPLIT if kind == "split" else ab.T_MERGE
             self._log(ab.CTF, [t, ab.topic(who), "0x" + "0" * 64, "0x" + COND],

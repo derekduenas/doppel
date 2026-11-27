@@ -10,7 +10,7 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from decimal import Decimal
 
-from .absorb import ADAPTERS, U, ZERO
+from .absorb import ADAPTERS, CASH, U, ZERO
 from .scan import LEN, WINDOW
 
 WEEK = 7 * 86400
@@ -113,6 +113,20 @@ def _verify_operation(event, condition, payout, wallet):
                  "redemption cash disagrees with burned shares and resolved payout")
 
 
+def _verify_collateral(contracts, aggregate):
+    _require(isinstance(contracts, dict) and set(contracts) == set(CASH), "missing collateral contract evidence")
+    totals = Counter()
+    for row in contracts.values():
+        opened, closed, change, moved, residual = (
+            row[k] for k in ("open_micro", "close_micro", "observed_micro", "chain_legs_micro", "residual_micro"))
+        _require(all(type(n) is int for n in (opened, closed, change, moved, residual)) and
+                 min(opened, closed) >= 0 and closed - opened == change == moved and residual == 0,
+                 "collateral contract does not reconcile exactly")
+        totals.update({"start": opened, "end": closed, "observed": change, "chain_legs": moved})
+    _require(all(total == _micro(aggregate[key]) for key, total in totals.items()),
+             "collateral contracts disagree with total cash")
+
+
 def _profit(report, tokens, wallet, start, end):
     _require(type(start) is int and type(end) is int and end - start == WEEK, "expected one complete week")
     _require(report["wallet"] == wallet and report["window_time"] == [start, end], "wallet or weekly bounds differ")
@@ -125,12 +139,19 @@ def _profit(report, tokens, wallet, start, end):
              "incomplete pagination, chain scan or receipts")
     fill = report["fill_check"]
     check = fill["order_filled"]
-    _require(check["matched"] == check["chain"] == report["goldsky_fills"] and
-             all(check[k] == 0 for k in ("amount_mismatch", "chain_only", "goldsky_only")) and
-             all(fill[k] == 0 for k in ("tx_asset_mismatches", "chain_fill_txs_missing_in_goldsky",
-                                        "goldsky_fill_txs_without_chain_legs")), "fill-level chain checks disagree")
+    counts_ok = (check["matched"], check["chain"], report["goldsky_fills"])
+    anomalies = [check.get(k) for k in ("amount_mismatch", "chain_only", "goldsky_only")]
+    anomalies.extend(fill.get(k) for k in ("tx_asset_mismatches", "chain_fill_txs_missing_in_goldsky",
+                                           "goldsky_fill_txs_without_chain_legs", "unexplained_gross_share_movements",
+                                           "unexplained_gross_cash_movements", "other_collateral_fill_txs"))
+    _require(all(type(n) is int and n >= 0 for n in counts_ok) and len(set(counts_ok)) == 1 and
+             all(type(n) is int and n == 0 for n in anomalies), "fill-level chain checks disagree")
     b0, b1 = report["window_blocks"]
     _require(type(b0) is int and type(b1) is int and 0 < b0 <= b1, "invalid block range")
+    timestamps = coverage.get("chain_window_timestamps")
+    _require(isinstance(timestamps, list) and len(timestamps) == 4 and all(type(t) is int for t in timestamps)
+             and timestamps[0] < start <= timestamps[1] <= timestamps[2] < end <= timestamps[3],
+             "block timestamps do not enclose the weekly interval")
     rows = report["tokens"]
     positions = {t: _micro(r["open"]) for t, r in rows.items()}
     markets = _markets(rows, tokens, start, end)
@@ -195,6 +216,7 @@ def _profit(report, tokens, wallet, start, end):
              fees == _micro(report["cash"]["fees"]), "condition cash or fee totals disagree with absorption")
     rec = report["reconciliation"]
     _require(set(rec) == set(rows) | {"cash"}, "incomplete balance reconciliation")
+    _verify_collateral(report.get("collateral_reconciliation"), rec["cash"])
     for token, balances in rec.items():
         opened, closed, delta, built, on_chain, residual, log_residual = (
             _micro(balances[k]) for k in ("start", "end", "observed", "reconstructed", "chain_legs", "residual", "log_residual"))
