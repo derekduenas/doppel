@@ -157,7 +157,8 @@ def scan(root: Path, stream: str, t_from: int, t_to: int, queries: list[tuple],
     levels = query_levels or {}
     observed = _ReceivedBook({tok for _, tok, _ in qs} if details else set(), {key[0] for key in cancels})
     state, detail, state_integrity, grid, grid_integrity = {}, {}, {}, {}, {}
-    at_cancel, cancel_diff, fill_tw = {}, {}, {}
+    state_bracket, grid_bracket = {}, {}
+    at_cancel, cancel_tw, cancel_diff, fill_tw = {}, {}, {}, {}
     fill_prints = defaultdict(list)
     qi = 0
     start = max(t_from, grid_from) if grid_from is not None else t_from
@@ -172,6 +173,7 @@ def scan(root: Path, stream: str, t_from: int, t_to: int, queries: list[tuple],
             status, top = observed.observe(tok, cut)
             state[key] = top
             state_integrity[key] = integrity
+            state_bracket[key] = tw
             if details:
                 detail[key] = observed.details(tok, cut, top, status, levels.get(key))
             emitted.append((state_integrity, key))
@@ -181,6 +183,7 @@ def scan(root: Path, stream: str, t_from: int, t_to: int, queries: list[tuple],
                 key = (slug, next_bin, idx)
                 _, grid[key] = observed.observe(tok, next_bin * NS)
                 grid_integrity[key] = integrity
+                grid_bracket[key] = tw
                 emitted.append((grid_integrity, key))
             next_bin += GRID_S
         return emitted
@@ -219,6 +222,7 @@ def scan(root: Path, stream: str, t_from: int, t_to: int, queries: list[tuple],
                         top = observed.before_cancel(it.asset)
                         for key, remaining in near:
                             cancel_diff[key] = abs(dec - remaining)
+                            cancel_tw[key] = tw
                             if top is None:
                                 at_cancel.pop(key, None)
                             else:
@@ -230,5 +234,6 @@ def scan(root: Path, stream: str, t_from: int, t_to: int, queries: list[tuple],
                   if a in observed.first_market and b in observed.first_market
                   and observed.first_market[a][0] == observed.first_market[b][0] == observed.book.market_of.get(a)}
     return {"state": state, "detail": detail, "state_integrity": state_integrity, "grid": grid,
-            "grid_integrity": grid_integrity, "at_cancel": at_cancel, "fill_tw": fill_tw,
+            "state_bracket": state_bracket, "grid_bracket": grid_bracket,
+            "grid_integrity": grid_integrity, "at_cancel": at_cancel, "cancel_tw": cancel_tw, "fill_tw": fill_tw,
             "fill_prints": dict(fill_prints), "mates": mates, "mate_known_tw": mate_known}

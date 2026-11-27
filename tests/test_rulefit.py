@@ -232,6 +232,55 @@ def test_known_rule_is_recovered(fitted):
     assert ex["price"]["value"] > 0.5 and ex["timing"]["null"]
 
 
+def test_held_out_labels_cannot_change_the_executable_candidate(fitted):
+    _, before, _, data = fitted
+    split = before["inputs"]["split"]["t_test_ns"]
+    table = rulefit.decision_table(data / "tape", data / "om", data / "ordertape.jsonl", W, T0,
+                                   T0 + 3600, [data / "tokens.jsonl"])
+    for spec in table["specs"]:
+        row = spec["row"]
+        if row["window_start_ns"] < split:
+            continue
+        spec["size"] = row["size"] = 900
+        new_px = 2 if row["up_side"] == "bid" else 98
+        for key in ("d_touch_c", "d_mid_c", "d_fair_c"):
+            if row[key] is not None:
+                row[key] += new_px - row["px_c"]
+        row["px_c"] = new_px
+        spec["om"]["rest_max_ms"] = 120_000
+    # Removing held wallet activity cannot move a study-calendar cutoff.
+    assert rulefit.calendar_thresholds(table | {"rows": []}) == rulefit.calendar_thresholds(table)
+    # A coverage defect and ambiguous maker fill first observed in the test period
+    # can invalidate later answers but cannot change pre-test fitted fields.
+    table["inv"].first_incomplete_ns = split
+    table["first_unlocated_maker_ns"][None] = split
+    table["unlocated_maker_slugs"] = {c["slug"] for c in table["opportunity_panel"]}
+    genome, after = rulefit.build(table, W)
+    assert before["genome"]["id"] == before["frozen_draft"]["candidate_id"] == after["frozen_draft"]["candidate_id"]
+    assert genome is None and before["genome"]["status"] == "draft"
+    assert after["emitted_genome_check"]["mae_c_when_quoting"] > before["emitted_genome_check"]["mae_c_when_quoting"] + 20
+
+
+def test_real_hypothesis_can_only_be_sealed_after_retrospective_diagnostics(fitted, tmp_path):
+    _, _, _, data = fitted
+    path = tmp_path / "verified.jsonl"
+    path.write_bytes(jl([orjson.loads(line) | {"verified": True} for line in (data / "ordertape.jsonl").read_bytes().splitlines()]))
+    table = rulefit.decision_table(data / "tape", data / "om", path, W, T0, T0 + 3600, [data / "tokens.jsonl"])
+    assert table["inputs"]["fills"]["unflagged_input"] is False and table["inputs"]["fills"]["controlled_simulation"] is False
+    # Test a supplied fair equal to mid; no substitution may satisfy the real path.
+    table["inputs"]["fair"] = True
+    for row in table["rows"]:
+        row["fair_c"], row["d_fair_c"] = row["mid_c"], row["d_mid_c"]
+    genome, report = rulefit.build(table, W)
+    assert genome is None and report["genome"]["id"] is None and report["explained_by_observed_inputs"]["verdict"] is None
+    h = report["research_hypothesis"]
+    assert h and h["status"] == "retrospective_unvalidated" and h["research_data_end_exclusive"] == T0 + 3600
+    obj = h["candidate"]
+    assert obj["status"] == "draft" and from_dict(obj).id == h["genome_id"]
+    assert obj["evidence"]["placement_label_scope"] == "retrospective_full_interval"
+    assert hashlib.sha256(orjson.dumps(obj, option=orjson.OPT_SORT_KEYS)).hexdigest() == h["candidate_sha256"]
+
+
 def test_genome_is_a_valid_draft_that_acts_like_the_fit_and_cannot_be_registered(fitted, tmp_path):
     genome, rep, rows, tmp = fitted
     assert genome["status"] == "draft" and rep["genome"]["registered"] is False and rep["genome"]["validate"] == []
@@ -240,17 +289,18 @@ def test_genome_is_a_valid_draft_that_acts_like_the_fit_and_cannot_be_registered
     assert g.source.wallets == (W,) and g.source.parents == () and g.universe.venue == "intl_sim"
     assert g.universe.assets == ("btc",) and g.universe.horizons == ("5m",)
     assert g.evidence["wallet"] == W and g.evidence["label"] == "rule conditional on fill"
-    assert g.evidence["fit_range"] == {"from": T0, "to": T0 + 3600}
+    assert g.evidence["fit_range"] == {"from": T0, "to": rep["inputs"]["split"]["t_test_ns"] // NS}
     m = g.maker
     assert m is not None and m.quote_ref == "mid" and m.sides == "both" and 97 <= m.size <= 100
-    assert 1.5 < m.half_spread_c < 2.5 and 0.015 < m.skew_c_per_contract < 0.035 and m.max_quote_age_s == 2
+    assert 1.5 < m.half_spread_c < 2.5 and 0.015 < m.skew_c_per_contract < 0.035 and m.max_quote_age_s == 30
+    assert rep["frozen_draft"]["witnessed_training_cancels"] == 0  # fixture has no dated cancellation frames
     # the registry refuses the draft status (main 7778177): nothing rulefit writes can seal itself
     reg = Registry(tmp_path)
     with pytest.raises(RegistryError, match="status 'draft' cannot be registered"):
         reg.register(orjson.loads((tmp / "out" / "genome.json").read_bytes()), "rulefit-test", "h",
                      (time.time() + 3600, time.time() + 7200))
     assert not reg.path.exists() or reg.lines() == []
-    # every number that reaches the genome carries n, a window-clustered CI and a holdout score
+    # Descriptive all-sample statistics carry sample size, a window-clustered CI and a holdout score.
     e, part = rep["expressible_price_rule"], rep["participation_rule"]
     fitted_numbers = [e["half_spread_fit"], e["centre_shift_fit"], e["skew_fit"], rep["size_rule"]["median_size"],
                       part["tte_s_p1"], part["tau_s_p1"]]
@@ -258,9 +308,9 @@ def test_genome_is_a_valid_draft_that_acts_like_the_fit_and_cannot_be_registered
     assert rep["timing_rule"]["cancel"]["life_ms_p90"] == {"value": 1500, "method": "cancels of partly filled orders",
                                                            "bias": "length-biased"}
     assert all(x["n"] > 100 and x["clusters"] == 6 and len(x["ci95"]) == 2 and x["oos"] for x in fitted_numbers)
-    assert e["half_spread_fit"]["ci95"][0] <= m.half_spread_c <= e["half_spread_fit"]["ci95"][1]
+    assert m.half_spread_c == e["frozen_quote"]["half_spread_c"]
     # the printed rule is the selected one: intercept at zero inventory with the skew, not the raw median
-    assert g.evidence["price_rule"]["ask"]["rule"] == rep["price_rule"]["ask"]["rule"]
+    assert g.evidence["price_rule"]["ask"] == rep["price_rule"]["ask"]["train_rule"]
     u = rep["price_rule"]["ask"]["rule"]
     assert u["ref"] == "mid" and abs(u["offset_c"] - 2) < 0.1 and abs(u["skew_c_per_contract"] - 0.05) < 0.002
     assert rep["price_rule"]["bid"]["rule"] | {"fitted_on": 0} == {"ref": "touch", "offset_c": 0,
@@ -270,31 +320,31 @@ def test_genome_is_a_valid_draft_that_acts_like_the_fit_and_cannot_be_registered
 
     # universe from p1, not p10: it keeps ~99 % of the wallet's own orders (was ~80 %)
     uni = rep["universe_fit"]
-    assert g.universe.tte_min_s == uni["tte_min_s"] == int(part["tte_s_p1"]["value"])
+    assert g.universe.tte_min_s == uni["tte_min_s"]
     assert uni["own_orders_excluded_share"] <= 0.025
     # risk measured from the wallet, so one fill does not silence a side (default max_inventory is 50)
     rf = rep["risk_fit"]
     assert g.risk.max_inventory == rf["max_inventory"] >= max(m.size, rf["abs_inventory_at_placement"]["p99"])
     assert g.risk.max_notional_per_window == math.ceil(rf["window_opening_notional_usd"]["p95"])
-    # The emitted genome's static intent check describes the same observations used to fit it.
+    # The frozen genome is evaluated on the held-out observations.
     ck = rep["emitted_genome_check"]
     assert ck["would_quote_share"] >= 0.95 and ck["fair_substituted_by_mid"] is True
-    assert "in-sample" in ck["note"].lower()
+    assert ck["price_skill_when_quoting"]["ci95"][0] > 0
     test = [r for r in rows if r["window_start_ns"] >= rep["inputs"]["split"]["t_test_ns"]]
     errs = []
-    for r in rows:
+    for r in test:
         b, a = g.maker_quotes({"mid_up_c": r["mid_c"], "fair_up": r["mid_c"] / 100, "inventory_up": r["inv"],
                                "tau_s": r["tau_s"], "tte_s": r["tte_s"]})
         q = b if r["up_side"] == "bid" else a
         if q is not None:
             errs.append(abs(q - r["px_c"]))
-    assert ck["rows"] == len(rows) and ck["would_quote"] <= len(errs)
+    assert ck["rows"] == len(test) and ck["would_quote"] <= len(errs)
     assert len(errs) - ck["would_quote"] == sum(ck["silent_by"].get(k, 0)
                                                 for k in ("no_room", "would_cross_book"))
     assert ck["mae_c_when_quoting"] < 1.2 and sum(ck["silent_by"].values()) == ck["rows"] - ck["would_quote"]
     # with the schema-default risk the same rule goes silent on the rows where |inventory| >= 50
     capped = rulefit.check_genome(dataclasses.replace(g, risk=dataclasses.replace(g.risk, max_inventory=50.0)),
-                                  rows, False)
+                                  test, False)
     assert capped["would_quote"] < ck["would_quote"] and capped["silent_by"]["inventory_cap_or_side"] > 0
 
     items = {c["item"]: c for c in rep["cannot_express"]}
@@ -343,6 +393,12 @@ def test_selection_never_sees_the_test_slice(fitted):
     assert all(no_test[s]["offset_c"]["oos"]["mae_c"] is None for s in ("bid", "ask"))
     assert rulefit.fit_expressible(early + late_fair, late_only, th)["refs_compared"] == ["mid"]
     assert rulefit._phase([{"window_start_ns": th[0] - NS, "window_end_ns": th[1] + NS}], th).tolist() == [-1]
+    crossed = {"window_start_ns": th[0], "window_end_ns": th[1], "cutoff_tw_ns": th[1] - 1, "placed_tw_ns": th[1]}
+    assert rulefit._phase([crossed], th).tolist() == [-1]
+    earlier = crossed | {"placed_tw_ns": th[1] - 1}
+    for late in ({"signed_label_tw_ns": th[1]}, {"signed_label_tw_ns": None}, {"book_bracket_tw_ns": th[1]}):
+        assert rulefit._phase([earlier | late], th).tolist() == [-1]
+    assert rulefit._phase([earlier | {"signed_label_tw_ns": th[1] - 1}], th).tolist() == [1]
 
 
 def test_mid_and_fair_share_one_mask_and_only_fair_assets_enter_the_genome(fitted):
@@ -540,6 +596,8 @@ def test_inventory_and_notional_count_only_fills_located_before_the_cutoff():
     # Only the received Up purchase opens exposure. The later Down purchase closes it.
     assert [round(inv.notional_at("s", t * NS), 6) for t in (50, 51, 91, 96)] == [0, 0, 4, 4]
     assert inv.window_notional({"s"}) == [4]
+    assert inv.window_notional({"s"}, before=90 * NS) == []
+    assert inv.window_notional({"s"}, before=91 * NS) == [4]
     assert inv.any_between("s", 90 * NS, 96 * NS) and not inv.any_between("s", 90 * NS, 95 * NS)
     assert inv.at("other", 10**20) == 0 and inv.notional_at("other", 10**20) == 0
 
@@ -969,7 +1027,7 @@ def test_a_side_chosen_by_a_hidden_signal_is_not_explained():
     assert t["kind"] == "one_sided_by_window" and t["explained"] is False and t["ci95"][0] <= 0.5
     assert "includes chance" in t["reason"] and t["n_held_out"] >= 10
     # the same wallet whose side follows the book at its first order: explained, on the held-out windows
-    seen = side_rows(40, lambda k, mid, rng: "bid" if mid > 50 else "ask")
+    seen = side_rows(80, lambda k, mid, rng: "bid" if mid > 50 else "ask")
     t = rulefit.side_test(seen, thresholds(seen))
     assert t["explained"] is True and t["predictor"] == "mid_minus_50" and t["balanced_accuracy"] == 1 and t["ci95"][0] > 0.5
     # too few held-out windows to tell: not explained (never the benefit of the doubt)
@@ -980,6 +1038,11 @@ def test_a_side_chosen_by_a_hidden_signal_is_not_explained():
     assert rulefit.side_test(const, thresholds(const))["agreement_ci95"][0] > 0.5
     assert rulefit.side_test(const, thresholds(const))["kind"] == "one_sided_constant"
     assert rulefit.side_test(const, thresholds(const))["explained"] is True
+    cut = thresholds(const)
+    flipped = [r if r["window_start_ns"] < cut[1] else r | {"up_side": "ask"} for r in const]
+    rejected = rulefit.side_test(flipped, cut)
+    assert rejected["kind"] == "one_sided_constant" and rejected["quote_side"] == "bid_only"
+    assert rejected["held_out_agreements"] == 0 and rejected["explained"] is False
     two = [r | {"up_side": "bid" if i % 2 else "ask"} for i, r in enumerate(hidden)]
     assert rulefit.side_test(two, th)["kind"] == "two_sided" and rulefit.side_test(two, th)["explained"] is None
     shifted = [r if r["window_start_ns"] < th[0] else r | {"up_side": "bid"} for r in two]
@@ -1041,6 +1104,16 @@ def taker_world(rule, windows=30, seed=2):
     return {"takes": takes, "tok": tok, "res": {"grid": grid}, "fair": FlatFair(fair), "opportunity_panel": panel}
 
 
+def test_later_fair_coverage_cannot_admit_a_taker_timing_rival():
+    table = taker_world(lambda mid, fair, frac, rng: [("BUY", int(mid > 50))])
+    starts = sorted({info["start"] for info in table["tok"].values()})
+    val, _ = thresholds([{"window_start_ns": s * NS} for s in starts])
+    ref = table["fair"].fair
+    table["fair"] = FlatFair({key: value for key, value in ref.items() if key[1] * NS >= val})
+    result = rulefit.fit_taker(table)
+    assert "edge_vs_fair" not in result["when"]["validation_deviance"]
+
+
 def test_a_random_taker_gets_no_rule_and_a_rule_following_taker_gets_one():
     def decoy(mid, fair, frac, rng):   # Poisson times, a coin for the token: nothing to find
         return [("BUY", int(rng.random() < 0.5)) for _ in range(rng.poisson(1.5))]
@@ -1051,11 +1124,13 @@ def test_a_random_taker_gets_no_rule_and_a_rule_following_taker_gets_one():
     r = rulefit.fit_taker(taker_world(decoy))
     assert r["found"] is False and r["n_takes"] > 500 and r["reason"].startswith("no rule found")
     assert r["when"]["explained"] is False and r["when"]["ci95"][0] <= rulefit.SKILL_MIN
-    assert r["side"]["explained"] is False and r["side"]["ci95"][0] <= 0.5 <= r["side"]["ci95"][1]
+    assert r["side"]["explained"] is False and r["side"]["ci95"][0] <= 0.5
     r = rulefit.fit_taker(taker_world(edge))
     assert r["found"] is True and r["reason"] is None
     assert r["when"]["feature"] == "edge_vs_fair" and r["when"]["value"] > 0.3 and r["when"]["ci95"][0] > rulefit.SKILL_MIN
     assert r["side"]["predictor"] == "fair_minus_mid" and r["side"]["balanced_accuracy"] == 1
+    thin = rulefit.fit_taker(taker_world(edge, windows=6))
+    assert thin["when"]["clusters"] == 2 and thin["verdict"] is None
     # always the same token: the side needs no rule, the timing still does
     r = rulefit.fit_taker(taker_world(lambda mid, fair, frac, rng: [("BUY", 0)] * rng.poisson(1.5)))
     assert r["side"]["explained"] is True and r["found"] is False
@@ -1284,3 +1359,7 @@ def test_real_price_draft_cannot_depend_on_attributed_fill_proxy(tmp_path):
     assert abs(rep["price_rule"]["ask"]["rule"]["skew_c_per_contract"]) > 0.01
     assert rep["expressible_price_rule"]["skew_c_per_contract"] == 0
     assert genome is None and any("missing reference" in reason for reason in rep["genome"]["reasons"])
+    assert rep["frozen_draft"]["match_scope"] == "retrospective_full_interval"
+    assert rep["frozen_draft"]["candidate_id"] is None and rep["explained_by_observed_inputs"]["verdict"] is None
+    assert any("independently bounded training-match evidence" in reason for reason in rep["genome"]["reasons"])
+    assert rep["research_hypothesis"] is None

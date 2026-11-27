@@ -70,7 +70,7 @@ def test_raw_import_needs_documented_receipt_and_uses_earliest_observation(tmp_p
 
 def test_only_matching_execution_print_can_supply_fill_time():
     row = {"tx": "tx", "token": "down", "condition": "market", "role": "maker", "side": "BUY",
-           "price": 0.07, "shares": 60}
+           "price": 0.07, "shares": 60, "block_ts": 1}
     def event(t, **changes):
         args = {"venue_ms": 1000, "tw_ns": t, "asset": "down", "price": 0.07, "size": 60,
                 "side": "SELL", "tx": "tx", "market": "market"}
@@ -80,6 +80,8 @@ def test_only_matching_execution_print_can_supply_fill_time():
     bind_fill_receipts([row], {"tx": invalid}, {}, {})
     assert row["receipt_tw"] is None
     bind_fill_receipts([row], {"tx": invalid + [event(8), event(7)]}, {}, {})
+    assert row["receipt_tw"] is None and row["conflict_tw"] == 1
+    bind_fill_receipts([row], {"tx": [event(8), event(7)]}, {}, {})
     assert row["receipt_tw"] == 7
     duplicate = dict(row)
     bind_fill_receipts([row, duplicate], {"tx": [event(7)]}, {}, {})

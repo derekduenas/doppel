@@ -103,7 +103,7 @@ def public_rows(tape, layer1_root, first, second):
         observations.append({"cutoff_s": t, "book": book, "capture": capture})
         diagnostics[reason] += 1
     return ({"schema": "rival-public/1", "scope": "real", "start": START, "end": END, "cells": observations},
-            {"sources": public_proofs, "holdout_down_witnesses": down, "exclusion_store_sha256": stores,
+            {"sources": public_proofs, "holdout_down_witnesses": {str(w): pair for w, pair in down.items()}, "exclusion_store_sha256": stores,
              "excluded_transactions": len(excluded), "cell_diagnostics": dict(diagnostics)})
 
 

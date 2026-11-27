@@ -45,7 +45,7 @@ INPUTS
    The best bid/ask can contain the wallet's own OTHER resting quotes: they are anonymous.
 2. FITS. Each fitted number is ``{value, n, clusters, ci95, oos}``: ci95 = percentile bootstrap
    resampling market windows (seeded). The price fits share a chronological split of market
-   windows (``thresholds``), with roughly 56 % for fit, 14 % for validation and 30 % for test.
+   windows from the study calendar, with roughly 56 % for fit, 14 % for validation and 30 % for test.
    Windows straddling a boundary are excluded from the price fits. Every price-model choice (reference,
    constant vs inventory model, keeping the skew) is made on the validation slice with models
    fitted on the fit slice; the chosen model is refitted on fit + validation and scored ONCE on
@@ -76,16 +76,18 @@ INPUTS
    and scored against the per-side rules on the same test rows. ``Risk.max_inventory`` and
    ``max_notional_per_window`` are simulation settings derived from attributed fills (>= fitted size and p99 |inventory|;
    p95 opening notional per window). Live wallet limits are unobserved. The emitted genome
-   is then checked through ``Genome.maker_quotes`` and the twin's ``WindowSim._room`` on its
-   fitting observations (``emitted_genome_check``). This is a static check at observed state.
+   is then checked through ``Genome.maker_quotes`` and the twin's ``WindowSim._room`` on the
+   held-out observations (``emitted_genome_check``). This is a static check at observed state.
    Assess the complete draft with a separately reserved replay window. NO genome is written
    (``genome.status: "not_emitted"`` with
    the reasons, exit 1) when: no order is on an asset with fair-v1; no expressible rule could be
    fitted; half_spread_c < 0.5 (rounds to a self-cross); fewer than 2 windows; the emitted
-   genome would quote on < 70 % of the wallet's fitting observations; or held-out price,
+   genome would quote on < 70 % of the wallet's held-out observations; or held-out price,
    timing or side evidence cannot support the draft's policy. The maker's placement clock
    also requires the current, interval-matched real and shifted-placebo counts to pass the
-   profile clock gate.
+   profile clock gate. Real maker placements are matched retrospectively across the whole
+   interval. Until independently bounded training matches are supported, this CLI withholds
+   real-wallet drafts and reports diagnostic scores. Controlled simulations can emit drafts.
    ``fit_report.json`` -> ``cannot_express`` lists every measured behaviour the schema drops, each
    with its number.
 
@@ -101,6 +103,7 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import hashlib
 from array import array
 import math
 import sys
@@ -124,7 +127,7 @@ from .decision_book import GRID_S, scan
 from .intlbook import NS, px
 from .goldsky_proof import digest
 from .ledger import TokenMap
-from .ordermatch import PLACEMENT_EVIDENCE_VERSION, filled_shares, qualified_placement
+from .ordermatch import PLACEMENT_EVIDENCE_VERSION, PRINT_BLOCK_TOL_MS, filled_shares, qualified_placement
 from .tradeallocation import Allocation, load_allocations
 from .profile import BIAS_LENGTH, BIAS_UPPER, T as PROFILE_THRESHOLDS, _size, load_rows, prepare, stamps_validated
 
@@ -133,7 +136,7 @@ INNER_FRAC = 0.8          # of the training slice: fit on the first 80 %, select
 MAX_CANDIDATES = 5000     # fingerprint candidates kept per wallet (stratified by window, seeded)
 FAIR_ASSETS = ("btc",)    # assets with fair-v1 (raw BRTI); a v1 maker never quotes without fair_up
 MIN_HALF_SPREAD_C = 0.5   # below this bid and ask round to the same cent
-MIN_QUOTE_SHARE = 0.7     # in-sample static intent check for the full-sample draft
+MIN_QUOTE_SHARE = 0.7     # minimum fraction of held-out observed sides receiving an executable quote
 LADDER_SHARE = 0.1
 LADDER_MIN_MS = 1000      # two quotes are a ladder only if they rest together at least this long ...
 LADDER_GAP_FRAC = 0.5     # ... and at least this share of the wallet's own median re-post gap
@@ -141,7 +144,7 @@ SIDE_MIN_ORDERS = 4       # a window says which sides a wallet quotes only with 
 SKILL_MIN = 0.05          # share of the null's deviance a timing rule must explain (PROVISIONAL, set before any run)
 STATE_COLS = ("bb_c", "ba_c", "mid_c", "spread_c", "depth_bid", "depth_ask", "fair_c", "tau_s", "tte_s", "inv",
               "notional_usd", "since_prev_s")
-ORDER_COLS = ("placed_venue_ms", "up_side", "px_c", "size", "d_touch_c", "d_mid_c", "d_fair_c", "gap_s")
+ORDER_COLS = ("placed_tw_ns", "placed_venue_ms", "up_side", "px_c", "size", "d_touch_c", "d_mid_c", "d_fair_c", "gap_s")
 N_BOOT = 400
 SEED = 20261126
 MIN_N = 20
@@ -498,32 +501,51 @@ def simulated_inventory_receipt(orders: Path, wallet: str, start: int, end: int)
             and record.get("sha256") == digest(orders))
 
 
-def bind_fill_receipts(fills, prints, mates, allocations):
-    """Attach the first economically compatible public print; ownership comes from the signed tape."""
+def bind_fill_receipts(fills, prints, mates, allocations, mate_known_tw=None):
+    """Keep the first causal receipt and the first conflicting receipt on separate clocks.
+
+    An unambiguous retrospective label needs agreeing native execution clocks and economics.
+    A later contradiction censors the label. It cannot delete a prior recorder observation.
+    """
     wallet_legs = Counter(fill["tx"] for fill in fills)
+    pair_times = mate_known_tw or {}
     for fill in fills:
         tx = fill["tx"]
         call = allocations.get(tx)
-        valid = []
-        for event in prints.get(tx, ()):
+        valid, conflict = [], []
+        for event in sorted(prints.get(tx, ()), key=lambda e: e.tw_ns):
+            block_ts = fill.get("block_ts")
+            if block_ts is None or abs(event.venue_ms - block_ts * 1000) > PRINT_BLOCK_TOL_MS:
+                continue
             if isinstance(call, Allocation):
-                if call.match(event, mates.get(event.asset)) == "allocated":
-                    valid.append(event.tw_ns)
+                # The native taker token and its matched call need no cross-feed inference.
+                # Interpreting another token as its mirror requires a dated public pairing.
+                if event.asset == call.token:
+                    mate = call.mate
+                elif pair_times.get(event.asset, math.inf) < event.tw_ns:
+                    mate = mates.get(event.asset)
+                elif event.asset == call.mate or call.mate is None:
+                    continue
+                else:
+                    mate = None
+                agrees = call.match(event, mate) == "allocated"
+            elif wallet_legs[tx] == 1 and call in (None, "incomplete_call", "unverified_call"):
+                condition = fill.get("condition")
+                agrees = (event.asset == fill["token"] and bool(event.market)
+                          and (not condition or event.market.lower().removeprefix("0x") == condition.lower().removeprefix("0x"))
+                          and fill.get("price") is not None and px(event.price) == px(fill["price"])
+                          and (event.side == fill["side"]) == (fill["role"] == "taker")
+                          and abs(event.size - fill["shares"]) <= 1e-6)
+            else:
                 continue
-            if wallet_legs[tx] != 1 or call not in (None, "incomplete_call", "unverified_call"):
-                continue
-            # A partial call supports a single direct leg only at the exact signed terms
-            # and filled quantity. Improved-price and aggregate prints need the full call.
-            token = fill["token"]
-            condition = fill.get("condition")
-            if (event.asset != token or not event.market or fill.get("price") is None
-                    or (condition and event.market.lower().removeprefix("0x") != condition.lower().removeprefix("0x"))):
-                continue
-            compatible_side = (event.side == fill["side"]) == (fill["role"] == "taker")
-            if (compatible_side and px(event.price) == px(fill["price"])
-                    and abs(event.size - fill["shares"]) <= 1e-6):
-                valid.append(event.tw_ns)
-        fill["receipt_tw"] = min(valid, default=None)
+            if not agrees or (valid and event.venue_ms != valid[0].venue_ms):
+                conflict.append(event.tw_ns)
+            else:
+                valid.append(event)
+        seen = valid[0].tw_ns if valid else None
+        fill["first_compatible_tw"] = seen
+        fill["conflict_tw"] = min(conflict, default=None)
+        fill["receipt_tw"] = seen if not conflict else None
         if valid and fill["role"] == "taker" and isinstance(call, Allocation) and call.total > 0:
             fill["shares"] = call.total
             fill["price"] = sum(p * q for p, q in call.levels) / call.total
@@ -540,17 +562,29 @@ class Inventory:
                  bounds: tuple[int, int] | None = None):
         by: dict[str, list[tuple[int, float, float]]] = defaultdict(list)
         self.unmapped = self.without_receipt = self.identity_unobserved = 0
+        self.conflicts: dict[str, int] = {}
+        self.first_incomplete_ns: int | None = None
         for f in fills:
             info = tok.get(f["token"])
-            if info is None:
-                self.unmapped += 1
-                continue
-            t = f.get("receipt_tw", fill_tw.get(f["tx"]))
-            if t is None:
-                self.without_receipt += 1
-                continue
-            if "known_tw_ns" in info and not observable_identity(info, t):
-                self.identity_unobserved += 1
+            t = f.get("first_compatible_tw", f.get("receipt_tw", fill_tw.get(f["tx"])))
+            conflict = f.get("conflict_tw")
+            if conflict is not None and info is not None:
+                slug = info["slug"]
+                previous = self.conflicts.get(slug)
+                self.conflicts[slug] = conflict if previous is None else min(conflict, previous)
+                if self.first_incomplete_ns is None or conflict < self.first_incomplete_ns:
+                    self.first_incomplete_ns = conflict
+            if info is None or t is None or ("known_tw_ns" in info and not observable_identity(info, t)):
+                if info is None:
+                    self.unmapped += 1
+                elif t is None:
+                    self.without_receipt += 1
+                else:
+                    self.identity_unobserved += 1
+                # A missing print uses the block only to date the coverage defect.
+                # No block timestamp enters inventory or supplies a decision receipt.
+                defect = int(f.get("block_ts") or 0) * NS if t is None else t
+                self.first_incomplete_ns = defect if self.first_incomplete_ns is None else min(self.first_incomplete_ns, defect)
                 continue
             if bounds is not None and not bounds[0] <= t < bounds[1]:
                 continue
@@ -576,18 +610,26 @@ class Inventory:
     def _i(self, slug: str, tw: int) -> int:
         return bisect.bisect_left(self.t.get(slug, []), tw)
 
-    def at(self, slug: str, tw: int) -> float:
+    def at(self, slug: str, tw: int) -> float | None:
         """Net Up contracts from fills located strictly before ``tw``."""
+        if self.conflicts.get(slug, math.inf) < tw:
+            return None
         i = self._i(slug, tw)
         return self.cum[slug][i - 1] if i else 0.0
 
-    def notional_at(self, slug: str, tw: int) -> float:
+    def notional_at(self, slug: str, tw: int) -> float | None:
         """Opening notional (USD) of the window from fills located strictly before ``tw``."""
+        if self.conflicts.get(slug, math.inf) < tw:
+            return None
         i = self._i(slug, tw)
         return self.notional[slug][i - 1] if i else 0.0
 
-    def window_notional(self, windows: set[str]) -> list[float]:
-        return [v[-1] for slug, v in self.notional.items() if slug in windows and v]
+    def window_notional(self, windows: set[str], before: int | None = None) -> list[float]:
+        windows = {slug for slug in windows if slug not in self.conflicts
+                   or (before is not None and self.conflicts[slug] >= before)}
+        if before is None:
+            return [v[-1] for slug, v in self.notional.items() if slug in windows and v]
+        return [self.notional[slug][i - 1] for slug in sorted(windows) if (i := self._i(slug, before))]
 
     def any_between(self, slug: str, lo: int, hi: int) -> bool:
         ts = self.t.get(slug, [])
@@ -705,10 +747,10 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
     pairs = {(asset, hz) for asset in ASSETS for hz in HORIZONS if (root / f"clob_{asset}_{hz}").is_dir()}
     streams = sorted(f"clob_{asset}_{hz}" for asset, hz in pairs)
     txs = {f["tx"] for f in fills}
-    res = {"state": {}, "at_cancel": {}, "fill_tw": {}, "grid": {}, "mates": {}}
+    res = {"state": {}, "at_cancel": {}, "cancel_tw": {}, "fill_tw": {}, "grid": {}, "mates": {}}
     res["grid_integrity"], res["mate_known_tw"] = {}, {}
     prints = defaultdict(list)
-    res["state_integrity"] = {}
+    res["state_integrity"], res["state_bracket"], res["grid_bracket"] = {}, {}, {}
     for s in streams:
         mine = [x for x in specs if x["token"] not in tok or _stream(tok[x["token"]]) == s]
         qs = sorted([(x["cutoff"], x["token"], ("pre", x["id"])) for x in mine]
@@ -729,14 +771,16 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
                 by_start[info["start"]].append((t, info["slug"], info["idx"]))
         got = scan(root, s, scan_from, t_to, qs, cancels, txs, by_start, LEN.get(hz, 300), grid_from=t_from)
         res["grid_integrity"].update(got["grid_integrity"])
+        res["grid_bracket"].update(got["grid_bracket"])
         res["mate_known_tw"].update(got["mate_known_tw"])
         for key, reason in got["state_integrity"].items():
             # A query can be tried in several streams while its token mapping is unknown.
             if got["state"].get(key) is not None or key not in res["state_integrity"]:
                 res["state_integrity"][key] = reason
+                res["state_bracket"][key] = got["state_bracket"][key]
         stats["cancels_asked"] += sum(len(v) for v in cancels.values())
         stats["cancels_state_found"] += len(got["at_cancel"])
-        for k in ("state", "at_cancel", "grid", "mates"):
+        for k in ("state", "at_cancel", "cancel_tw", "grid", "mates"):
             res[k].update({a: b for a, b in got[k].items() if k != "state" or b is not None or a not in res[k]})
         for tx, events in got["fill_prints"].items():
             prints[tx].extend(events)
@@ -756,11 +800,23 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
                                          "pair_seen_tw_ns": res["mate_known_tw"][a]})
 
     panel = opportunity_panel(t_from, t_to, pairs, tok, res["grid"], res["grid_integrity"])
+    for cell in panel:
+        token = cell["book_token"]
+        if token is not None:
+            cell["bracket_tw_ns"] = res["grid_bracket"].get((cell["slug"], cell["cell_start"], tok[token]["idx"]))
     call_allocations = load_allocations(orders_path, txs, allow_legacy=True) if verified is not None and txs else {}
-    bind_fill_receipts(fills, prints, res["mates"], call_allocations)
+    bind_fill_receipts(fills, prints, res["mates"], call_allocations, res["mate_known_tw"])
     inv = Inventory(fills, tok, res["fill_tw"], (scan_from * NS, hi))
+    # Ordermatch inspects all fills of a signed order. Its positive label cannot
+    # predate the last contributing print and block, even retrospectively.
+    label_times: dict[str, list[int | None]] = defaultdict(list)
+    if verified is not None:
+        for f in fills:
+            if f["role"] == "maker":
+                stamp = f["receipt_tw"]
+                label_times[f["order_id"]].append(None if stamp is None else max(stamp, f["block_ts"] * NS))
     simulated_source = simulated_inventory_receipt(orders_path, wallet, t_from, t_to)
-    simulated_inventory = simulated_source and not (inv.unmapped or inv.without_receipt or inv.identity_unobserved)
+    simulated_inventory = simulated_source and not (inv.unmapped or inv.without_receipt or inv.identity_unobserved or inv.conflicts)
     fair = Fair(brti_root, t_from, t_to) if brti_root is not None else None
     rows = []
     prev: dict[str, dict] = {}  # token -> previous verified order's spec
@@ -789,6 +845,7 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
         row = {"id": x["id"], "kind": x["kind"], "w": x["w"], "window": info["slug"],
                "window_start_ns": info["start"] * NS, "window_end_ns": info["end"] * NS, "asset": info["asset"],
                "hz": info["hz"], "token": x["token"], "idx": info["idx"], "cutoff_tw_ns": x["cutoff"],
+               "book_bracket_tw_ns": res["state_bracket"].get(("pre", x["id"])),
                "identity_witness": {k: info[k] for k in ("known_tw_ns", "witness_source", "witness_seq", "paired_from_token",
                                                          "peer_identity_tw_ns", "pair_seen_tw_ns") if k in info},
                # state (STATE_COLS): functions of the cutoff and of data received before it
@@ -799,11 +856,15 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
                "notional_usd": _r(inv.notional_at(info["slug"], x["cutoff"])),
                "since_prev_s": None if p is None else _r((x["cutoff"] - p["placed_tw"]) / NS, 3),
                # the order itself (ORDER_COLS): what the rule has to reproduce
-               "placed_venue_ms": x["placed_ms"], "up_side": side, "px_c": _r(pc), "size": x["size"],
+               "placed_tw_ns": x["placed_tw"], "placed_venue_ms": x["placed_ms"], "up_side": side, "px_c": _r(pc), "size": x["size"],
                "d_touch_c": _r(None if touch is None else pc - touch),
                "d_mid_c": _r(None if v["mid_c"] is None else pc - v["mid_c"]),
                "d_fair_c": _r(None if f is None else pc - f), "gap_s": None}
         if x["kind"] == "order":
+            if verified is not None:
+                times = label_times[x["id"]]
+                last = max((t for t in times if t is not None), default=hi)
+                row["signed_label_tw_ns"] = last if last < hi and None not in times else None
             q = prev.get(x["token"])
             if q is not None:
                 row["gap_s"] = _r((x["placed_ms"] - q["placed_ms"]) / 1000, 3)
@@ -828,13 +889,18 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
                           "block_ts": f["block_ts"]})
     located = {x["id"] for x in specs if x["kind"] == "order" and "row" in x}
     unlocated = set()
+    first_unlocated: dict[str | None, int] = {}
     for f in fills:
         if f["role"] != "maker" or f["order_id"] in located:
             continue
         info = tok.get(f["token"])
+        stamp = f["receipt_tw"] if f["receipt_tw"] is not None else int(f["block_ts"]) * NS
+        if info is not None or lo <= stamp < hi:
+            slug = info["slug"] if info is not None else None
+            first_unlocated[slug] = min(stamp, first_unlocated.get(slug, stamp))
         if info is not None:
             unlocated.add(info["slug"])
-        elif lo <= int(f["block_ts"]) * NS < hi:
+        elif lo <= stamp < hi:
             # Its identity is unknown. A filled order could have rested anywhere in the observed universe.
             unlocated.update(c["slug"] for c in panel)
     scope = {"scheduled_cells": len(panel), "scheduled_windows": len({c["slug"] for c in panel}),
@@ -842,11 +908,12 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
              "eligible_cells": sum(c["eligible"] for c in panel),
              "windows_with_unlocated_maker_fills": sorted(unlocated & {c["slug"] for c in panel})}
     return {"rows": rows, "specs": [x for x in specs if "row" in x], "res": res, "inv": inv, "tok": tok,
-            "opportunity_panel": panel, "unlocated_maker_slugs": unlocated,
+            "opportunity_panel": panel, "unlocated_maker_slugs": unlocated, "first_unlocated_maker_ns": first_unlocated,
             "takes": takes, "fair": fair, "cand": quote_events(quotes_path, wallet, (lo, hi)),
             "om_doc": om_doc, "stats": stats, "pairs": sorted(pairs),
             "inputs": {"fills": fill_input | {"n": inv.n, "unmapped": inv.unmapped,
-                                              "without_print_receipt": inv.without_receipt, "timed_by_block": 0,
+                                              "without_print_receipt": inv.without_receipt,
+                                              "conflicting_execution_fills": sum(f.get("conflict_tw") is not None for f in fills), "timed_by_block": 0,
                                               "identity_unobserved_at_fill": inv.identity_unobserved,
                                               "simulated_flat_start_fills": simulated_inventory, "controlled_simulation": simulated_source,
                                               "inventory_basis": "attributed_fill_delta_from_zero_at_compatible_transaction_prints"},
@@ -871,12 +938,38 @@ def thresholds(rows: list[dict]) -> tuple[int, int]:
     return starts[val], starts[test]
 
 
+def calendar_thresholds(T: dict) -> tuple[int, int]:
+    """Study calendar fixed independently of wallet activity or later book coverage."""
+    cells = T["opportunity_panel"]
+    # token_map checks the source digest and pre-study timestamp of the
+    # generator's finite calendar independently of any wallet fill receipt.
+    configured = {info["slug"] for info in T["tok"].values() if info.get("witness_source") == "answerkey_config"}
+    if configured:
+        cells = [c for c in cells if c["slug"] in configured]
+    starts = {c["window_start"] for c in cells}
+    return thresholds([{"window_start_ns": start * NS} for start in starts])
+
+
 def _phase(rows: list[dict], th: tuple[int, int]) -> np.ndarray:
     starts = np.array([r["window_start_ns"] for r in rows], dtype=np.int64)
     ends = np.array([r["window_end_ns"] for r in rows], dtype=np.int64)
     # A longer market window may straddle a boundary between two shorter ones.
-    return np.select([ends <= th[0], starts >= th[1], (starts >= th[0]) & (ends <= th[1])],
+    # A pre-open/post-close order can have a cutoff in a different phase from its market.
+    cuts = np.array([r.get("cutoff_tw_ns", r["window_start_ns"]) for r in rows], dtype=np.int64)
+    placed = np.array([r.get("placed_tw_ns", c) for r, c in zip(rows, cuts)], dtype=np.int64)
+    evidence = np.array([max(r.get("book_bracket_tw_ns") or 0, r.get("signed_label_tw_ns") or 0, int(p))
+                         for r, p in zip(rows, placed)], dtype=np.int64)
+    known = np.array([r.get("signed_label_tw_ns", 0) is not None for r in rows], dtype=bool)
+    return np.select([known & (ends <= th[0]) & (cuts < th[0]) & (evidence < th[0]),
+                      known & (starts >= th[1]) & (cuts >= th[1]),
+                      known & (starts >= th[0]) & (ends <= th[1]) & (cuts >= th[0]) & (evidence < th[1])],
                      [0, 2, 1], default=-1)
+
+
+def _panel_phases(cells: list[dict], th: tuple[int, int]) -> np.ndarray:
+    return _phase([{"window_start_ns": c["window_start"] * NS, "window_end_ns": c["window_end"] * NS,
+                    "cutoff_tw_ns": c["cell_start"] * NS, "book_bracket_tw_ns": c.get("bracket_tw_ns")}
+                   for c in cells], th)
 
 
 def _side_data(rows: list[dict], side: str, th: tuple[int, int]) -> dict:
@@ -1076,7 +1169,11 @@ def fit_expressible(rows: list[dict], price: dict, th: tuple[int, int], *, allow
     vmae = {c: wmean(err(dref[c[0]][m], params(dref[c[0]][m], fit, c[1]))[val], wm[val]) for c in grid}
     ref, skew = min(grid, key=lambda c: (vmae[c], grid.index(c)))
     d = dref[ref][m]
-    et = err(d, params(d, tr, skew))[te]
+    train_h, _, train_k = params(d, tr, skew)
+    out["frozen_quote"] = {"ref": ref, "half_spread_c": _r(max(train_h, 0.0), 2),
+                           "skew_c_per_contract": _r(train_k, 4),
+                           "sides_seen": sorted({"bid" if side < 0 else "ask" for side in sm[tr]})}
+    et = err(d, (train_h, 0.0, train_k))[te]
     mae = wmean(et, wm[te]) if te.any() else None
     h_raw, c, k = params(d, np.arange(len(d)), skew)
     ci = boot_ci(lambda i: params(d, i, skew), cm)
@@ -1095,7 +1192,7 @@ def fit_expressible(rows: list[dict], price: dict, th: tuple[int, int], *, allow
             "skew_c_per_contract": _r(k, 4), "skew_kept": skew,
             "validation_mae_c": {f"{a}{'+skew' if b else ''}": _r(v) for (a, b), v in vmae.items()},
             "selection": "reference and keep-skew chosen on validation windows, refitted on fit and validation "
-                         "windows, and scored once on test windows. Draft parameters use all eligible rows",
+                         "windows, and scored once on test windows. frozen_quote supplies the executable parameters",
             "half_spread_fit": est(h_raw, len(d), cm, ci[0] if ci else None, o) | {"clamped_to_zero": h_raw < 0},
             "centre_shift_fit": est(c, len(d), cm, ci[1] if ci else None, o),
             "skew_fit": est(k, len(d), cm, ci[2] if ci else None, o),
@@ -1115,17 +1212,20 @@ def fit_expressible(rows: list[dict], price: dict, th: tuple[int, int], *, allow
     return out
 
 
-def check_genome(g: Genome, rows: list[dict], fair_supplied: bool) -> dict:
+def check_genome(g: Genome, rows: list[dict], fair_supplied: bool, side_null: dict | None = None) -> dict:
     """Check draft quote intent at observed book, inventory and notional state.
 
-    This is in-sample. The twin's quote timing, landing book and queue need a separate replay.
+    The twin's quote timing, landing book and queue need a separate replay.
     When fair-v1 is unavailable the check substitutes the mid and reports the substitution.
     """
     m = g.maker
     assert m is not None
     why: Counter = Counter()
-    errs, clamp = [], 0
+    errs, null_errors, windows, clamp = [], [], [], 0
     for r in rows:
+        if r["asset"] not in g.universe.assets or r["hz"] not in g.universe.horizons:
+            why["universe"] += 1
+            continue
         if r["mid_c"] is None or r["inv"] is None:
             why["no_book"] += 1
             continue
@@ -1159,12 +1259,18 @@ def check_genome(g: Genome, rows: list[dict], fair_supplied: bool) -> dict:
                     raw = round(ref + sgn * m.half_spread_c - m.skew_c_per_contract * r["inv"])
                     clamp += q != max(1, min(99, raw))
                     errs.append(abs(q - r["px_c"]))
+                    if side_null is not None and r["up_side"] in side_null:
+                        null_errors.append(abs(side_null[r["up_side"]] - r["px_c"]))
+                        windows.append(r["window"])
     n = len(rows)
-    return {"rows": n, "would_quote": len(errs), "would_quote_share": _r(len(errs) / n) if n else None,
+    paired = (_skill(np.array(errs), np.array(null_errors), np.array(windows, dtype=str))
+              if side_null is not None and len(errs) == len(null_errors) else None)
+    return {"price_skill_when_quoting": paired, "rows": n, "would_quote": len(errs),
+            "would_quote_share": _r(len(errs) / n) if n else None,
             "mae_c_when_quoting": _r(np.mean(errs)) if errs else None, "silent_by": dict(why),
             "fair_clamp_binds_share": _r(clamp / len(errs)) if errs else None,
             "fair_substituted_by_mid": not fair_supplied,
-            "note": "In-sample quote intent using recorded books and the attributed fill inventory and notional series. Out-of-sample execution needs a separate replay."}
+            "note": "Static quote intent using recorded book and attributed fill state. Executions need a separate replay."}
 
 
 # ---------------------------------------------------------------- 2b size rule
@@ -1207,7 +1313,9 @@ def fit_timing(T: dict) -> dict:
         p = x["prev"]
         post, pre = ("post", p["id"]), ("pre", x["id"])
         a, b = state.get(post), state.get(pre)
-        if inv.any_between(x["info"]["slug"], p["placed_tw"], x["cutoff"]):
+        if inv.conflicts.get(x["info"]["slug"], math.inf) < x["cutoff"]:
+            trig.append("unknown")
+        elif inv.any_between(x["info"]["slug"], p["placed_tw"], x["cutoff"]):
             trig.append("own_fill")
         elif (a is None or b is None or p["placed_tw"] >= x["cutoff"]
               or any(T["res"]["state_integrity"].get(k) != "covered" for k in (post, pre))):
@@ -1392,6 +1500,13 @@ def grid_cells(T: dict) -> list[tuple]:
              c["mid_c"], c["cell_start"]) for c in T.get("opportunity_panel", ()) if c["eligible"]]
 
 
+def _unlocated_before(T: dict, cutoff: int) -> set:
+    defects = T["first_unlocated_maker_ns"]
+    if defects.get(None, cutoff) < cutoff:
+        return {c["slug"] for c in T["opportunity_panel"]}
+    return {slug for slug, stamp in defects.items() if slug is not None and stamp < cutoff}
+
+
 def presence_cells(T: dict) -> list[tuple]:
     """Up sides of qualified, filled-order additions received during each eligible local-clock cell."""
     cells: dict[tuple[str, int], set[str]] = defaultdict(set)
@@ -1541,6 +1656,8 @@ def _best_call(X: dict[str, np.ndarray], y: np.ndarray, mask: np.ndarray) -> tup
     """(balanced accuracy, predictor, sign) of the best one-predictor sign rule on the rows of ``mask``."""
     best = None
     for name, x in X.items():
+        if not np.isfinite(x[mask]).any():
+            continue
         for sign in (1.0, -1.0):
             v = _ba(_calls(x[mask], sign), y[mask])
             if v == v and (best is None or v > best[0]):
@@ -1570,12 +1687,15 @@ def side_test(rows: list[dict], th: tuple[int, int]) -> dict:
     choice. ``one_sided_constant`` (always the same side): nothing to explain, ``sides`` holds it.
     Otherwise the side changes from window to window and a rule has to predict it: the best
     one-predictor sign rule (mid - 50, fair - mid, fair - 50, at the window's FIRST visible order:
-    later books move with the outcome) is chosen on the fit windows and scored on the later ones.
+    later books move with the outcome) is chosen on pre-test windows and scored on the final test windows.
     ``explained`` = its balanced accuracy's exact interval (the mean of the two classes'
     Clopper-Pearson limits, each at 97.5 %) lies above 0.5."""
     by: dict[str, list[dict]] = defaultdict(list)
-    for r in rows:
-        by[r["window"]].append(r)
+    phases = _phase(rows, th)
+    excluded_windows = {r["window"] for r, phase in zip(rows, phases) if phase < 0}
+    for r, phase in zip(rows, phases):
+        if phase >= 0:
+            by[r["window"]].append(r)
     wins = [{"first": min(rs, key=lambda r: r["cutoff_tw_ns"]), "sides": {r["up_side"] for r in rs}}
             for rs in by.values() if len(rs) >= SIDE_MIN_ORDERS]
     out: dict = {"windows": len(by), "windows_judged": len(wins), "min_orders_per_window": SIDE_MIN_ORDERS,
@@ -1583,27 +1703,36 @@ def side_test(rows: list[dict], th: tuple[int, int]) -> dict:
     if len(wins) < 3:
         return out | {"kind": "undetermined", "explained": None,
                       "reason": f"fewer than 3 windows with >= {SIDE_MIN_ORDERS} visible orders"}
-    one = sorted((w for w in wins if len(w["sides"]) == 1), key=lambda w: w["first"]["window_start_ns"])
-    out["one_sided_window_share"] = _r(len(one) / len(wins))
-    if 2 * len(one) < len(wins):
-        fit = [w for w in wins if w["first"]["window_start_ns"] < th[0]]
-        held = [w for w in wins if w["first"]["window_start_ns"] >= th[0]]
-        if all(part and sum(len(w["sides"]) == 2 for w in part) > len(part) / 2 for part in (fit, held)):
+    phases = _phase([w["first"] for w in wins], th)
+    fit_wins = [w for w, phase in zip(wins, phases) if phase in (0, 1)]
+    held_wins = [w for w, phase in zip(wins, phases) if phase == 2]
+    out["windows_with_excluded_rows"] = len(excluded_windows)
+    if not fit_wins or not held_wins:
+        return out | {"kind": "undetermined", "explained": None, "reason": "no disjoint fit or held-out side windows"}
+    one_fit = [w for w in fit_wins if len(w["sides"]) == 1]
+    one_held = [w for w in held_wins if len(w["sides"]) == 1]
+    one = one_fit + one_held
+    out["one_sided_window_share"] = _r(len(one) / (len(fit_wins) + len(held_wins)))
+    if 2 * len(one_fit) < len(fit_wins):
+        if 2 * len(one_held) < len(held_wins):
             return out | {"kind": "two_sided", "explained": None, "reason": "both sides observed in most fit and held-out windows"}
         return out | {"kind": "undetermined", "explained": None, "reason": "two-sided participation was not sustained out of sample"}
+    if 2 * len(one_held) < len(held_wins):
+        return out | {"kind": "undetermined", "explained": None, "reason": "one-sided participation was not sustained out of sample"}
     y = np.array([w["sides"] == {"bid"} for w in one], dtype=float)
+    fit = np.arange(len(one)) < len(one_fit)
     out["bid_window_share"] = _r(y.mean())
-    if y.all() or not y.any():
-        trained = sum(w["first"]["window_start_ns"] < th[0] for w in one)
-        held = len(one) - trained
-        ci = binom_ci(held, held) if held and trained else None
-        ok = True if ci and ci[0] > 0.5 else None
-        return out | {"kind": "one_sided_constant", "explained": ok, "quote_side": "bid_only" if y.all() else "ask_only",
-                      "n_fit": trained, "n_held_out": held, "agreement_ci95": ci,
-                      "reason": "always the same side" if ok else "too few held-out windows to establish a constant side"}
+    if y[fit].all() or not y[fit].any():
+        side = "bid" if y[fit].all() else "ask"
+        held = len(held_wins)
+        correct = sum(w["sides"] == {side} for w in held_wins)
+        ci = binom_ci(correct, held)
+        ok = bool(ci[0] > 0.5) if ci[0] > 0.5 or ci[1] < 0.5 else None
+        return out | {"kind": "one_sided_constant", "explained": ok, "quote_side": side + "_only",
+                      "n_fit": len(one_fit), "n_held_out": held, "held_out_agreements": correct, "agreement_ci95": ci,
+                      "reason": "constant side agrees out of sample" if ok else "held-out windows do not establish the fitted side"}
     first = [w["first"] for w in one]
     X = _signed(first)
-    fit = np.array([r["window_start_ns"] < th[0] for r in first])
     out |= {"kind": "one_sided_by_window", "explained": None, "n_fit": int(fit.sum()), "n_held_out": int((~fit).sum())}
     best = _best_call(X, y, fit)
     if best is None:
@@ -1626,20 +1755,32 @@ def presence_skill(T: dict, th: tuple[int, int]) -> dict:
     """How much observed filled-order placement timing a rule of the genome's kind explains.
 
     The rule (a span of the window, from tau_min to tte_min, and dead mid bands) is fitted on the
-    fit windows; on the later windows its presence probabilities are scored against the null "the
+    fit and validation windows. On the final test windows its presence probabilities are scored against the null "the
     same presence rate in every cell" (always present, when that rate is ~1). Skill = 1 -
     log-loss(rule) / log-loss(null). Presence means a FILLED order's qualified addition arrived in the cell, so this is
     evidence about observable participation. An unsupported timing rule blocks a draft."""
-    recs = presence_cells(T)
-    null = "one presence rate for every cell (the fit windows' rate)"
+    # Later missing attribution may censor later answers, but cannot change the
+    # observable training population from which the timing rule is fitted.
+    panel = T["opportunity_panel"]
+    cell_phase = _panel_phases(panel, th)
+    specs = [x for x in T["specs"] if x["kind"] == "order"]
+    order_phase = _phase([x["row"] for x in specs], th)
+    prior = T | {"unlocated_maker_slugs": _unlocated_before(T, th[1]),
+                 "specs": [x for x, ph in zip(specs, order_phase) if ph in (0, 1)],
+                 "opportunity_panel": [c for c, ph in zip(panel, cell_phase) if ph in (0, 1)]}
+    later = T | {"specs": [x for x, ph in zip(specs, order_phase) if ph == 2],
+                 "opportunity_panel": [c for c, ph in zip(panel, cell_phase) if ph == 2]}
+    recs = presence_cells(prior) + presence_cells(later)
+    null = "one presence rate for every cell (the pre-test windows' rate)"
     if not recs:
         return est(None, 0) | {"null": null, "reason": "no grid cell with a known book"}
-    start = np.array([r[1] for r in recs], dtype=np.int64) * NS
-    fit = start < th[0]
+    ends = {c["slug"]: c["window_end"] for c in T["opportunity_panel"]}
+    ph = _phase([{"window_start_ns": r[1] * NS, "window_end_ns": ends[r[0]] * NS} for r in recs], th)
+    fit, held = (ph == 0) | (ph == 1), ph == 2
     y = np.array([bool(r[4]) for r in recs], dtype=float)
     frac, mid = np.array([r[2] for r in recs]), np.array([r[3] for r in recs])
     cl = np.array([r[0] for r in recs], dtype=str)
-    if fit.all() or not (fit & (y > 0)).any():
+    if not held.any() or not (fit & (y > 0)).any():
         return est(None, 0) | {"null": null, "reason": "no held-out window, or no presence in the fit windows"}
     lo, hi = np.percentile(frac[fit & (y > 0)], [1, 99])
     band = np.minimum(mid // 10, 9).astype(int)
@@ -1650,10 +1791,10 @@ def presence_skill(T: dict, th: tuple[int, int]) -> dict:
             for k in (True, False)}
     p_rule = np.where(on, rate[True], rate[False])
     loss = lambda q: -(y * np.log(q) + (1 - y) * np.log(1 - q))  # noqa: E731
-    return _skill(loss(p_rule)[~fit], loss(np.full(len(y), base))[~fit], cl[~fit]) | {
+    return _skill(loss(p_rule)[held], loss(np.full(len(y), base))[held], cl[held]) | {
         "null": null, "rule": {"window_share_left": [_r(hi), _r(lo)], "dead_mid_bands_c": [[10 * b, 10 * b + 10] for b in dead],
                                "presence_when_on": _r(rate[True]), "presence_when_off": _r(rate[False])},
-        "presence_rate_held_out": _r(y[~fit].mean()),
+        "presence_rate_held_out": _r(y[held].mean()), "excluded_boundary_cells": int((cell_phase < 0).sum()),
         "bias": "presence is a received filled-order placement hypothesis, conditional on a fill"}
 
 
@@ -1671,7 +1812,7 @@ def fit_taker(T: dict) -> dict:
       Poisson deviance(rule) / deviance(null), CI over windows. ``explained`` = the CI lies above
       SKILL_MIN.
     - which side (Up exposure bought or sold): the best one-predictor sign rule (fair - mid,
-      mid - 50, fair - 50 at the cell's start) chosen on the fit windows, balanced accuracy on the
+      mid - 50, fair - 50 at the cell's start) chosen on the pre-test windows, balanced accuracy on the
       later windows with a CI over windows. ``explained`` = the CI lies above 0.5, or the wallet
       always takes the same side.
     ``found`` = both explained. Nothing here is a genome: rulefit emits maker drafts only."""
@@ -1685,9 +1826,9 @@ def fit_taker(T: dict) -> dict:
     if len(takes) < MIN_N or not cells:
         return out | {"reason": f"fewer than {MIN_N} taker fills in mapped windows, or no cell with a known book"}
     win = {i["slug"]: i for i in T["tok"].values()}
-    start = np.array([c[1] for c in cells], dtype=np.int64) * NS
-    th = thresholds([{"window_start_ns": int(v)} for v in start])
-    ph = np.select([start < th[0], start < th[1]], [0, 1], default=2)
+    th = calendar_thresholds(T)
+    ph = _panel_phases([c for c in T["opportunity_panel"] if c["eligible"]], th)
+    out["straddling_cells"] = int((ph < 0).sum())
     if not all((ph == k).any() for k in (0, 1, 2)):
         return out | {"reason": "fewer than 3 market windows: no fit / validation / test split"}
     cl = np.array([c[0] for c in cells], dtype=str)
@@ -1696,58 +1837,71 @@ def fit_taker(T: dict) -> dict:
                      for c in cells])
     at = {(c[0], c[4]): i for i, c in enumerate(cells)}
     y = np.zeros(len(cells))
+    late_cells = set()
     t_cell, t_up = [], []
     for t in takes:
         b = t["tw"] // NS
         i = at.get((t["slug"], b - b % GRID_S))
         if i is not None:
+            if t.get("block_ts") is not None:
+                phase_end = (th[0], th[1], T.get("inputs", {}).get("to", math.inf) * NS)[ph[i]]
+                if t["block_ts"] * NS >= phase_end:
+                    late_cells.add(i)
             y[i] += 1
             t_cell.append(i)
             t_up.append(float((t["side"] == "BUY") == (t["idx"] == 0)))
+    if late_cells:
+        ph[list(late_cells)] = -1
+        if not all((ph == k).any() for k in (0, 1, 2)):
+            return out | {"verdict": None, "reason": "execution labels arrive after their evaluation phase"}
+    out["cells_with_late_block_labels"] = len(late_cells)
     out["takes_in_known_cells"] = len(t_cell)
     if len(t_cell) != len(takes):
         return out | {"verdict": None, "reason": "at least one taker execution lacks an eligible decision cell"}
     bins = {"time_to_close": np.minimum((frac * 5).astype(int), 4), "price_band": np.digitize(np.abs(mid - 50), [5, 10, 20, 30])}
-    if np.isfinite(fair).mean() >= 0.5:
-        bins["edge_vs_fair"] = np.where(np.isfinite(fair), np.digitize(np.abs(fair - mid), [1, 2, 4]), 4)
+    if np.isfinite(fair[ph == 0]).mean() >= 0.5:
+        bins["edge_vs_fair"] = np.where(np.isfinite(fair), np.digitize(np.abs(fair - mid), [1, 2, 4]), -1)
 
     def rates(b: np.ndarray, m: np.ndarray) -> tuple[np.ndarray, float]:
         lam0 = max(float(y[m].mean()), 1e-6)
-        lam = {k: (y[m & (b == k)].sum() + lam0) / ((m & (b == k)).sum() + 1) for k in np.unique(b)}  # shrunk to lam0
-        return np.array([lam[k] for k in b]), lam0
+        lam = {k: (y[m & (b == k)].sum() + lam0) / ((m & (b == k)).sum() + 1) for k in np.unique(b[m])}
+        return np.array([lam.get(k, lam0) for k in b]), lam0
 
     def dev(lam: np.ndarray) -> np.ndarray:
         return 2 * (np.where(y > 0, y * np.log(np.maximum(y, 1e-12) / lam), 0.0) - (y - lam))
 
     val = {k: float(dev(rates(b, ph == 0)[0])[ph == 1].sum()) for k, b in bins.items()}
     best = min(val, key=lambda k: (val[k], list(bins).index(k)))
-    lam, lam0 = rates(bins[best], ph <= 1)
+    lam, lam0 = rates(bins[best], (ph == 0) | (ph == 1))
     te = ph == 2
     when = _skill(dev(lam)[te], dev(np.full(len(y), lam0))[te], cl[te]) | {
         "feature": best, "validation_deviance": {k: _r(v) for k, v in val.items()},
         "null": "one rate of takes for every cell (a Poisson stream)", "takes_per_cell": _r(lam0),
-        "rate_by_bin": {str(int(k)): _r(lam[bins[best] == k][0]) for k in np.unique(bins[best])}, "skill_min": SKILL_MIN}
-    when["explained"] = bool(when["ci95"][0] > SKILL_MIN) if when["ci95"] else None
+        "rate_by_bin": {str(int(k)): _r(lam[bins[best] == k][0]) for k in np.unique(bins[best][(ph == 0) | (ph == 1)])}, "skill_min": SKILL_MIN}
+    when["explained"] = (bool(when["ci95"][0] > SKILL_MIN)
+                         if when["ci95"] and when["clusters"] >= MIN_CORRECTION_WINDOWS else None)
     ci_ = np.array(t_cell, dtype=int)
     up = np.array(t_up)
     side: dict = {"n": len(up), "up_exposure_bought_share": _r(up.mean()) if len(up) else None, "null": "balanced accuracy 0.5"}
-    if len(up) and (up.all() or not up.any()):
-        # Count independent market windows, so many fills in one window cannot certify a side.
-        held = len(set(cl[ci_][ph[ci_] != 0]))
-        ci = binom_ci(held, held) if held and (ph[ci_] == 0).any() else None
-        side |= {"explained": True if ci and ci[0] > 0.5 else None, "reason": "always the same side",
-                 "held_out_windows": held, "agreement_ci95": ci}
+    fitm, heldm = (ph[ci_] == 0) | (ph[ci_] == 1), ph[ci_] == 2
+    if fitm.any() and (up[fitm].all() or not up[fitm].any()):
+        trained_side = up[fitm][0]
+        held_clusters = np.unique(cl[ci_][heldm])
+        correct = sum(bool((up[heldm & (cl[ci_] == slug)] == trained_side).all()) for slug in held_clusters)
+        ci = binom_ci(correct, len(held_clusters)) if len(held_clusters) else None
+        side |= {"explained": (ci[0] > 0.5 if ci and (ci[0] > 0.5 or ci[1] < 0.5) else None),
+                 "reason": "constant exposure side in fit windows",
+                 "held_out_windows": len(held_clusters), "held_out_agreements": correct, "agreement_ci95": ci}
     else:
         X = {"fair_minus_mid": fair[ci_] - mid[ci_], "mid_minus_50": mid[ci_] - 50, "fair_minus_50": fair[ci_] - 50}
         X = {k: v for k, v in X.items() if np.isfinite(v).any()}
-        fitm = ph[ci_] == 0
         pick = _best_call(X, up, fitm)
         side["explained"] = None
-        if pick is None or not (~fitm).any():
+        if pick is None or not heldm.any():
             side["reason"] = "the fit windows do not hold both sides, or no later window"
         else:
-            pred, yh, ch = _calls(X[pick[1]][~fitm], pick[2]), up[~fitm], cl[ci_][~fitm]
-            ci = boot_ci(lambda i: _ba(pred[i], yh[i]), ch)
+            pred, yh, ch = _calls(X[pick[1]][heldm], pick[2]), up[heldm], cl[ci_][heldm]
+            ci = boot_ci(lambda i: _ba(pred[i], yh[i]), ch) if len(np.unique(ch)) >= MIN_CORRECTION_WINDOWS else None
             side |= {"predictor": pick[1], "sign": pick[2], "fit_balanced_accuracy": _r(pick[0]),
                      "balanced_accuracy": _r(_ba(pred, yh)), "ci95": ci, "explained": bool(ci[0] > 0.5) if ci else None}
     found = joint_evidence(when["explained"], side["explained"])
@@ -1782,7 +1936,7 @@ def taker_card(rep: dict) -> str:
                 + "\n".join(rep["genome"]["reasons"]) + "\n\n## NO GENOME EMITTED\n")
     L = [f"# rule fit {rep['wallet']}  [TAKER FILLS, NO MAKER ORDER]", "",
          f"taker fills {tk['n_takes']} ({tk['located_by_print']} timed by a print), cells {tk['cells']} x {tk['cell_s']} s", "",
-         "## RULE FOUND (not emitted)" if tk["found"] else ("## NO RULE FOUND" if tk.get("verdict") is False else "## INSUFFICIENT EVIDENCE"), f"- {tk['reason'] or 'when and side both explained'}"]
+         "## RULE FOUND (execution timing and side only)" if tk["found"] else ("## NO RULE FOUND" if tk.get("verdict") is False else "## INSUFFICIENT EVIDENCE"), f"- {tk['reason'] or 'when and side both explained'}"]
     for k in ("when", "side"):
         v = tk.get(k)
         if v:
@@ -1834,9 +1988,10 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
     """(draft genome dict, or None with the reasons in ``report["genome"]``; fit report)."""
     rows = T["rows"]
     ver = [r for r in rows if r["kind"] == "order"]
-    th = thresholds(ver)
+    th = calendar_thresholds(T)
     price = fit_price(ver, th)
-    inventory_supported = T["inputs"]["fills"].get("simulated_flat_start_fills") is True
+    inventory_supported = T["inputs"]["fills"].get("controlled_simulation") is True and (
+        T["inv"].first_incomplete_ns is None or T["inv"].first_incomplete_ns >= th[1])
     expr = fit_expressible(ver, price, th, allow_skew=inventory_supported)
     expr["inventory_skew_evidence"] = ("controlled_simulation" if inventory_supported else "owner_state_unobserved")
     for fit in price.values():
@@ -1849,26 +2004,40 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
     part = fit_participation(T)
     side = side_test(ver, th)
     sel = selection_check(rows, price, precision)
-    fit_rows = [r for r in ver if r["asset"] in expr["assets"]]  # the rows the genome is about
-
-    # ---- genome fields, each with where it came from
+    phases = _phase(ver, th)
+    fit_rows = [r for r, phase in zip(ver, phases) if phase in (0, 1) and r["asset"] in FAIR_ASSETS]
+    held_rows = [r for r, phase in zip(ver, phases) if phase == 2]
+    train_windows = {r["window"] for r in fit_rows}
+    train_ids = {r["id"] for r in fit_rows}
+    train_specs = [x for x in T["specs"] if x["kind"] == "order" and x["id"] in train_ids]
+    hzs = sorted({r["hz"] for r in fit_rows})
+    assets = sorted({r["asset"] for r in fit_rows})
+    # Descriptive fits above can use all observations. Every field in the executable
+    # rule below is estimated once on completed training/validation markets.
+    panel = T["opportunity_panel"]
+    train_cells = [c for c, phase in zip(panel, _panel_phases(panel, th)) if phase in (0, 1)]
+    train_part = fit_participation(T | {"specs": train_specs, "opportunity_panel": train_cells,
+                                        "unlocated_maker_slugs": _unlocated_before(T, th[1])})
+    frozen_quote = expr.get("frozen_quote") or {}
     prov: dict = {}
-    hzs = expr["horizons"]
     L = min((LEN[h] for h in hzs), default=300)
-    tte_q, tau_q = part["tte_s_p1"]["value"], part["tau_s_p1"]["value"]
+    tte_q, tau_q = train_part["tte_s_p1"]["value"], train_part["tau_s_p1"]["value"]
     tte_min = int(min(max(math.floor(tte_q), 0), L - 1)) if tte_q is not None else 0
     tau_min = int(min(max(math.floor(tau_q), 0), L - 1)) if tau_q is not None else 0
-    prov["universe.tte_min_s"] = "floor(participation_rule.tte_s_p1)" if tte_q is not None else "default"
-    prov["universe.tau_min_s"] = "floor(participation_rule.tau_s_p1)" if tau_q is not None else "default"
-    prov["universe.assets/horizons"] = "assets with fair-v1 that are in the fit (expressible_price_rule.assets)"
-    med = size.get("median_size", {}).get("value") if size.get("n") else None
-    life = (timing.get("cancel") or {}).get("life_ms", {}).get("quantiles")
-    p90 = ((timing.get("cancel") or {}).get("life_ms_p90") or {}).get("value")
-    age = max(1, math.ceil(p90 / 1000)) if p90 is not None else 30
-    prov["maker.max_quote_age_s"] = ("ceil(timing_rule.cancel.life_ms_p90 / 1000), floor 1 s ("
-                                     + timing["cancel"]["life_ms_p90"]["method"] + ")" if p90 is not None
-                                     else "default 30: no cancelled order with a known life")
-    lo, hi = _dead_bands(part.get("by_mid_c") or [], (part.get("presence_rate") or {}).get("value"))
+    prov["universe.tte_min_s"] = "floor(pre-test participation tte_s_p1)" if tte_q is not None else "default"
+    prov["universe.tau_min_s"] = "floor(pre-test participation tau_s_p1)" if tau_q is not None else "default"
+    prov["universe.assets/horizons"] = "assets with fair-v1 and horizons observed before the test boundary"
+    med = float(np.median([x["size"] for x in train_specs])) if train_specs else None
+    # Ordermatch's candidate aggregates cover the full study. Use only individually
+    # witnessed cancels before the split for the executable lifetime setting.
+    cancel_times = T["res"]["cancel_tw"]
+    lives = [x["om"]["rest_max_ms"] for x in train_specs if x["om"].get("outcome") == "cancelled"
+             and x["om"].get("rest_known") is True and x["om"].get("rest_max_ms") is not None
+             and cancel_times.get(x["id"], th[1]) < th[1]]
+    age = max(1, math.ceil(float(np.percentile(lives, 90)) / 1000)) if lives else 30
+    prov["maker.max_quote_age_s"] = ("ceil(p90 witnessed pre-test cancellation lifetime / 1000), length-biased"
+                                     if lives else "default 30: no dated pre-test cancellation")
+    lo, hi = _dead_bands(train_part.get("by_mid_c") or [], (train_part.get("presence_rate") or {}).get("value"))
     pause = tuple(c for c in (Condition("mid_up_c", "<", lo) if lo else None,
                               Condition("mid_up_c", ">", hi) if hi else None) if c is not None)
     prov["maker.pause_when"] = ("mid bands with >= 20 cells and presence under a tenth of the overall rate"
@@ -1882,22 +2051,22 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
         prov["maker.min_edge_vs_fair_c"] = "max(0, edge_outside_fair_c_p5): p5 of the quote's distance outside fair"
     else:
         prov["maker.min_edge_vs_fair_c"] = "default 0: fair not supplied or known for < 20 orders"
-    seen = set(expr.get("sides_seen") or [])
+    seen = set(frozen_quote.get("sides_seen") or [])
     sides = "both" if seen == {"bid", "ask"} or not seen else ("bid_only" if seen == {"bid"} else "ask_only")
     prov["maker.quote_ref/half_spread_c/skew_c_per_contract"] = (
         "expressible_price_rule: reference and keep-skew chosen on the validation slice; half-spread = half the "
         "gap between the per-side median offsets at zero inventory (half_spread_fit, clamped at 0); one "
-        "inventory slope with side intercepts; refitted on all rows" if expr.get("quote_ref")
+        "inventory slope with side intercepts; frozen before test windows" if expr.get("quote_ref")
         else "defaults: " + str(expr.get("reason")))
     if expr.get("quote_ref") and not inventory_supported:
         prov["maker.quote_ref/half_spread_c/skew_c_per_contract"] = (
             "expressible_price_rule: constant offsets against a validated reference. Skew fixed at zero because "
             "client inventory is unobserved.")
     prov["maker.requote_threshold_c"] = "default 1.0 (the trigger threshold used to classify book moves)"
-    prov["maker.size"] = "size_rule.median_size" if med else "default"
+    prov["maker.size"] = "pre-test median observed order size" if med else "default"
     # risk envelope from the wallet's own measured state: the emitted rule must be able to quote
     ai = np.abs(np.array([r["inv"] for r in fit_rows if r["inv"] is not None], dtype=float))
-    wn = np.array(T["inv"].window_notional({r["window"] for r in fit_rows}), dtype=float)
+    wn = np.array(T["inv"].window_notional(train_windows, before=th[1]), dtype=float)
     p99 = float(np.percentile(ai, 99)) if len(ai) else 0.0
     n95 = float(np.percentile(wn, 95)) if len(wn) else 0.0
     base = Risk()
@@ -1918,31 +2087,32 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
     not_fitted = {"costs": "schema default (PM US taker coefficient); intl fees are not fitted",
                   "kill_exit": "schema defaults", "risk": "max_loss_per_day and max_open_windows are schema defaults",
                   "requote_threshold_c": "default 1.0, the threshold used to classify book moves"}
-    maker = MakerRule(quote_ref=expr.get("quote_ref") or "mid",
-                      half_spread_c=float(expr["half_spread_c"]) if expr.get("quote_ref") else 2.0,
+    maker = MakerRule(quote_ref=frozen_quote.get("ref") or "mid",
+                      half_spread_c=float(frozen_quote.get("half_spread_c", 2.0)),
                       size=float(med) if med else 10.0, sides=sides,  # type: ignore[arg-type]
-                      skew_c_per_contract=expr.get("skew_c_per_contract") or 0.0,
+                      skew_c_per_contract=frozen_quote.get("skew_c_per_contract") or 0.0,
                       requote_threshold_c=MOVE_C, max_quote_age_s=age, pause_when=pause,
                       min_edge_vs_fair_c=edge or 0.0)
+    controlled = T["inputs"]["fills"].get("controlled_simulation") is True
+    match_scope = "controlled_simulation" if controlled else "retrospective_full_interval"
     g = Genome(name=f"rulefit-{wallet[:10]}-maker", mode="maker",
-               universe=Universe(venue="intl_sim", assets=tuple(expr["assets"]) or ("btc",),
+               universe=Universe(venue="intl_sim", assets=tuple(assets) or ("btc",),
                                  horizons=tuple(hzs) or ("5m",), tau_min_s=tau_min, tte_min_s=tte_min),
                source=Source(kind="clone", wallets=(wallet,), mechanism="rule conditional on fill",
                              parents=(), operator="extract"),
                maker=maker, risk=risk, created_tw=0,
                evidence={"extractor": "doppel.lab.rulefit v1", "wallet": wallet, "label": "rule conditional on fill",
-                         "fit_range": {"from": T["inputs"]["from"], "to": T["inputs"]["to"]},
-                         "n_orders": len(ver), "fields": prov,
-                         "price_rule": {s: {k: price[s].get(k) for k in ("chosen", "model", "tie_with", "n", "rule", "inventory_basis")}
-                                        | {"oos_mae_c": ((price[s].get("offset_c") or {}).get("oos") or {}).get("mae_c")}
-                                        for s in ("bid", "ask")},
-                         "expressible": {k: expr.get(k) for k in ("quote_ref", "oos_mae_c", "per_side_fit_oos_mae_c",
-                                                                  "oos_cost_of_schema_c", "centre_shift_c", "inventory_skew_evidence")}})
+                         "fit_range": {"from": T["inputs"]["from"], "to": th[1] // NS},
+                         "n_orders": len(fit_rows), "fields": prov, "placement_label_scope": match_scope,
+                         "price_rule": {s: price[s].get("train_rule") for s in ("bid", "ask")},
+                         "expressible": frozen_quote | {"inventory_skew_evidence": expr["inventory_skew_evidence"]}})
     errs = validate(g)
     gd = to_dict(g) | {"status": "draft"}
 
-    # ---- sanity-check the full-sample draft on the observations it describes
-    check = check_genome(g, fit_rows, T["inputs"]["fair"]) if expr.get("quote_ref") else None
+    # Evaluate exactly the rule that would be exported, including clamping, risk and silence.
+    side_null = {s: float(np.median([r["px_c"] for r in fit_rows if r["up_side"] == s]))
+                 for s in sorted({r["up_side"] for r in fit_rows})}
+    check = check_genome(g, held_rows, T["inputs"]["fair"], side_null) if frozen_quote else None
     uni = [not (r["tau_s"] >= tau_min and r["tte_s"] >= tte_min) for r in fit_rows]
     universe = {"tau_min_s": tau_min, "tte_min_s": tte_min, "orders": len(uni),
                 "own_orders_excluded_share": _r(np.mean(uni)) if uni else None,
@@ -1952,34 +2122,44 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
     blockers: list[str] = []
     if check is not None and check["fair_substituted_by_mid"] and not T["inputs"]["fills"].get("controlled_simulation"):
         blockers.append("the v1 maker requires a fair clamp; static intent substituted mid for the missing reference")
-    n_windows = len({r["window"] for r in fit_rows})
+    n_windows = len({r["window"] for r in ver if r["asset"] in FAIR_ASSETS})
     if n_windows == 1:
         blockers.append("1 market window in the fit: no clustered CI, need >= 2")
     if not expr.get("quote_ref"):
         blockers.append(str(expr.get("reason")))
     else:
-        if expr["half_spread_c"] < MIN_HALF_SPREAD_C:
-            blockers.append(f"half_spread_c {expr['half_spread_c']} < {MIN_HALF_SPREAD_C}: bid and ask round to the "
+        if maker.half_spread_c < MIN_HALF_SPREAD_C:
+            blockers.append(f"half_spread_c {maker.half_spread_c} < {MIN_HALF_SPREAD_C}: bid and ask round to the "
                             "same cent, the twin drops both as a self-cross")
         if expr["windows"] < 2 and n_windows != 1:
             blockers.append(f"{expr['windows']} market window in the fit: no clustered CI, need >= 2")
-        if check is not None and (check["would_quote_share"] or 0) < MIN_QUOTE_SHARE:
-            blockers.append(f"the emitted genome would quote {check['would_quote_share']} of the wallet's in-sample "
+        if check is not None and (not check["rows"] or check["would_quote"] < MIN_QUOTE_SHARE * check["rows"]):
+            blockers.append(f"the emitted genome would quote {check['would_quote_share']} of the wallet's held-out "
                             f"orders (< {MIN_QUOTE_SHARE}): silent by {check['silent_by']}")
     # A symmetric maker has no directional choice. Every draft still needs held-out
     # price and participation evidence. Unmeasured evidence cannot carry its name.
     psk = expr.get("price_skill") or {}
     price_ci = psk.get("ci95")
     price_ok = bool(price_ci[0] > 0) if price_ci else None
+    actual_skill = (check or {}).get("price_skill_when_quoting") or {}
+    actual_ci = actual_skill.get("ci95")
+    actual_ok = bool(actual_ci[0] > 0) if actual_ci else None
     timing_skill = presence_skill(T, th)
     timing_ci = timing_skill.get("ci95")
     timing_ok = bool(timing_ci[0] > SKILL_MIN) if timing_ci else None
     why_not = []
+    inventory_complete = T["inv"].first_incomplete_ns is None or T["inv"].first_incomplete_ns >= T["inputs"]["to"] * NS
+    if not controlled and T["inputs"]["fills"].get("unflagged_input") is not False:
+        why_not.append("real ownership hypotheses require verified signed order terms")
+    if controlled and not inventory_complete:
+        why_not.append("incomplete controlled fill state prevents checking executable inventory and risk limits")
     if side["kind"] != "two_sided" and side["explained"] is not True:
         why_not.append(f"side: {side['kind']}, {side['reason']} (balanced accuracy {side.get('balanced_accuracy')}, "
                        f"interval {side.get('ci95')})")
     if not price_ok:
         why_not.append(f"price: held-out skill interval must exceed zero (skill {psk.get('value')}, CI {price_ci})")
+    if not actual_ok:
+        why_not.append("the executable draft lacks positive held-out quote-price skill against training side medians")
     if not timing_ok:
         why_not.append(f"timing: held-out participation skill interval must exceed {SKILL_MIN} "
                        f"(skill {timing_skill.get('value')}, CI {timing_ci})")
@@ -1991,11 +2171,13 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
     clock = {k: match_summary.get(k) for k in ("observable", "matched", "placebo_matched")}
     clock.update(passed=clock_ok, thresholds={k: PROFILE_THRESHOLDS[k]
                                               for k in ("min_observable", "match_min", "placebo_max")})
-    explained = {"verdict": joint_evidence(side_ok, price_ok, timing_ok) if clock_ok else None,
+    explained = {"verdict": joint_evidence(side_ok, price_ok, actual_ok, timing_ok) if clock_ok and controlled and inventory_complete else None,
+                 "scope": "Internal chronological evidence for a filled-order hypothesis. Identifying owner strategy "
+                          "requires independently observed decisions and explicit rival comparisons.",
                  "placement_clock": clock, "reasons": why_not, "side": side,
-                 "price": psk | {"explained": price_ok},
+                 "price": psk | {"explained": price_ok}, "executable_quote_price": actual_skill | {"explained": actual_ok},
                  "timing": timing_skill | {"explained": timing_ok, "skill_min": SKILL_MIN},
-                 "rule": "A draft requires positive held-out price skill, timing skill above the "
+                 "rule": "A draft requires positive held-out price skill for the model and executable quotes when quoting, timing skill above the "
                          "stated minimum, and supported side selection. Two-sided makers are exempt "
                          "from the side test. Timing measures observable filled-order participation."}
     blockers += [f"not explained by observed inputs: {w}" for w in why_not]
@@ -2064,6 +2246,7 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
     if gs.get("value") is not None and gs["value"] < 1:
         cannot("sub-second re-post", {k: gs.get(k) for k in ("value", "ci95", "status", "method")},
                "decisions are per second; max_quote_age_s is an int >= 1")
+    life = (timing.get("cancel") or {}).get("life_ms", {}).get("quantiles")
     if life and life["p50"] < 1000:
         cannot("sub-second quote life", {"cancel_life_ms": life}, "max_quote_age_s is whole seconds")
     ts = timing.get("trigger_shares") or {}
@@ -2091,17 +2274,38 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
     cannot("status draft", "draft", "Status has no 'draft'; the JSON carries it and Registry.register refuses it")
     cannot("unfilled quotes", CAVEAT, "not a schema gap: the data cannot show them")
 
+    hypothesis = None
+    if not controlled:
+        if not blockers:
+            # The hypothesis may be independently sealed NOW, after these historical diagnostics.
+            # No historical availability claim, external validation or registration follows.
+            candidate = _clean(gd)
+            hypothesis = {"status": "retrospective_unvalidated", "candidate": candidate, "genome_id": g.id,
+                          "candidate_sha256": hashlib.sha256(orjson.dumps(candidate, option=orjson.OPT_SORT_KEYS)).hexdigest(),
+                          "encoding": "orjson sorted-key compact UTF-8 without trailing newline",
+                          "research_data_end_exclusive": T["inputs"]["to"],
+                          "scope": "Conditional on full-interval historical placement matching and observed fills. "
+                                   "Seal this exact object before collecting a future independent holdout."}
+        reason = ("real placement labels use full-interval order matching, including cross-order candidate competition. "
+                  "This CLI cannot ingest independently bounded training-match evidence.")
+        blockers.append(reason)
+        why_not.append(reason)
     emitted = not blockers
     report = {"wallet": wallet, "label": "rule conditional on fill", "selection_caveat": CAVEAT,
               "definitions": "see doppel.lab.rulefit module docstring",
               "inputs": T["inputs"] | {"counts": dict(T["stats"]), "rows_orders": len(ver),
                                        "rows_candidates": len(rows) - len(ver), "pairs": T["pairs"],
-                                       "split": {"t_val_ns": th[0], "t_test_ns": th[1], "unit": "market window"}},
+                                       "split": {"t_val_ns": th[0], "t_test_ns": th[1], "unit": "market window", "source": "study calendar independent of wallet activity"}},
               "price_rule": price, "expressible_price_rule": expr, "size_rule": size, "timing_rule": timing,
               "ladder": ladder, "participation_rule": part, "selection_check": sel,
               "explained_by_observed_inputs": explained,
               "edge_outside_fair_c_p5": edge_fit, "risk_fit": risk_fit, "universe_fit": universe,
-              "emitted_genome_check": check,
+              "emitted_genome_check": check, "research_hypothesis": hypothesis,
+              "frozen_draft": {"candidate_id": g.id if frozen_quote and controlled else None, "match_scope": match_scope,
+                               "training_end_ns": th[1], "training_orders": len(fit_rows), "test_orders": len(held_rows),
+                               "test_windows": len({r["window"] for r in held_rows}),
+                               "excluded_boundary_orders": int((phases < 0).sum()), "witnessed_training_cancels": len(lives),
+                               "evaluation": "Internal split by scheduled market starts, conditional on qualified filled-order hypotheses. Independent owner-linked labels are required to identify a strategy."},
               "genome": {"id": g.id if emitted else None, "status": "draft" if emitted else "not_emitted",
                          "registered": False, "validate": errs, "fields": prov, "reasons": blockers,
                          "reason": "; ".join(blockers) or None,
@@ -2137,8 +2341,9 @@ def card(rep: dict) -> str:
         L.append(f"  observed offset from {u['ref']}: median {o['value']:+g} c (CI {o['ci95']}), IQR {o['p25']:+g}..{o['p75']:+g}, "
                  f"residual IQR {v['residual_iqr_c']} c, {o['clusters']} windows")
     e = rep["expressible_price_rule"]
-    L.append(f"- schema v1 can hold: ref {e.get('quote_ref')} +/- {e.get('half_spread_c')} c, skew "
-             f"{e.get('skew_c_per_contract')}; test MAE {e.get('oos_mae_c_same_rows')} c vs per-side "
+    frozen = e.get("frozen_quote") or {}
+    L.append(f"- executable quote fitted before test windows: ref {frozen.get('ref')} +/- {frozen.get('half_spread_c')} c, skew "
+             f"{frozen.get('skew_c_per_contract')}; test MAE {e.get('oos_mae_c_same_rows')} c vs per-side "
              f"{e.get('per_side_fit_oos_mae_c')} c on the same {e.get('n_test_common')} rows"
              + (f"; {e['rows_dropped_by_fair_requirement']} rows dropped for want of fair" if e.get("rows_dropped_by_fair_requirement") else "")
              + (f"; {e.get('reason')}" if not e.get("quote_ref") else ""))
@@ -2169,6 +2374,7 @@ def card(rep: dict) -> str:
     gn, ck, ld = rep["genome"], rep["emitted_genome_check"], rep["ladder"]
     ex = rep["explained_by_observed_inputs"]
     L += ["", "## explained by observed inputs: " + {True: "YES", False: "NO", None: "INSUFFICIENT EVIDENCE"}[ex["verdict"]],
+          f"- {ex['scope']}",
           f"- side: {ex['side']['kind']}, explained {ex['side']['explained']}, balanced accuracy "
           f"{ex['side'].get('balanced_accuracy')} (interval {ex['side'].get('ci95')}, null 0.5)",
           f"- price: skill vs a constant price {ex['price'].get('value')} (CI {ex['price'].get('ci95')}), explained {ex['price']['explained']}",
@@ -2178,12 +2384,16 @@ def card(rep: dict) -> str:
           f"(CI {(ld.get('ladder_share') or {}).get('ci95')}; any overlap {ld.get('brief_overlap_share')}), depth {ld.get('depth')}",
           "", f"## genome {gn['id'][:12]} (draft, not registered)" if gn["id"] else "## NO GENOME EMITTED"]
     L += [f"- NOT EMITTED because: {x}" for x in gn["reasons"]]
+    hypothesis = rep.get("research_hypothesis")
+    if hypothesis:
+        L.append(f"- research hypothesis {hypothesis['candidate_sha256']}. {hypothesis['scope']}")
     if gn["few_windows"]:
         L.append(f"- only {gn['windows']} windows: every CI here is crude")
     if ck:
-        L.append(f"- draft's in-sample quote intent: would quote {ck['would_quote_share']} of {ck['rows']} orders "
+        L.append(f"- draft's held-out quote intent: would quote {ck['would_quote_share']} of {ck['rows']} orders "
                  f"(silent by {ck['silent_by']}), MAE {ck['mae_c_when_quoting']} c when quoting, fair clamp binds "
-                 f"{ck['fair_clamp_binds_share']}" + ("; fair_up SUBSTITUTED by mid" if ck["fair_substituted_by_mid"] else ""))
+                 f"{ck['fair_clamp_binds_share']}, price skill when quoting vs training side medians {(ck.get('price_skill_when_quoting') or {}).get('value')} "
+                 f"(CI {(ck.get('price_skill_when_quoting') or {}).get('ci95')})" + ("; fair_up SUBSTITUTED by mid" if ck["fair_substituted_by_mid"] else ""))
     L += [f"- universe: {rep['universe_fit']}", f"- risk (measured, not a limit): {rep['risk_fit']}",
           "", "## the v1 schema cannot express"]
     L += [f"- {c['item']}: {c['why']}" for c in rep["cannot_express"]]
