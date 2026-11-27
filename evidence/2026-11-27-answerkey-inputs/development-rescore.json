@@ -1,0 +1,136 @@
+{
+  "phase": "Historical synthetic development receipts regraded without refitting",
+  "scorer_sha256": "c4e1839ec67020128f939a8d645d9c935b6eaf8219b63968249fbec302ef8cf3",
+  "runs": [
+    {
+      "development_run": "dev1",
+      "source_scorecard": "dev1/scorecard.json",
+      "source_scorecard_sha256": "1a9f3ccaa60b3bdc2acd8df4cefe749186d4082947373a0bb0a049347cf6adf0",
+      "range": [
+        1795629600,
+        1795632300,
+        1795633200
+      ],
+      "seed": 5,
+      "old_totals": {
+        "categories": {
+          "correct": 47,
+          "not_scored": 3,
+          "correctly_unknown": 10,
+          "gate_inconclusive": 1,
+          "missed": 5
+        },
+        "cells_with_true_value": 54,
+        "confident_claims": 15,
+        "fidelity_states": {
+          "gate_inconclusive": 4,
+          "not_run": 2
+        },
+        "recovery_accuracy": 0.8704,
+        "false_confidence_rate": 0.0,
+        "ci_coverage": 0.8333,
+        "ci_cells": 18
+      },
+      "regraded_totals": {
+        "categories": {
+          "correct": 46,
+          "not_scored": 3,
+          "correctly_unknown": 10,
+          "gate_inconclusive": 1,
+          "wrongly_confident": 1,
+          "missed": 5
+        },
+        "cells_with_true_value": 54,
+        "confident_claims": 27,
+        "fidelity_states": {
+          "gate_inconclusive": 4,
+          "not_run": 2
+        },
+        "recovery_accuracy": 0.8519,
+        "false_confidence_rate": 0.037,
+        "ci_coverage": 0.9333,
+        "ci_cells": 15
+      },
+      "confidence_errors": [
+        {
+          "subject": "touch_ladder",
+          "cell": "price_offset",
+          "truth": {
+            "bid": -1.0,
+            "ask": 0.9999999999999929
+          },
+          "recovered": {
+            "bid": 0.0,
+            "ask": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "development_run": "run_dev2",
+      "source_scorecard": "run_dev2/scorecard.json",
+      "source_scorecard_sha256": "516e505c2ee49b3bb3c113f1be283964c6a8ab74232445c20c752163965857db",
+      "range": [
+        1795629600,
+        1795635000,
+        1795645800
+      ],
+      "seed": 6,
+      "old_totals": {
+        "categories": {
+          "correct": 45,
+          "not_scored": 3,
+          "wrong": 2,
+          "correctly_unknown": 10,
+          "gate_inconclusive": 1,
+          "missed": 5
+        },
+        "cells_with_true_value": 54,
+        "confident_claims": 19,
+        "fidelity_states": {
+          "gate_inconclusive": 4,
+          "not_run": 2
+        },
+        "recovery_accuracy": 0.8333,
+        "false_confidence_rate": 0.0,
+        "ci_coverage": 0.8333,
+        "ci_cells": 18
+      },
+      "regraded_totals": {
+        "categories": {
+          "correct": 44,
+          "not_scored": 3,
+          "wrong": 2,
+          "correctly_unknown": 10,
+          "gate_inconclusive": 1,
+          "wrongly_confident": 1,
+          "missed": 5
+        },
+        "cells_with_true_value": 54,
+        "confident_claims": 30,
+        "fidelity_states": {
+          "gate_inconclusive": 4,
+          "not_run": 2
+        },
+        "recovery_accuracy": 0.8148,
+        "false_confidence_rate": 0.0333,
+        "ci_coverage": 0.9333,
+        "ci_cells": 15
+      },
+      "confidence_errors": [
+        {
+          "subject": "touch_ladder",
+          "cell": "price_offset",
+          "truth": {
+            "bid": -1.0,
+            "ask": 0.9999999999999929
+          },
+          "recovered": {
+            "bid": 0.0,
+            "ask": 0.0
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -49,3 +49,20 @@ The [reference availability check](fair-availability.json) ran the original simu
 `ref_brti_raw` and `ref_prices` hour files were present in each. All 72 windows returned
 at least one finite fair value at the four checked offsets. Of 288 checks, 284 were
 available on each root. Fair-value error remains a separate measurement.
+
+## Reproduce the historical development scorecards
+
+The [54 archived inputs](development-score-inputs.zip) contain Claude's two synthetic
+development scorecards, the six subjects' truth and fit reports from each run, and their
+available profile, fidelity and genome outputs. The scorer reads these artifacts directly.
+Run the commands below from the combined review checkout. The comparison should produce
+no output and exit successfully. [Recorded result](development-rescore.json)
+
+```sh
+proof_dir="$(mktemp -d)"
+bundle=evidence/2026-11-27-answerkey-inputs
+unzip -q "$bundle/development-score-inputs.zip" -d "$proof_dir"
+PYTHONPATH=src python "$bundle/rescore_development.py" \
+  "$proof_dir/dev1" "$proof_dir/run_dev2" > "$proof_dir/result.json"
+cmp "$bundle/development-rescore.json" "$proof_dir/result.json"
+```

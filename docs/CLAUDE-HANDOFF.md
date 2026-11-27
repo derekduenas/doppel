@@ -1,6 +1,15 @@
 # Claude Code handoff
 
-## Where to resume
+## November 27 rule-twin pickup
+
+Open `/Users/derekduenas/doppel-rule-twin-readiness` on
+`review/rule-twin-readiness-20261127`. The [rule-twin review](RULE-TWIN-REVIEW-20261127.md)
+records the interrupted builder recovery, the regraded development runs, the six-hour Apex
+input check, wallet pagination and the remaining gates. Start with Apex storage headroom and
+the [reserved three-seed exam](../evidence/2026-11-27-answerkey-inputs/EXAM.md).
+The owner chose to keep the original baseline running and the tape archive on Apex.
+
+## November 26 integration pickup
 
 Open `/Users/derekduenas/doppel-integration`. The integration worktree now uses the review branch
 `review/system-audit-20261126`, based on `3cff434`. The first audit status baseline is

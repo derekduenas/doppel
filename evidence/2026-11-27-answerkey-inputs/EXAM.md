@@ -26,3 +26,24 @@ prospective exam.
 On Apex use a verified sealed source and an output filesystem with room for the full run.
 The original zero-window baseline uses a different map and has no qualifying controls. It
 cannot provide this comparison. Keep formal runs separate from that process.
+
+For the fixed run, the following is the command to place inside the low-priority research
+unit with its 1,500 MiB memory limit. Run from the combined review checkout. Set
+`EXAM_SCRATCH` to the approved research filesystem with sufficient space and set
+`EXAM_SEED` to one of the three reserved seeds above. Save each unit's exit status and logs.
+
+```sh
+PYTHONPATH="$PWD/src" /opt/doppel/.venv/bin/python -m doppel.lab.answerkey \
+  --data /var/backups/doppel-sealed-20261126/tape \
+  --tokens evidence/2026-11-27-answerkey-inputs/tokens.jsonl --stream clob_btc_5m \
+  --from 2026-11-26T06:00:00Z --split 2026-11-26T09:00:00Z --to 2026-11-26T12:00:00Z \
+  --strategies a,b,c,d,e,f --seed "${EXAM_SEED:?}" \
+  --policy-params evidence/2026-11-27-answerkey-inputs/exam-params.json \
+  --out "${EXAM_SCRATCH:?}/fixed-${EXAM_SEED}"
+```
+
+Revision `3dee8bb` predates the parameter-file option. For the paired old-tool result,
+use that checkout's `answerkey.run_tools` on each matching subject's generated
+`public/` directory, giving it a separate tool-output directory, the public wallet address
+and the same UTC boundaries. Evaluate both revisions using the same scorer. Preserve
+old-tool failures and its use of full-period order matches as observations about the old tools.
