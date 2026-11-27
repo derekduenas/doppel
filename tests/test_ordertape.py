@@ -124,6 +124,17 @@ def test_store_block_time_saves_the_block_request():
     assert [c[1] for c in calls].count("eth_getBlockByNumber") == 1
 
 
+def test_first_interrupted_flush_is_invisible_to_readers(tmp_path, monkeypatch):
+    def crash(*args):
+        raise RuntimeError("crash")
+
+    monkeypatch.setattr(ot, "_commit", crash)
+    with pytest.raises(RuntimeError, match="crash"):
+        ot.run([("0x01", BLOCK_TS, BLOCK)], _pool(_chain())[0], tmp_path)
+    assert list(tmp_path.glob("day=*/*.parquet"))
+    assert ot.committed_parts(tmp_path, allow_legacy=True) == []
+
+
 def test_resume_never_duplicates(tmp_path, monkeypatch):
     todo = [(f"0x{i:02x}", BLOCK_TS, BLOCK) for i in range(10)]
     out = tmp_path / "orders"
@@ -141,6 +152,7 @@ def test_resume_never_duplicates(tmp_path, monkeypatch):
         m.setattr(ot, "_commit", boom)
         ot.run(todo, _pool(_chain())[0], out, workers=2, flush_txs=3)
     assert len(_rows(out)) == 24  # the orphan part is on disk
+    assert sum(pq.read_metadata(p).num_rows for p in ot.committed_parts(out)) == 15
 
     # run 3: drops the orphan, fetches only what is not committed
     calls = []
@@ -331,3 +343,12 @@ def test_cli_cohort_mode_prints_one_json_summary(tmp_path, capsys):
     f = tmp_path / "w.txt"
     f.write_text(f"{WA}\n{WB}\n")
     assert ot._list(str(f)) == [WA, WB]
+
+
+def test_decode_requires_every_declared_integer_word():
+    import pytest
+
+    with pytest.raises(ValueError, match="truncated integer array"):
+        ot._uints((2).to_bytes(32, "big") + bytes(32), 0)
+    with pytest.raises(ValueError, match="invalid word offset"):
+        ot._uints(bytes(32), 32)

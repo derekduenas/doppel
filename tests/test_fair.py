@@ -50,3 +50,39 @@ def test_raw_model_is_calibrated_on_synthetic_walk():
         k = (p >= lo) & (p < hi)
         if k.sum() >= 40:
             assert abs(p[k].mean() - y[k].mean()) < 0.08
+
+
+def test_fair_asof_ignores_brti_received_after_the_decision():
+    """Astra audit 2026-11-26: changing one BTC tick received 10 s after the decision flipped a lab
+    scorecard. fair_up_asof must not move when only later-received seconds change."""
+    import numpy as np
+
+    from doppel.lab.fair import fair_up_asof
+    t0, end = 1_800_000_000, 1_800_000_000 + 900
+    raw = 100_000 + np.cumsum(np.random.default_rng(0).normal(0, 5, end - t0 + 1))
+    rcv = np.arange(t0, end + 1) + 0.7
+    d = end - 100.0
+    base = fair_up_asof(raw, rcv, t0, 100_000.0, d, end)
+    late = int(d) - 3 - t0                      # printed before d but received 10 s after it
+    rcv2 = rcv.copy(); rcv2[late] = d + 10
+    raw2 = raw.copy(); raw2[late] += 5_000
+    assert base is not None
+    assert fair_up_asof(raw2, rcv2, t0, 100_000.0, d, end) in (None, base)
+    raw3 = raw.copy(); raw3[int(d) + 5 - t0] += 5_000   # a future second never matters
+    assert fair_up_asof(raw3, rcv, t0, 100_000.0, d, end) == base
+
+
+def test_adverse_uses_receipt_time_for_window_boundaries(tmp_path, monkeypatch):
+    from doppel.lab import adverse
+
+    start, end = 1000, 1300
+    row = {"start": start, "end": end, "price": 0.6, "qty": 1, "taker_side": "ORDER_SIDE_SELL"}
+    monkeypatch.setattr(adverse, "load_series", lambda *a: {start - 1: 100.0, end - 1: 101.0})
+    monkeypatch.setattr(adverse, "load_raw_rcv", lambda *a: {start: (100.0, start)})
+    monkeypatch.setattr(adverse, "fair_up_asof", lambda *a: 0.5)
+    monkeypatch.setattr(adverse, "iter_prints", lambda *a: [
+        row | {"recv": start + 0.25}, row | {"recv": end + 0.25}])
+    doc = adverse.study(tmp_path)
+    assert doc["total"]["n"] == 1
+    assert doc["skipped"] == {"outside_window": 1}
+    assert doc["by_tte"]["240-900s"]["n"] == 1

@@ -1,0 +1,21 @@
+{
+  "baseline_commit": "45ccb9244af2afe51407092df977a248fcdbc628",
+  "wallet": "0x0cb038487586d1119b165466072e9baf666f3a90",
+  "stream": "clob_btc_5m",
+  "warmup_from": 1795630500,
+  "sample_from": 1795630620,
+  "sample_to": 1795630740,
+  "size_tol_rel": 0.02,
+  "selection": "The next consecutive two minutes after the prior 16-order trial. Include all screened BTC 5m maker orders signed in this interval. Use the frozen match inputs for both arms, including unknown ends, and report every missing placement. This wallet-hour has historical aggregate studies.",
+  "clock_rule": [
+    "Read archived records in capture order. Keep the observed placement, the existing inferred venue end and the original reset and sample boundaries.",
+    "At the first relevant event with venue milliseconds strictly beyond the inferred end, freeze that quote's queue and book state. Admit no further book updates to it.",
+    "For up to one second of receipt time inclusive after that crossing, process public prints whose venue milliseconds are within the original placement-to-end interval inclusive. Use the existing twin DYING_GRACE_NS duration. Reject a receipt-clock reversal across the crossing. A reset or the end of the sample ends reconciliation.",
+    "Use the same eligibility rule for target and unrelated transactions, allocated and public-only quantities, both token views, and fingerprint candidates. Preserve deduplication. A stale pre-placement print or a print in the placement record cannot fill a quote.",
+    "Use venue execution time for trade-versus-book queue comparisons. At equal milliseconds, a print after the placement record can trade. A same-millisecond book cross retains the conservative pre-cross queue rule. Keep receipt and venue time available for delayed delivery evidence.",
+    "Carry receipt-grace deliveries separately from deliveries before expiry was observed. A lifetime inferred from the target's last fill is conditional evidence. Independent placement and expiry require separate acknowledgements."
+  ],
+  "comparison": "Reproduce the prior two-minute failure on its archived rows as a development check. Replay both implementations on identical new rows and archive. Publish counts for seen, routed, delivered, receipt-grace deliveries, known and unknown ends, both bracket violations, price allocation and placement ambiguity. A holdout with zero clock inversions has no power to validate the timing change.",
+  "existing_thresholds": {"delivered_share_min": 0.95, "bracket_violation_share_max": 0.05, "headline_orders_fully_allocated_share_min": 1.0},
+  "operations": "Archived data on Apex, zero RPC requests and isolated low-priority scratch processes. Keep the prior trial outcomes and timer decision. No choice of cutoff or additional sample after inspecting holdout results."
+}

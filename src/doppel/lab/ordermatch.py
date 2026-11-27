@@ -6,9 +6,11 @@ from ``matchOrders`` calldata, hash-verified). Only maker rows are matched; rows
 ``order_id`` are merged (fills summed per tx). Screen as in the E37 probe: ``created_ms`` inside
 [--from, --to) and 0 <= age_s < 600 at the first fill.
 
-``--orders`` is a JSONL sample (every row is used, in file order) or the cohort parquet directory
-(``day=YYYY-MM-DD/part-*.parquet``). From a directory only rows with ``verified == True`` are
-used (when the column exists), read oldest fill first, so "first fill" does not depend on the
+``--orders`` is a JSONL sample (in file order) or the cohort parquet directory.
+Managed tapes use committed flush parts and require verified rows. Legacy exports without
+verification flags can be read standalone. If the source contains any verification flags,
+only rows marked true count.
+Directory rows are read oldest fill first, so "first fill" does not depend on the
 order the parts were written in. A cohort run verifies the cohort's own fills only, so other
 makers in the same txs are ``verified == False`` and are left out: ``other_known`` then counts
 only other COHORT wallets, ``identity_precision_upper`` is NOT MEASURED (it reads near 1.0 or
@@ -21,7 +23,9 @@ WHAT IS IDENTIFIED (from data) AND WHAT IS ASSUMED
    (token, limit, side) whose delta equals its size (|delta - size| <= max(size_tol,
    size_tol_rel * size)) with venue time in created_ms + [lo_ms, hi_ms]. One-to-one: candidate
    (order, event) pairs are taken smallest |dt| first and each event serves one order. This is
-   evidence, not proof: someone else may have posted that size then. So the same test is run
+   evidence, not proof: someone else may have posted that size then. Each matched row records
+   how many size and timestamp candidates exist at its level up to its first located fill.
+   The same test is run
    with every created_ms shifted by +60 s (placebo). Rates are over "observable" orders: the
    asset's book state is known (``intlbook`` spans) across BOTH the real and the placebo window,
    so the two rates share a denominator. (E37 used orders with any level event at their price and
@@ -96,6 +100,7 @@ import pyarrow.parquet as pq
 
 from .flow import _ts
 from .intlbook import IntlBook, LevelEvent, Print, px, replay
+from .ordertape import STATE_DIR, committed_parts
 
 Key = tuple[str, float, str]  # asset, price, side
 MAX_AGE_S = 600.0
@@ -166,10 +171,14 @@ def _parquet_rows(path: Path, t_from: int, t_to: int, active: dict[str, set[str]
     ``verified == True`` rows count (when the column exists); every counted row, whatever its role
     or time, adds its token to ``active``. One part is in memory at a time."""
     keep: list[dict] = []
-    for p in sorted(path.glob("day=*/part-*.parquet")):
-        names = pq.read_schema(p).names
+    managed = (path / STATE_DIR).is_dir()
+    schemas = {p: pq.read_schema(p).names for p in committed_parts(path, allow_legacy=True)}
+    flagged = any("verified" in names for names in schemas.values())
+    for p, names in schemas.items():
+        if managed and "verified" not in names:
+            raise ValueError(f"committed order tape part lacks verification flags: {p}")
         for r in pq.read_table(p, columns=[c for c in PARQUET_COLS if c in names]).to_pylist():
-            if "verified" in names and r["verified"] is not True:
+            if flagged and r.get("verified") is not True:
                 stats["rows_not_verified"] += 1
                 continue
             active[r["maker"].lower()].add(r["token_id"])
@@ -192,7 +201,16 @@ def load_orders(path: Path, t_from: int, t_to: int) -> tuple[list[Order], dict[s
     stats: Counter = Counter()
     skip: set[str] = set()
     path = Path(path)
-    for r in (_parquet_rows(path, t_from, t_to, active, stats) if path.is_dir() else _jsonl_rows(path)):
+    if path.is_dir():
+        rows = _parquet_rows(path, t_from, t_to, active, stats)
+        flagged = False  # parquet rows already screened, including non-makers in active
+    else:
+        flagged = any("verified" in r for r in _jsonl_rows(path))
+        rows = _jsonl_rows(path)
+    for r in rows:
+        if flagged and r.get("verified") is not True:
+            stats["rows_not_verified"] += 1
+            continue
         active[r["maker"].lower()].add(r["token_id"])
         if r.get("role") != "maker":
             continue
@@ -320,6 +338,16 @@ def observable(o: Order, tape: LevelTape, p: Params, shift_ms: int = 0) -> bool:
     return tape.known_over(o.token, t + p.lo_ms, t + p.hi_ms)
 
 
+def placement_candidate_count(events: list[LevelEvent], created_ms: int, size: float, p: Params,
+                              first_fill_ms: int | None) -> int:
+    """Count plausible book increases before applying one-to-one assignment."""
+    lo = created_ms + p.lo_ms
+    hi = created_ms + p.hi_ms
+    if first_fill_ms is not None:
+        hi = min(hi, first_fill_ms)
+    return sum(lo <= e.venue_ms <= hi and p.near(e.delta, size) for e in events)
+
+
 # ---------------------------------------------------------------- follow-forward
 def follow(tape: LevelTape, key: Key, i0: int, r: float, start_ms: int,
            claimed: set[tuple[Key, int]], p: Params) -> dict:
@@ -379,6 +407,8 @@ def classify(o: Order, key: Key, i0: int, tape: LevelTape, claimed: set[tuple[Ke
            "price": o.price, "size": o.size, "created_ms": o.created_ms,
            "placed_venue_ms": place.venue_ms, "placed_tw_ns": place.tw_ns, "placed_src": place.src,
            "sign_to_book_ms": place.venue_ms - o.created_ms,
+           "placement_candidates": placement_candidate_count(
+               tape.events[key], o.created_ms, o.size, p, min(located, default=None)),
            "filled": round(o.filled, 6), "remainder": round(r, 6), "n_fills": len(o.fills),
            "fills_located": len(located), "print_price_ok": n_price_ok, "print_size_ok": n_size_ok,
            "fills_at": fills_at}

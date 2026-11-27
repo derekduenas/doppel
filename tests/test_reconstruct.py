@@ -26,10 +26,12 @@ def _w(x: int) -> bytes:
     return x.to_bytes(32, "big")
 
 
-def static(salt, maker, token, cents, size, created_ms) -> bytes:
-    """The 11 static words of a BUY order of ``size`` shares at ``cents``."""
-    return b"".join(_w(v) for v in (salt, int(maker, 16), int(maker, 16), int(token), size * cents * 10**4,
-                                    size * 10**6, 0, 0, created_ms, 0, 0))
+def static(salt, maker, token, cents, size, created_ms, sell=False) -> bytes:
+    """Encode a signed maker or taker order."""
+    cash, shares = size * cents * 10**4, size * 10**6
+    give, take = (shares, cash) if sell else (cash, shares)
+    return b"".join(_w(v) for v in (salt, int(maker, 16), int(maker, 16), int(token), give,
+                                    take, int(sell), 0, created_ms, 0, 0))
 
 
 def calldata(taker: bytes, makers: list[bytes], fills: list[int]) -> str:
@@ -37,7 +39,8 @@ def calldata(taker: bytes, makers: list[bytes], fills: list[int]) -> str:
     mo = 7 * 32 + len(taker)
     arr = _w(n) + b"".join(_w(n * 32 + i * 11 * 32) for i in range(n)) + b"".join(makers)
     ints = _w(n) + b"".join(_w(f) for f in fills)
-    head = b"".join(_w(v) for v in (7, 7 * 32, mo, 1, mo + len(arr), 0, mo + len(arr) + len(ints)))
+    condition = int.from_bytes(taker[3 * 32:4 * 32], "big") // 100
+    head = b"".join(_w(v) for v in (condition, 7 * 32, mo, 1, mo + len(arr), 0, mo + len(arr) + len(ints)))
     return "0x" + ot.SELECTOR + (head + taker + arr + ints + _w(n) + _w(0) * n).hex()
 
 
@@ -54,17 +57,17 @@ def test_the_encoder_round_trips_through_decode_match():
 # ---------------------------------------------------------------- the synthetic world
 def book(ms, asset, market, bids, asks):
     lv = lambda xs: [{"price": str(p), "size": str(s)} for p, s in xs]  # noqa: E731
-    return ms, {"event_type": "book", "asset_id": asset, "market": market, "bids": lv(bids),
+    return ms, {"event_type": "book", "asset_id": asset, "market": f"0x{int(market[1:]):064x}", "bids": lv(bids),
                 "asks": lv(asks), "timestamp": str(MS + ms)}
 
 
 def pc(ms, asset, market, price, size):
-    return ms, {"event_type": "price_change", "market": market, "timestamp": str(MS + ms),
+    return ms, {"event_type": "price_change", "market": f"0x{int(market[1:]):064x}", "timestamp": str(MS + ms),
                 "price_changes": [{"asset_id": asset, "price": str(price), "size": str(size), "side": "BUY"}]}
 
 
 def trade(ms, asset, market, price, size, tx):
-    return ms, {"event_type": "last_trade_price", "asset_id": asset, "market": market, "price": str(price),
+    return ms, {"event_type": "last_trade_price", "asset_id": asset, "market": f"0x{int(market[1:]):064x}", "price": str(price),
                 "size": str(size), "side": "SELL", "timestamp": str(MS + ms), "transaction_hash": tx}
 
 
@@ -81,7 +84,7 @@ def world(root):
         k += 1
         price, tx, got = cents / 100, f"0x{k:064x}", 20 if partial else size
         st = static(1000 + k, wallet, token, cents, size, MS + ms)
-        chain[tx] = (calldata(static(k, TAKER, token, 90, size, MS + ms), [st], [got * cents * 10**4]), BLOCK + k)
+        chain[tx] = (calldata(static(k, TAKER, token, 1, size, MS + ms, sell=True), [st], [got * cents * 10**4]), BLOCK + k)
         fills.append({"id": f"r{k}", "address": wallet, "event_type": "TRADE", "token_id": token, "side": "BUY",
                       "amount_shares": float(got), "amount_usdc": got * price, "fee": 0.0,
                       "block_timestamp": T0 + (ms + 400) // 1000 + 1, "block_number": BLOCK + k,
@@ -231,6 +234,55 @@ def test_end_to_end_all_four_steps(ran):
     assert set(rep["ledger_status"]) == set(profile.WEIGHTS)
     md = (out / "report.md").read_text()
     assert W1 in md and "PROVISIONAL" in md and "## Verified / estimated / unknown" in md
+
+
+def test_manifest_connects_reconstruction_to_rulefit_and_fidelity(ran, tmp_path):
+    from doppel.lab import fidelity, rulefit
+    from doppel.lab.research_manifest import read_reconstruction
+    from doppel.strategy.genome import Genome, MakerRule, Source, Universe, to_dict
+
+    root, _, _ = ran
+    manifest = root / "lab" / "reconstruct" / "run1" / "manifest.json"
+    files = read_reconstruction(manifest, W1, T0, T0 + 7200, exact=True)
+    assert files.matched_orders.is_file() and files.summary.is_file() and files.orders.is_dir()
+    with pytest.raises(ValueError, match="untrusted"):
+        read_reconstruction(manifest, W2, T0, T0 + 7200)
+    with pytest.raises(ValueError, match="exact"):
+        read_reconstruction(manifest, W1, T0, T0 + 3600, exact=True)
+    # Older manifests could set the trust flags when only a subset of the wallet's
+    # range was fetched. A perfect verified share among those rows is insufficient.
+    old = orjson.loads(manifest.read_bytes())
+    old.pop("status", None)
+    old["wallets"][W1]["tape"]["fills_in_range"] += 1
+    copy = tmp_path / "partial.json"
+    copy.write_bytes(orjson.dumps(old))
+    with pytest.raises(ValueError, match="incomplete"):
+        read_reconstruction(copy, W1, T0, T0 + 7200)
+    copy.write_bytes(orjson.dumps({"status": "running"}))
+    with pytest.raises(ValueError, match="unfinished"):
+        read_reconstruction(copy, W1, T0, T0 + 7200)
+
+    tokens = tmp_path / "tokens.jsonl"
+    tokens.write_bytes(b"".join(
+        orjson.dumps({"token": token, "slug": f"btc-updown-5m-{T0}", "idx": idx,
+                      "condition": f"0x{1:064x}", "status": "resolved", "payout": 1 - idx}) + b"\n"
+        for idx, token in enumerate(("101", "102"))
+    ))
+    args = ["--data", str(root / "tape"), "--wallet", W1, "--reconstruct-manifest", str(manifest),
+            "--from", str(T0), "--to", str(T0 + 7200)]
+    fit = tmp_path / "fit"
+    assert rulefit.main([*args, "--tokens", str(tokens), "--out", str(fit)]) == 1
+    assert (fit / "fit_report.json").is_file()  # two observed markets are insufficient for a draft
+
+    g = Genome(name="manifest test", universe=Universe(venue="intl_sim"), mode="maker",
+               source=Source(kind="clone"), maker=MakerRule(), created_tw=0)
+    genome = tmp_path / "genome.json"
+    genome.write_bytes(orjson.dumps(to_dict(g)))
+    out = tmp_path / "fidelity"
+    assert fidelity.main([*args, "--lab", str(tmp_path), "--genome", str(genome), "--out", str(out)]) == 0
+    result = orjson.loads((out / "fidelity.json").read_bytes())
+    assert result["verdict"]["decision"] == "INCONCLUSIVE"
+    assert result["coverage"]["verified_holdout"]["reason"] == "no coverage receipt"
 
 
 def test_a_failing_gate_marks_downstream_untrusted(ran):
@@ -403,7 +455,7 @@ def world2(root, shared_tx=False, n_cand=1):
         makers = [(wallet, static(1000 + k, wallet, "101", cents, 50, MS + ms), cents, 50)]
         if extra:
             makers.append((extra[0], static(5000 + k, extra[0], "101", extra[1], 100, MS + ms), extra[1], 100))
-        chain[tx] = (calldata(static(k, TAKER, "101", 99, 50, MS + ms), [m[1] for m in makers],
+        chain[tx] = (calldata(static(k, TAKER, "101", 1, 50, MS + ms, sell=True), [m[1] for m in makers],
                               [z * ct * 10**4 for _, _, ct, z in makers]), BLOCK + k)
         for j, (w, st, ct, z) in enumerate(makers):
             fills.append({"id": f"r{k}_{j}", "address": w, "event_type": "TRADE", "token_id": "101", "side": "BUY",
@@ -476,7 +528,7 @@ def world3(root):
         k += 1
         tx = f"0x{k:064x}"
         st = static(1000 + k, W1, "101", cents, 50, MS + ms)
-        chain[tx] = (calldata(static(k, TAKER, "101", 99, 50, MS + ms), [st], [50 * cents * 10**4]), BLOCK + k)
+        chain[tx] = (calldata(static(k, TAKER, "101", 1, 50, MS + ms, sell=True), [st], [50 * cents * 10**4]), BLOCK + k)
         fills.append({"id": f"r{k}", "address": W1, "event_type": "TRADE", "token_id": "101", "side": "BUY",
                       "amount_shares": 50.0, "amount_usdc": 50 * cents / 100, "fee": 0.0,
                       "block_timestamp": T0 + (ms + 100 + fill_delay) // 1000 + 1, "block_number": BLOCK + k,
@@ -524,7 +576,7 @@ def _cand_world(root, n):
     for i in range(32):
         k, ms, cents = i + 1, 1000 + 1000 * i, 10 + i
         tx, st = f"0x{k:064x}", static(1000 + k, W1, "101", cents, 50, MS + ms)
-        chain[tx] = (calldata(static(k, TAKER, "101", 99, 50, MS + ms), [st], [50 * cents * 10**4]), BLOCK + k)
+        chain[tx] = (calldata(static(k, TAKER, "101", 1, 50, MS + ms, sell=True), [st], [50 * cents * 10**4]), BLOCK + k)
         fills.append({"id": f"r{k}", "address": W1, "event_type": "TRADE", "token_id": "101", "side": "BUY",
                       "amount_shares": 50.0, "amount_usdc": 50 * cents / 100, "fee": 0.0,
                       "block_timestamp": T0 + (ms + 400) // 1000 + 1, "block_number": BLOCK + k,
@@ -757,6 +809,54 @@ def test_s4_a_negative_share_fails_its_gate():
     assert reconstruct.gate(GATES, "orderreplay.placement_not_found_share", 0.0, 32)["status"] == "pass"
 
 
+def test_same_length_changed_checkpoint_is_repaired(tmp_path):
+    c = cfg(tmp_path)
+    chain = Chain(world(tmp_path))
+    man = run(c, chain)
+    first = c.out / man["steps"]["ordermatch"]["chunks"][0]["dir"] / "orders.jsonl"
+    original = first.read_bytes()
+    first.write_bytes(original.replace(W1.encode(), W2.encode(), 1))
+    assert first.read_bytes() != original and first.stat().st_size == len(original)
+    repaired = run(c, chain)
+    assert [u["status"] for u in repaired["steps"]["ordermatch"]["chunks"]] == ["ran", "skipped"]
+    assert first.read_bytes() == original
+
+
+def test_capped_wallet_sample_never_reads_as_full_coverage(tmp_path):
+    chain = Chain(world2(tmp_path))
+    man = run(one(tmp_path, chunk_s=7200, max_txs=1, steps=("ordertape",)), chain)
+    assert man["steps"]["ordertape"]["complete"]
+    wallet = man["wallets"][W1]
+    assert wallet["tape"]["fills_expected"] == 1 < wallet["tape"]["fills_in_range"]
+    assert all("ordertape.full_store_coverage:fail" in reasons for reasons in wallet["untrusted"].values())
+
+
+def test_interrupted_replacement_publishes_its_own_range(tmp_path, monkeypatch):
+    chain = Chain(world(tmp_path))
+    run(cfg(tmp_path), chain)
+    c = cfg(tmp_path, t_to=T0 + 3600)
+    def interrupt(*args):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(reconstruct, "step_ordertape", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        run(c, chain)
+    for name in ("manifest.json", "report.json"):
+        doc = orjson.loads((c.out / name).read_bytes())
+        assert doc["status"] == "running" and doc["range"] == {"from": T0, "to": T0 + 3600}
+    assert "in progress" in (c.out / "report.md").read_text()
+
+
+def test_a_same_length_change_to_a_sealed_tape_is_rejected(tmp_path):
+    root = tmp_path
+    chain = Chain(world(root))
+    man = run(cfg(root), chain)
+    tape = root / "tape" / next(iter(man["steps"]["ordermatch"]["chunks"][0]["inputs"]["tape"]))
+    data = tape.read_bytes()
+    tape.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
+    with pytest.raises(ValueError, match="recorded seal"):
+        run(cfg(root), chain)
+
+
 def test_s5_s6_report_totals_and_identity_precision(tmp_path):
     root = tmp_path
     strict = GATES | {"ordermatch.match_rate": GATES["ordermatch.match_rate"] | {"min": 1.01}}
@@ -818,6 +918,16 @@ def test_s7_the_timer_queue_retries_a_range_before_new_ones(tmp_path):
     assert st["pending"] == [] and [p["from"] for p in st["gave_up"]] == [24]
 
 
+def test_wallet_gates_use_exact_counts_at_thresholds():
+    rp = {"counts": {"orders": 100001, "headline_orders": 100001, "placement_not_found": 1001},
+          "adapter_gate": {"print_seen_in_replay": 100001, "routed_to_order_price_and_side": 95000,
+                           "delivered_to_live_quote": 90249, "routed_share": 0.95, "delivered_share": 0.95},
+          "bracket_violations": {"pessimistic_overfilled": 5001, "optimistic_underfilled": 0}}
+    g = reconstruct.wallet_gates(GATES, None, None, rp)
+    for k in ("bracket_violation_share", "placement_not_found_share", "routed_share", "delivered_share"):
+        assert g[f"orderreplay.{k}"]["status"] == "fail", k
+
+
 @pytest.mark.parametrize("how", ["missing", "not_match_orders"])
 def test_audit_one_of_35_txs_decoded_is_never_complete(tmp_path, how):
     """Audit 2026-11-26: 1 of 35 selected txs decoded was reported complete with 100% verified and
@@ -825,23 +935,24 @@ def test_audit_one_of_35_txs_decoded_is_never_complete(tmp_path, how):
     matchOrders): the tape is incomplete, every wallet says so, and the next run asks again."""
     root = tmp_path
     txs = _cand_world(root, 0)
-    for k in range(33, 36):  # 35 selected txs in all
-        txs[f"0x{k:064x}"] = (txs[f"0x{1:064x}"][0], BLOCK + k)
-    _extra = [{"id": f"x{k}", "address": W1, "event_type": "TRADE", "token_id": "101", "side": "BUY",
-               "amount_shares": 1.0, "amount_usdc": 0.5, "fee": 0.0, "block_timestamp": T0 + 100,
-               "block_number": BLOCK + k, "order_type": "maker", "price": 0.5, "order_id": "0x" + "ee" * 32,
-               "transaction_hash": f"0x{k:064x}"} for k in range(33, 36)]
+    first = sorted(txs)[0]
+    extra = [f"0x{k:064x}" for k in range(900, 903)]  # 35 selected txs in all
+    for i, tx in enumerate(extra):
+        txs[tx] = (txs[first][0], BLOCK + 900 + i)
     g = SegmentWriter(root / "tape", "goldsky_activity")
-    g.append(orjson.dumps({"data": _extra}).decode(), tw=(T0 + 3600) * 10**9,
-             meta={"job": "cohort-a", "status": 200, "rows": 3})
+    g.append(orjson.dumps({"data": [
+        {"id": f"x{i}", "address": W1, "event_type": "TRADE", "token_id": "101", "side": "BUY",
+         "amount_shares": 1.0, "amount_usdc": 0.5, "fee": 0.0, "block_timestamp": T0 + 100,
+         "block_number": BLOCK + 900 + i, "order_type": "maker", "price": 0.5, "order_id": "0x" + "ee" * 32,
+         "transaction_hash": tx} for i, tx in enumerate(extra)]}).decode(), tw=(T0 + 3600) * 10**9,
+        meta={"job": "cohort-a", "status": 200, "rows": 3})
     g.close()
     compact(root / "tape", root / "lab" / "fills")
+    assert len(txs) == 35
     good = Chain(txs)
-    asked: list[str] = []
 
     def flaky(url, method, params):
-        asked.append(params[0])
-        if params[0] == f"0x{1:064x}":
+        if params[0] == first:
             return good(url, method, params)
         return None if how == "missing" else {"input": "0xdeadbeef", "to": EX, "blockNumber": hex(BLOCK)}
 
@@ -851,8 +962,8 @@ def test_audit_one_of_35_txs_decoded_is_never_complete(tmp_path, how):
     assert (s["txs_selected"], s["txs_decoded_on_tape"], s["complete"]) == (35, 1, False)
     assert s["left"]["txs_selected_not_decoded"] == 34
     g1 = man["wallets"][W1]["gates"]["ordertape.verified_share"]
-    assert (g1["value"], g1["n"]) == (1.0, 1)  # the one decoded tx verifies, and that is not enough:
-    assert man["wallets"][W1]["untrusted"]["ordertape"] == ["ordertape:incomplete"]
+    assert (g1["value"], g1["n"], g1["status"]) == (1.0, 1, "pass")  # the one decoded tx verifies; not enough:
+    assert "ordertape:incomplete" in man["wallets"][W1]["untrusted"]["ordertape"]
     assert man["wallets"][W1]["tape"]["coverage"] == round(1 / 35, 6)
     md = (root / "lab" / "reconstruct" / "run1" / "report.md").read_text()
     assert "ORDER TAPE INCOMPLETE** (1 of 35 selected txs decoded" in md
@@ -860,9 +971,9 @@ def test_audit_one_of_35_txs_decoded_is_never_complete(tmp_path, how):
     again: list[str] = []
     man = run(c, lambda url, method, params: again.append(params[0]) or good(url, method, params))
     if how == "missing":  # ordertape retries exactly the 34 txs it does not have
-        assert sorted(again) == sorted(set(txs) - {f"0x{1:064x}"}) and len(again) == 34
+        assert sorted(again) == sorted(set(txs) - {first})
         assert man["steps"]["ordertape"]["complete"] is True and man["steps"]["ordertape"]["left"] == {}
-        assert man["wallets"][W1]["untrusted"]["ordertape"] == ["ordertape.verified_share:fail"]  # 3 unknown ids
+        assert "ordertape:incomplete" not in man["wallets"][W1]["untrusted"]["ordertape"]
     else:  # ordertape recorded them as done: it cannot refetch, so the tape stays incomplete, loudly
         assert again == [] and man["steps"]["ordertape"]["status"] == "ran"
         assert man["steps"]["ordertape"]["complete"] is False

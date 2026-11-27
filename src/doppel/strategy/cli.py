@@ -3,9 +3,10 @@
     doppel-genome extract  --dossier LAB/dossiers/0xabc.json [--out DIR] [--mechanism LABEL]
     doppel-genome register --genome G.json [G2.json ...] --family F --hypothesis "..." \
                            [--start ISO --end ISO]   (default: each genome's evidence.eval_window)
-    doppel-genome result   --id GENOME_ID --results TWIN_OUT.json   (or --p 0.012 for a manual verdict)
+    doppel-genome result   --id GENOME_ID --data FROZEN_TAPE [--lab FROZEN_LAB]
+                           (or --results TWIN_OUT.json / --p 0.012 for a nonbinding result)
     doppel-genome ledger   --family F [--alpha 0.05] [--json]
-    doppel-genome monitor  --genome ID|PREFIX|G.json --results TWIN_OUT.json [--alpha 0.05] [--record] [--json]
+    doppel-genome monitor  --genome ID|PREFIX|G.json --data FROZEN_TAPE [--lab FROZEN_LAB] [--record]
     doppel-genome verify
 
 ``monitor`` prints anytime-valid e-values and the early KILL/PASS decision (``sequential.py``,
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import orjson
@@ -58,8 +60,10 @@ def cmd_extract(a: argparse.Namespace) -> int:
 
 
 def cmd_register(a: argparse.Namespace) -> int:
+    from ..twin.evaluate import protocol
     from . import dna
     reg = Registry(a.root)
+    evaluation_protocol = protocol()
     known = {v["expression_sha256"]: v["name"] for v in dna.load_store(a.root)["genomes"].values()}
     for path in a.genome:
         d = orjson.loads(Path(path).read_bytes())
@@ -73,7 +77,8 @@ def cmd_register(a: argparse.Namespace) -> int:
             print(f"{path}: no --start/--end and no evidence.eval_window", file=sys.stderr)
             return 2
         try:
-            rec = reg.register(g, a.family, a.hypothesis, (win[0], win[1]))
+            rec = reg.register(g, a.family, a.hypothesis, (win[0], win[1]),
+                               evaluation_protocol=evaluation_protocol)
         except RegistryError as e:
             print(f"{path}: REFUSED {e}", file=sys.stderr)
             return 2
@@ -87,35 +92,39 @@ def cmd_register(a: argparse.Namespace) -> int:
 
 def cmd_result(a: argparse.Namespace) -> int:
     rng: tuple | None = None
-    if a.results:
-        # The binding verdict comes from the twin's own output, never from typed numbers (audit A1-F1).
-        doc = orjson.loads(Path(a.results).read_bytes())
-        gid = (doc.get("genome") or {}).get("id")
-        v = dict(doc.get("verdict") or {})
-        if gid != a.id:
-            print(f"REFUSED results are for genome {str(gid)[:12]}, not {a.id[:12]}", file=sys.stderr)
-            return 2
-        if v.get("decision") == "DIAGNOSTIC" or v.get("p_value") is None:
-            print("REFUSED diagnostic run or no p_value in the twin verdict", file=sys.stderr)
-            return 2
-        v["twin_config"] = (doc.get("twin") or {}).get("config")
-        v["twin_code_sha256"] = (doc.get("twin") or {}).get("code_sha256")
-        a.p = v["p_value"]
-        rng = tuple(doc["range"]) if doc.get("range") else None
-    else:
-        if a.p is None:
-            print("REFUSED pass --results <twin output.json> (or --p for a manual, non-twin verdict)",
-                  file=sys.stderr)
-            return 2
-        v = orjson.loads(a.verdict) if a.verdict else {}
-        v["p_value"] = a.p
-        v["p_source"] = "manual"
+    reg = Registry(a.root)
     try:
-        rec = Registry(a.root).record_result(a.id, v, rng)
-    except RegistryError as e:
+        if a.data is not None:
+            from ..twin.evaluate import evaluate
+
+            registration = reg.registration(a.id)
+            if registration is None:
+                raise RegistryError(f"genome {a.id} is not registered")
+            w = registration["eval_window"]
+            if time.time() < w["end_s"]:
+                raise RegistryError(f"evaluation window closes {w['end']}")
+            v = evaluate(a.data, a.lab, registration)
+            rng = (w["start_s"], w["end_s"])
+        elif a.results:
+            doc = orjson.loads(a.results.read_bytes())
+            gid = (doc.get("genome") or {}).get("id")
+            if gid != a.id:
+                raise RegistryError(f"results are for genome {str(gid)[:12]}, not {a.id[:12]}")
+            v = {**(doc.get("verdict") or {}), "p_source": "imported"}
+            if v.get("decision") == "DIAGNOSTIC" or v.get("p_value") is None:
+                raise RegistryError("diagnostic run or no p_value in the twin verdict")
+            v["twin_config"] = (doc.get("twin") or {}).get("config")
+            v["twin_code_sha256"] = (doc.get("twin") or {}).get("code_sha256")
+            rng = tuple(doc["range"]) if doc.get("range") else None
+        else:
+            v = orjson.loads(a.verdict) if a.verdict else {}
+            v["p_value"] = a.p
+            v["p_source"] = "manual"
+        rec = reg.record_result(a.id, v, rng)
+    except (OSError, ValueError) as e:
         print(f"REFUSED {e}", file=sys.stderr)
         return 2
-    print(f"{rec['genome_id'][:12]} result seq={rec['seq']} binding={rec['binding']} p={a.p}")
+    print(f"{rec['genome_id'][:12]} result seq={rec['seq']} binding={rec['binding']} p={v['p_value']}")
     return 0
 
 
@@ -153,17 +162,31 @@ def _fmt_e(d: dict) -> str:
 
 def cmd_monitor(a: argparse.Namespace) -> int:
     import hashlib
+    from ..twin.evaluate import replay_snapshot
     reg = Registry(a.root)
-    raw = a.results.read_bytes()
-    doc = orjson.loads(raw)
-    src = {"results_path": str(a.results), "results_sha256": hashlib.sha256(raw).hexdigest()}
     try:
         gid = _resolve_genome(reg, a.genome)
+        if a.data is not None:
+            registration = reg.registration(gid)
+            if registration is None:
+                raise RegistryError("genome is not registered")
+            # Receipts cover closed wall-clock hours, including the hour of the final window.
+            through = min(int(registration["eval_window"]["end_s"]), int(time.time()) // 3600 * 3600)
+            windows, evidence = replay_snapshot(a.data, a.lab, registration, through=through)
+            doc = {"genome": {"id": gid}, "windows": windows, "range": evidence["range"],
+                   "twin": {"code_sha256": evidence["code_sha256"], "diagnostic": False}}
+            src = {"evaluation": evidence}
+        else:
+            if a.record:
+                raise RegistryError("recording a monitoring decision requires --data with a sealed snapshot")
+            raw = a.results.read_bytes()
+            doc = orjson.loads(raw)
+            src = {"results_path": str(a.results), "results_sha256": hashlib.sha256(raw).hexdigest()}
         if a.record:
             m = reg.record_monitor(gid, doc, a.alpha, src)
         else:
             m = reg.monitor(gid, doc, a.alpha, src)
-    except RegistryError as e:
+    except (OSError, ValueError) as e:
         print(f"REFUSED {e}", file=sys.stderr)
         return 2
     if a.json:
@@ -234,8 +257,11 @@ def main(argv: list[str] | None = None) -> int:
     r.set_defaults(fn=cmd_register)
     s = sub.add_parser("result", help="append a verdict (after the evaluation window closed)")
     s.add_argument("--id", required=True)
-    s.add_argument("--results", type=Path, default=None, help="doppel-twin output JSON (binding source)")
-    s.add_argument("--p", type=float, default=None, help="manual one-sided p (non-twin verdicts only)")
+    source = s.add_mutually_exclusive_group(required=True)
+    source.add_argument("--data", type=Path, help="sealed tape snapshot for canonical replay")
+    source.add_argument("--results", type=Path, help="doppel-twin output JSON (nonbinding import)")
+    source.add_argument("--p", type=float, help="manual one-sided p (nonbinding)")
+    s.add_argument("--lab", type=Path, help="snapshot of the token map for intl-flow genomes")
     s.add_argument("--verdict", default=None, help="extra verdict fields as JSON")
     s.add_argument("--root", type=Path, default=Path("."))
     s.set_defaults(fn=cmd_result)
@@ -247,7 +273,10 @@ def main(argv: list[str] | None = None) -> int:
     lg.set_defaults(fn=cmd_ledger)
     mo = sub.add_parser("monitor", help="anytime-valid e-values + early KILL/PASS (no write without --record)")
     mo.add_argument("--genome", required=True, help="genome JSON path, id, or unique id prefix")
-    mo.add_argument("--results", type=Path, required=True, help="doppel-twin --out JSON")
+    monitor_input = mo.add_mutually_exclusive_group(required=True)
+    monitor_input.add_argument("--results", type=Path, help="inspect imported doppel-twin JSON")
+    monitor_input.add_argument("--data", type=Path, help="sealed tape snapshot starting at the registered window")
+    mo.add_argument("--lab", type=Path, help="frozen token map directory for intl-flow genomes")
     mo.add_argument("--alpha", type=float, default=0.05)
     mo.add_argument("--record", action="store_true", help="append the interim/early event to the registry")
     mo.add_argument("--json", action="store_true")

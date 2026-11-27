@@ -87,12 +87,16 @@ def order_hash(static: bytes, exchange: str) -> str:
 
 
 def _u(d: bytes, off: int) -> int:
+    if off < 0 or off > len(d) - W or off % W:
+        raise ValueError("matchOrders: invalid word offset")
     return int.from_bytes(d[off:off + W], "big")
 
 
 def _order(d: bytes, off: int, exchange: str) -> dict:
     static = d[off:off + ORDER_WORDS * W]
     f = [_u(static, i * W) for i in range(ORDER_WORDS)]
+    if f[6] not in (0, 1):
+        raise ValueError("matchOrders: invalid order side")
     side = "BUY" if f[6] == 0 else "SELL"
     usdc, shares = (f[4], f[5]) if side == "BUY" else (f[5], f[4])
     return {"order_id": order_hash(static, exchange), "maker": "0x" + static[W + 12:2 * W].hex(),
@@ -103,7 +107,10 @@ def _order(d: bytes, off: int, exchange: str) -> dict:
 
 
 def _uints(d: bytes, off: int) -> list[int]:
-    return [_u(d, off + W + i * W) for i in range(_u(d, off))]
+    count = _u(d, off)
+    if count > (len(d) - off - W) // W:
+        raise ValueError("matchOrders: truncated integer array")
+    return [_u(d, off + W + i * W) for i in range(count)]
 
 
 def decode_match(input_hex: str, exchange: str) -> list[dict] | None:
@@ -378,6 +385,30 @@ def _manifests(out: Path):
         yield int(path.stem.split("-")[1]), orjson.loads(path.read_bytes())
 
 
+def committed_parts(out: Path, *, allow_legacy: bool = False) -> list[Path]:
+    """Read a snapshot of published parts without running writer recovery.
+
+    Standalone readers can opt in to legacy parquet exports without a state directory.
+    A managed directory with zero published flushes has zero readable parts.
+    """
+    if not (out / STATE_DIR).is_dir():
+        legacy = sorted(out.glob("day=*/part-*.parquet"))
+        if legacy and not allow_legacy:
+            raise ValueError(f"order tape has parts but no flush manifests: {out}")
+        return legacy
+    parts: set[Path] = set()
+    for _, rec in _manifests(out):
+        for name in rec["parts"]:
+            rel = Path(name)
+            if len(rel.parts) != 2 or not rel.match("day=*/part-*.parquet"):
+                raise ValueError(f"invalid order tape part in flush manifest: {name}")
+            part = out / rel
+            if part in parts or not part.is_file():
+                raise ValueError(f"duplicate or missing committed order tape part: {part}")
+            parts.add(part)
+    return sorted(parts)
+
+
 def has_missing_parts(out: Path) -> bool:
     return any(not (out / part).is_file() for _, rec in _manifests(out) for part in rec["parts"])
 
@@ -490,7 +521,7 @@ def run(todo: list[tuple[str, int | None, int | None]], pool: Pool, out: Path, *
     RPC, decoded-order, and timestamp-flag counts cover new fetches only.
     """
     t0 = time.monotonic()
-    out.mkdir(parents=True, exist_ok=True)
+    (out / STATE_DIR).mkdir(parents=True, exist_ok=True)
     flushes, seq = _load_flushes(out)
     done = {tx for rec in flushes for tx in rec["txs"]}
     todo = list({t[0]: t for t in todo}.values())

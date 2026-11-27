@@ -13,15 +13,13 @@ STEPS (run in process, in this order; each can be left out with ``--steps``)
   orderreplay  ``orderreplay.run`` once per unit on that unit's ordermatch output, then a merge.
   profile      ``profile.run`` on the parquet directory and the merged ``ordermatch.json``
                (wallets in batches of ``PROFILE_BATCH``; the cohort table is rebuilt from all
-               ledgers). It has no time range: it reads every verified row of the wallet in
-               ``<orders>``, which is the run's range unless ``--orders`` points at a shared tape.
+               ledgers). The wallet's verified rows are restricted to the run's block-time range.
 
 RESUME. A unit of work (the ordertape call, one unit of ordermatch or orderreplay, a merge,
 profile) is skipped when its recorded input key is unchanged and its outputs are still there with
-the recorded size. The key is a sha256 over: the sha256 of the code files the unit runs (this
+their recorded sizes and SHA-256 hashes. The key is a sha256 over the code files the unit runs (this
 file included), the constants and options that change outputs, its arguments, and its inputs'
-sha256 (fill store state file; order tape parts; tape segments, taken from the stream's
-``manifest.jsonl`` when the line matches the file size, else computed; upstream outputs).
+sha256 (fill store state file, committed order parts, sealed tape segments and upstream outputs).
 ``--force STEP`` reruns that step's units. Forcing ``ordertape`` refreshes verification for cached
 transactions and fetches any missing transactions. Unit outputs and per-wallet files are
 written to a temporary name and renamed. A kept output whose key no longer matches, and chunk
@@ -96,7 +94,7 @@ when every gate of that step and of the steps it reads from is ``pass`` and none
 is stale, incomplete or stopped; otherwise the manifest and the report name the reasons under
 ``untrusted``. The run never stops on a gate.
 
-LOCKS. The run directory and, while the ordertape step fetches, the order tape directory are
+LOCKS. The run directory and the order tape directory are
 held with an exclusive ``flock`` on ``<dir>/.lock``; a second run on either fails at once.
 ``doppel-ordertape`` itself takes no lock: do not run it on a directory this pipeline is using.
 
@@ -117,7 +115,7 @@ import time
 from bisect import bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -151,6 +149,9 @@ GATES: dict[str, dict] = {
     "ordertape.verified_share": {
         "step": "ordertape", "min": 0.99, "min_n": 1,
         "basis": "E36: 1,534 of 1,534 fills had a decoded order with the identical order_id"},
+    "ordertape.full_store_coverage": {
+        "step": "ordertape", "min": 1.0, "min_n": 1,
+        "basis": "all distinct known wallet fills in the requested range must have a decoded transaction"},
     "ordermatch.match_rate": {
         "step": "ordermatch", "min": profile.T["match_min"], "min_n": profile.T["min_observable"],
         "basis": "E37 0.93, E39 0.98 (the same wallet-hour, two methods); profile.T match_min / min_observable"},
@@ -166,6 +167,9 @@ GATES: dict[str, dict] = {
     "orderreplay.placement_not_found_share": {
         "step": "orderreplay", "max": 0.01, "min_n": 30,
         "basis": "no FINDINGS row yet; 0 expected (same tape, same chunk as ordermatch)"},
+    "orderreplay.fully_allocated_share": {
+        "step": "orderreplay", "min": 1.0, "min_n": 1,
+        "basis": "A headline conditional fill estimate with unresolved price exposure cannot certify volume by level."},
     "orderreplay.bracket_violation_share": {
         "step": "orderreplay", "max": 0.05, "min_n": 30,
         "basis": "no FINDINGS row yet; 0 under FIFO with truthful prints"},
@@ -176,7 +180,7 @@ _ME = "lab/reconstruct.py"
 CODE = {
     "ordertape": (_ME, "lab/ordertape.py", "lab/fillstore.py"),
     "ordermatch": (_ME, "lab/ordermatch.py", "lab/intlbook.py", "tape/segment.py"),
-    "orderreplay": (_ME, "lab/orderreplay.py", "lab/ordermatch.py", "lab/intlbook.py", "tape/segment.py",
+    "orderreplay": (_ME, "lab/orderreplay.py", "lab/tradeallocation.py", "lab/ordertape.py", "lab/ordermatch.py", "lab/intlbook.py", "tape/segment.py",
                     "twin/engine.py", "twin/tape.py", "twin/features.py", "strategy/genome.py"),
     "profile": (_ME, "lab/profile.py", "lab/ordermatch.py", "lab/ordertape.py"),
 }
@@ -290,9 +294,9 @@ def _jsonl(p: Path) -> Iterator[dict]:
 
 
 def _fresh(state: dict | None, key: str, base: Path) -> bool:
-    """The unit ran with this key and its outputs are still there with the recorded size."""
+    """Verify every output against the checkpoint before letting another step consume it."""
     return bool(state and state["key"] == key and all(
-        (base / name).is_file() and (base / name).stat().st_size == o["bytes"]
+        (base / name).is_file() and (base / name).stat().st_size == o["bytes"] and sha_file(base / name) == o["sha256"]
         for name, o in state["outputs"].items()))
 
 
@@ -332,7 +336,7 @@ def git_commit() -> tuple[str | None, str]:
 
 def tape_hashes(root: Path, streams: list[str], t_from: int, t_to: int, cache: dict) -> dict[str, str | None]:
     """stream/day/hour segment -> sha256 for the hours of [t_from, t_to); None when missing. The
-    sha comes from the stream's manifest line when it matches the file size (closed segment)."""
+    content is hashed once per unchanged file in the run and checked against its seal."""
     out: dict[str, str | None] = {}
     for s in streams:
         if s not in cache:
@@ -345,21 +349,28 @@ def tape_hashes(root: Path, streams: list[str], t_from: int, t_to: int, cache: d
                 out[f"{s}/{rel}"] = None
                 continue
             m = cache[s].get(rel)
-            if not m or m[1] != p.stat().st_size:
-                m = cache[s][rel] = (sha_file(p), p.stat().st_size)
-            out[f"{s}/{rel}"] = m[0]
+            st = p.stat()
+            stamp = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+            got = cache.get((s, rel))
+            if not got or got[0] != stamp:
+                digest = sha_file(p)
+                if m is None or m != (digest, st.st_size):
+                    raise ValueError(f"tape bytes differ from the recorded seal: {s}/{rel}")
+                got = cache[(s, rel)] = (stamp, digest)
+            out[f"{s}/{rel}"] = got[1]
     return out
 
 
 def orders_digest(orders: Path, cache: dict) -> dict:
     """Hash the part contents, reusing hashes until a file is changed or replaced."""
     parts = {}
-    for p in sorted(orders.glob("day=*/part-*.parquet")):
+    for p in ordertape.committed_parts(orders):
         rel = p.relative_to(orders).as_posix()
         c = cache.get(rel)
         stat = p.stat()
-        if not c or c[0] != stat.st_size or c[3:] != [stat.st_ino, stat.st_mtime_ns]:
-            c = [stat.st_size, sha_file(p), pq.read_metadata(p).num_rows, stat.st_ino, stat.st_mtime_ns]
+        stamp = [stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns]
+        if not c or c[0] != stat.st_size or c[3:] != stamp:
+            c = [stat.st_size, sha_file(p), pq.read_metadata(p).num_rows, *stamp]
         parts[rel] = c
     cache.clear()
     cache.update(parts)
@@ -384,7 +395,7 @@ def busy_chunks(orders: Path, chunks: list[tuple[str, int, int]]) -> dict[str, C
         return n
     starts = [a * 1000 for _, a, _ in chunks]
     end = chunks[-1][2] * 1000
-    for p in sorted(orders.glob("day=*/part-*.parquet")):
+    for p in ordertape.committed_parts(orders):
         t = pq.read_table(p, columns=["role", "created_ms", "verified", "maker"]).to_pydict()
         for role, c, v, mk in zip(t["role"], t["created_ms"], t["verified"], t["maker"]):
             if role == "maker" and v is True and c is not None and starts[0] <= c < end:
@@ -408,7 +419,7 @@ def verified_shares(c: Cfg) -> dict[str, dict]:
     (the gate); ``coverage`` = expected / in range. Computed from the two stores, so it does not
     depend on how many ordertape calls built the tape. A matching row must carry the wallet's
     address and be marked verified."""
-    parts = [str(p) for p in sorted(c.orders.glob("day=*/part-*.parquet"))]
+    parts = [str(p) for p in ordertape.committed_parts(c.orders)]
     if not parts or not (c.store / STATE).is_file():
         return {}
     con = _connect(c.store, "512MB", 2)[0]
@@ -446,20 +457,19 @@ def step_ordertape(x: _Ctx, transport: Callable) -> dict:
         t0 = time.monotonic()
         con = _connect(c.store, "256MB", 2)[0]
         try:
-            with _lock(c.orders):
-                todo = ordertape.select_txs(con, list(c.wallets), c.t_from, c.t_to, c.max_txs) if con else []
-                pool = ordertape.Pool(list(c.rpcs), transport, rate=c.rate, max_requests=c.max_requests)
-                res = ordertape.run(todo, pool, c.orders,
-                                    expected=(lambda txs: ordertape.goldsky_ids(con, None, txs)) if con else None)
+            todo = ordertape.select_txs(con, list(c.wallets), c.t_from, c.t_to, c.max_txs) if con else []
+            pool = ordertape.Pool(list(c.rpcs), transport, rate=c.rate, max_requests=c.max_requests)
+            res = ordertape.run(todo, pool, c.orders,
+                                expected=(lambda txs: ordertape.goldsky_ids(con, None, txs)) if con else None)
         finally:
             if con is not None:
                 con.close()
         left = {k: res[k] for k in ("txs_failed", "txs_missing", "txs_undecodable", "txs_not_attempted") if res[k]}
         # Judged from the tape itself, not from the call's own counts: every selected tx must have
         # decoded rows on disk. This also catches txs recorded as done without orders
-        # (``not_match_orders``: a call this decoder does not know) and parts that went missing.
+        # (``not_match_orders``: a call this decoder does not know).
         selected = {t[0] for t in todo}
-        on_tape = {tx for p in c.orders.glob("day=*/part-*.parquet")
+        on_tape = {tx for p in ordertape.committed_parts(c.orders)
                    for tx in pq.read_table(p, columns=["tx"])["tx"].to_pylist()}
         if selected - on_tape:
             left["txs_selected_not_decoded"] = len(selected - on_tape)
@@ -473,7 +483,7 @@ def step_ordertape(x: _Ctx, transport: Callable) -> dict:
         status = "kept" if c.orders.is_dir() else "absent"
     parts = prev.setdefault("parts", {})
     cached = parts.copy()
-    out = orders_digest(c.orders, parts) if c.orders.is_dir() else None
+    out = orders_digest(c.orders, parts) if c.orders.is_dir() and not missing_parts else None
     if status == "ran" or parts != cached:
         _write_json(sp, prev)
     # an order tape this run directory never fetched (--orders) has no key here: kept, not judged
@@ -684,7 +694,8 @@ def _units(x: _Ctx, step: str, units: list[dict], key_of: Callable[[dict], dict 
         else:
             status = "skipped" if step in c.steps and x.halt is None else "kept"
         recs.append(rec | {"status": status, "dir": str(d.relative_to(c.out))} | (
-            {"stale": prev["key"] != key, "key": prev["key"], "wall_s": prev["wall_s"],
+            {"stale": prev["key"] != key or status == "kept" and not _fresh(prev, key, d),
+             "key": prev["key"], "wall_s": prev["wall_s"],
              "peak_rss_mb": prev.get("peak_rss_mb"), "inputs": prev["inputs"],
              "outputs": prev["outputs"], "counts": prev["counts"]} if prev else {}))
     return recs
@@ -701,7 +712,7 @@ def _step_record(x: _Ctx, step: str, recs: list[dict], prev: dict | None, key: s
     ran = merged == "ran" or any(r["status"] == "ran" for r in recs)
     missing = any(r["status"] in ("absent", "missing_input") for r in recs)
     stale = (any(r.get("stale") for r in recs) or bool(done) and (missing or prev is None)
-             or prev is not None and prev["key"] != key)
+             or prev is not None and (prev["key"] != key or merged == "kept" and not _fresh(prev, key, x.c.out)))
     return {"status": "ran" if ran else merged, "stale": stale, "merge_key": prev and prev["key"],
             "wall_s": round(sum(r.get("wall_s", 0) for r in recs) + (prev or {}).get("wall_s", 0), 1),
             "peak_rss_mb": max((r["peak_rss_mb"] for r in recs if r.get("peak_rss_mb")), default=None),
@@ -760,14 +771,14 @@ def _unit_orderreplay(c: Cfg, d: Path, u: dict, streams: list[str]) -> dict:
     rows come back. Orders that cannot be replayed on a tape cut at the chunk end are marked
     ``cut = "chunk_end"`` (see WHAT A CHUNK EDGE COSTS) and the document is summarized again."""
     om = d.parent / "ordermatch"
-    doc, rows = orderreplay.run(c.data, om, u["from"], u["to"], streams, reduce_quotes=True)
+    doc, rows = orderreplay.run(c.data, om, u["from"], u["to"], streams, reduce_quotes=True, orders=c.orders)
     matched = {r["order_id"]: r for r in _jsonl(om / "orders.jsonl")}
     edge, n_edge = u["to"] * 1000, 0
     ow = Jsonl(d / "orderreplay.jsonl")
     for r in rows:
         m = matched[r["id"]]
         r["maker"] = m["maker"]
-        if not r["cut"] and (m["fills_located"] < m["n_fills"] or (m["end_ms"] is not None and m["end_ms"] >= edge)
+        if r["cut"] in (None, "tape_end") and (m["fills_located"] < m["n_fills"] or (m["end_ms"] is not None and m["end_ms"] >= edge)
                              or any(f[1] is not None and f[1] >= edge for f in m["fills_at"])):
             r["cut"] = "chunk_end"
             n_edge += 1
@@ -812,6 +823,12 @@ def merge_replay_cohort(wallets: dict[str, dict], tallies: list[dict],
     """Cohort document: the wallet documents' counts summed; ratio and CI over those wallets'
     headline rows (``by_market`` holds their twin and real shares per market)."""
     docs = list(wallets.values())
+    placement: dict[str, Counter] = defaultdict(Counter)
+    prices: dict[str, Counter] = defaultdict(Counter)
+    for d in docs:
+        for field, groups in (("by_placement_evidence", placement), ("by_price_evidence", prices)):
+            for k, counts in d["bracket_violations"].get(field, {}).items():
+                groups[k].update(counts)
     g = _sum_counts([{k: v for k, v in d["adapter_gate"].items() if not k.endswith("_share")} for d in docs])
     seen, routed = g.get("print_seen_in_replay", 0), g.get("routed_to_order_price_and_side", 0)
     cond = {}
@@ -827,15 +844,18 @@ def merge_replay_cohort(wallets: dict[str, dict], tallies: list[dict],
                                  "delivered_share": _r(g.get("delivered_to_live_quote", 0) / routed, 4) if routed else None},
             "conditional_on_real_fill": cond,
             "bracket_violations": {"pessimistic_overfilled": cond["pessimistic"].get("phantom", 0),
-                                   "optimistic_underfilled": cond["optimistic"].get("underfilled", 0)},
+                                   "optimistic_underfilled": cond["optimistic"].get("underfilled", 0),
+                                   "by_placement_evidence": {k: dict(v) for k, v in sorted(placement.items())},
+                                   "by_price_evidence": {k: dict(v) for k, v in sorted(prices.items())}},
             "never_filled_quotes_estimate": orderreplay.nf_doc(_sum_tallies(tallies))}
 
 
-def step_orderreplay(x: _Ctx, units: list[dict], om: dict) -> dict:
+def step_orderreplay(x: _Ctx, units: list[dict], om: dict, orders: dict | None) -> dict:
     c = x.c
     om_out = {(r["chunk"], r["batch"]): r["outputs"] for r in _have(om["chunks"])}
     recs = _units(x, "orderreplay", units,
-                  lambda u: None if (u["chunk"], u["batch"]) not in om_out else {
+                  lambda u: None if orders is None or (u["chunk"], u["batch"]) not in om_out else {
+                      "decoded_orders": orders["sha256"],
                       "orders.jsonl": om_out[u["chunk"], u["batch"]]["orders.jsonl"]["sha256"],
                       "quotes.jsonl": om_out[u["chunk"], u["batch"]]["quotes.jsonl"]["sha256"],
                       "tape": tape_hashes(c.data, x.streams, u["from"], u["to"], x.tcache)},
@@ -918,7 +938,7 @@ def step_profile(x: _Ctx, orders: dict | None) -> dict:
         status = "ran"
     elif prev and ("profile" not in c.steps or x.halt):
         status = "kept"
-    return {"status": status, "stale": bool(prev and prev["key"] != key),
+    return {"status": status, "stale": bool(prev and (prev["key"] != key or status == "kept" and not _fresh(prev, key, c.out))),
             "wall_s": (prev or {}).get("wall_s"), "inputs": inputs, "outputs": (prev or {}).get("outputs", {})}
 
 
@@ -942,16 +962,24 @@ def wallet_gates(table: dict[str, dict], vs: dict | None, om: dict | None, rp: d
     bv = rp.get("bracket_violations", {})
     to_replay = cnt.get("orders", 0) - cnt.get("orders_wrong_match_skipped", 0)
     head = cnt.get("headline_orders", 0)
+
+    def fraction(num: int | None, den: int | None) -> tuple[float | None, int | None]:
+        return (num / den if num is not None and den else None, den)
+
     vals = {
-        "ordertape.verified_share": (vs.get("share"), vs.get("fills_expected")),
-        "ordermatch.match_rate": (om.get("match_rate"), om.get("observable")),
-        "ordermatch.placebo_rate": (om.get("placebo_rate"), om.get("observable")),
-        "orderreplay.routed_share": (ag.get("routed_share"), ag.get("print_seen_in_replay")),
-        "orderreplay.delivered_share": (ag.get("delivered_share"), ag.get("routed_to_order_price_and_side")),
-        "orderreplay.placement_not_found_share": (
-            round(cnt["placement_not_found"] / to_replay, 4) if to_replay else None, to_replay),
+        "ordertape.verified_share": fraction(vs.get("fills_matched"), vs.get("fills_expected")),
+        # An integer comparison avoids rounding a very small coverage gap up to 100%.
+        "ordertape.full_store_coverage": (int(vs.get("fills_in_range") == vs.get("fills_expected")),
+                                           vs.get("fills_in_range")),
+        "ordermatch.match_rate": fraction(om.get("matched"), om.get("observable")),
+        "ordermatch.placebo_rate": fraction(om.get("placebo_matched"), om.get("observable")),
+        "orderreplay.routed_share": fraction(ag.get("routed_to_order_price_and_side"), ag.get("print_seen_in_replay")),
+        "orderreplay.delivered_share": fraction(ag.get("delivered_to_live_quote"), ag.get("routed_to_order_price_and_side")),
+        "orderreplay.placement_not_found_share": fraction(cnt.get("placement_not_found"), to_replay),
+        "orderreplay.fully_allocated_share": (
+            bv.get("by_price_evidence", {}).get("fully_allocated", {}).get("orders", 0) / head if head else None, head),
         "orderreplay.bracket_violation_share": (
-            round((bv["pessimistic_overfilled"] + bv["optimistic_underfilled"]) / head, 4) if head else None, head),
+            (bv["pessimistic_overfilled"] + bv["optimistic_underfilled"]) / head if head else None, head),
     }
     return {k: gate(table, k, *v) for k, v in vals.items()}
 
@@ -1112,7 +1140,16 @@ def run(c: Cfg, transport: Callable = ordertape.http_transport, gates: dict[str,
     """Run the requested steps, write ``manifest.json``, ``report.json`` and ``report.md`` in
     ``c.out``, and return the manifest. ``transport`` is ordertape's JSON-RPC transport. Raises
     ``Locked`` when another run holds the run directory or the order tape."""
-    with _lock(c.out):
+    with ExitStack() as locks:
+        locks.enter_context(_lock(c.out))
+        if c.orders.resolve() != c.out.resolve() and (c.orders.exists() or "ordertape" in c.steps):
+            locks.enter_context(_lock(c.orders))
+        # Old reports can belong to a different range when --out is reused. Publish the
+        # new identity before touching its checkpoints so SIGKILL leaves an honest handoff.
+        pending = {"run_id": c.out.name, "status": "running", "range": {"from": c.t_from, "to": c.t_to}}
+        _write_json(c.out / "manifest.json", pending)
+        _write_json(c.out / "report.json", pending)
+        _write(c.out / "report.md", f"# Reconstruction in progress\n\nRange [{c.t_from}, {c.t_to}).\n".encode())
         return _run(c, transport, gates or GATES)
 
 
@@ -1127,13 +1164,19 @@ def _run(c: Cfg, transport: Callable, table: dict[str, dict]) -> dict:
     orders = steps["ordertape"]["outputs"]["orders"]
     units = unit_list(c, chunks, busy_chunks(c.orders, chunks) if orders else {})
     steps["ordermatch"] = step_ordermatch(x, units, orders)
-    steps["orderreplay"] = step_orderreplay(x, units, steps["ordermatch"])
+    steps["orderreplay"] = step_orderreplay(x, units, steps["ordermatch"], orders)
     steps["profile"] = step_profile(x, orders)
 
     shares = verified_shares(c) if orders else {}
     om = (_load(c.out / "ordermatch" / "ordermatch.json") or {}).get("wallets", {})
     rp = (_load(c.out / "orderreplay" / "orderreplay.json") or {}).get("wallets", {})
     flags: dict[str, list[str]] = {s: ["stale"] for s in STEPS if steps[s]["stale"]}
+    for step in STEPS:
+        if steps[step]["status"] == "absent":
+            flags.setdefault(step, []).append("absent")
+    if any(None in (unit.get("inputs", {}).get("tape") or {}).values()
+           for unit in steps["ordermatch"]["chunks"]):
+        flags.setdefault("ordermatch", []).append("missing_tape_segment")
     if steps["ordertape"]["complete"] is False:
         flags.setdefault("ordertape", []).append("incomplete")
     if x.halt_step:
@@ -1151,7 +1194,7 @@ def _run(c: Cfg, transport: Callable, table: dict[str, dict]) -> dict:
     cohort_doc = orjson.loads(c.cohort.read_bytes())
     fmt = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))  # noqa: E731
     man = {
-        "run_id": c.out.name, "written_utc": fmt(int(time.time())),
+        "run_id": c.out.name, "status": "complete", "written_utc": fmt(int(time.time())),
         "git_commit": commit, "git_commit_source": src,
         "code_sha256": {"files": x.code, "all": sha_obj(x.code)},
         "cohort": {"path": str(c.cohort), "sha256": sha_file(c.cohort),
@@ -1297,7 +1340,8 @@ def main(argv=None) -> int:
 
     try:
         if a.last_hours is None:
-            t_from, t_to = int(a.t_from or 0), int(a.t_to or 0)  # both given (checked above)
+            assert a.t_from is not None and a.t_to is not None
+            t_from, t_to = int(a.t_from), int(a.t_to)
             if t_to <= t_from:
                 ap.error("--to must be after --from")
             mans = [run(cfg(t_from, t_to, a.max_requests))]

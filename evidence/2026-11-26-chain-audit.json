@@ -1,0 +1,41 @@
+{
+  "window": [
+    1795719630,
+    1795723170
+  ],
+  "goldsky": {
+    "full_market_window_verified": false,
+    "rows": 0,
+    "event_types": {},
+    "trade_tx": 0,
+    "trade_party_rows": 0,
+    "roles": {}
+  },
+  "rtds_a": {
+    "tx": 59655,
+    "pairs": 155799,
+    "tx_coverage_of_chain": null,
+    "pair_coverage_of_chain": null,
+    "tx_not_on_chain": null,
+    "tx_matched_reference": 0,
+    "party_rows_matched_reference": 0
+  },
+  "rtds_b": {
+    "tx": 60390,
+    "pairs": 157747,
+    "tx_coverage_of_chain": null,
+    "pair_coverage_of_chain": null,
+    "tx_not_on_chain": null,
+    "tx_matched_reference": 0,
+    "party_rows_matched_reference": 0
+  },
+  "rtds_union": {
+    "tx": 60390,
+    "pairs": 157871,
+    "tx_coverage_of_chain": null,
+    "pair_coverage_of_chain": null,
+    "tx_not_on_chain": null,
+    "tx_matched_reference": 0,
+    "party_rows_matched_reference": 0
+  }
+}

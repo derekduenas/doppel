@@ -127,7 +127,7 @@ import orjson
 import pyarrow.parquet as pq
 
 from .ordermatch import filled_shares
-from .ordertape import ts_flag
+from .ordertape import committed_parts, ts_flag
 
 VERIFIED, ESTIMATED, UNKNOWN = "VERIFIED", "ESTIMATED", "UNKNOWN"
 
@@ -207,7 +207,7 @@ def load_rows(path: Path, wallets: set[str] | None = None,
             and block_range[0] <= row["block_ts"] < block_range[1])
 
     if path.is_dir():
-        for p in sorted(path.glob("day=*/part-*.parquet")):
+        for p in committed_parts(path, allow_legacy=True):
             for r in pq.read_table(p).to_pylist():
                 r["maker"] = r["maker"].lower()
                 if keep(r):

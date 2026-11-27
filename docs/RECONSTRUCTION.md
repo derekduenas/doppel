@@ -66,8 +66,11 @@ real fill must lie between the two. So:
   those that reached the quote while it was live. If either is low, the ratios measure the adapter.
 - `placement_not_found` counts orders whose placement event the replay could not find again.
 
-No orderreplay number has been measured on real tape and written to FINDINGS yet. The definitions
-are in the `orderreplay.py` docstring and its tests.
+The [2026-11-26 audit](SYSTEM-AUDIT-20261126.md) records observed routing and delivery for two
+archived BTC samples. For reconstructed calls, the adapter checks maker-leg count, token pair,
+direction, fill-store verification and quantity conservation before allocating the print by price.
+The report keeps raw and allocated routing counts, placement-candidate counts and orders exposed
+to unresolved same-side prints.
 
 ### 4. Ledger: named obligations
 
@@ -84,7 +87,7 @@ wallet-hour (E39).
 | | what | why |
 |---|---|---|
 | Identified | A filled order's maker, token, side, size, limit, fills | Hash check against the fill store (E34, E36) |
-| Identified, given the gate | `created_ms`, sign-to-book latency, placement in the book | Match rate against placebo (E37, E39) |
+| Measured or inferred | Signed `created_ms` is visible. Book placement and sign-to-book latency are inferred | Candidate counts and placebo measure ambiguity. Anonymous L2 has no order ID (E37, E39) |
 | Identified when classified | End of a matched order: `filled`, or `cancelled` by an exact decrease | Follow-forward rules; `unknown` otherwise (E39) |
 | Estimated | Quotes that never filled, fill ratio, re-post rate | Fingerprint sizes against a control rate; precision at most 0.87 on E39 |
 | Estimated | Copyability verdict for makers | Provisional thresholds from one wallet-hour (E39) |
@@ -207,8 +210,9 @@ pipeline does about each:
   goes up). Above the budget the run stops: finished units stay, nothing else runs, the report
   says RUN STOPPED. Run again with a shorter chunk or a smaller batch.
 
-No real-tape memory figure exists for the chunked pipeline yet; the first Apex run should record
-`peak_rss_mb` per unit in a FINDINGS row.
+The audited 13-minute replay of one wallet on Apex peaked at 1,054.8 MiB and took
+16m 22.90s from empty pipeline checkpoints with the decoded orders already available.
+The [system audit](SYSTEM-AUDIT-20261126.md) records the interval, stream count and resume results.
 
 **Resume.** Each unit of work (the order tape call, each chunk x wallet batch of book match and
 twin replay, each merge, the ledgers) stores a key: a sha256 over its code files (the pipeline's
@@ -216,7 +220,14 @@ own file included), the constants and options that change outputs, its arguments
 hashes. A unit is skipped when its key is unchanged and its outputs are still there. A second
 identical run does no work. Outputs are written under a temporary name and renamed.
 
-**Locks.** A run holds an exclusive lock on its run directory and, while fetching, on the order
+The run verifies output SHA-256 when resuming. It reads committed order parts and checks each
+available CLOB segment against its seal. A missing segment marks dependent wallet results
+untrusted. A transaction cap that omits known wallet fills fails the full-store-coverage gate.
+This compares with the compacted fill store. Independent chain coverage is a separate measurement.
+While a run is in progress, its top-level manifest and reports identify the requested range
+and the pending status. A crash preserves that status and completed chunk checkpoints.
+
+**Locks.** A run holds an exclusive lock on its run directory and on the order
 tape directory. A second run on either exits with code 3. `doppel-ordertape` itself takes no lock:
 do not run it on a directory this pipeline is using.
 
@@ -293,18 +304,25 @@ or `NO GATE`.
 7. **clusters.** Wallets sharing a software or operator key. Evidence of shared software, never
    proof; a cluster on a stock client's salt pattern carries little information.
 
-## Roadmap hooks (stubs)
+For delivery timing, read `orderreplay/orderreplay.json` alongside the per-order rows.
+`delivered_before_expiry_observed` counts routed prints received before any relevant message
+showed the quote's inferred end had passed. `delivered_during_receipt_grace` counts routed
+prints received within one second of that observation whose venue timestamps still fall within
+the original quote lifetime. Each late delivery records both clocks. The quote's last eligible
+book stays frozen during that second. A reset or the end of the input ends reconciliation.
+A fully filled order can take its end time from its own last fill, so delivery alone cannot
+establish the order's queue position or independently verify its lifetime.
 
-Other workers are writing these files. Nothing below is implemented by this pipeline.
+## Rulefit and Fidelity handoff
 
-- **`fidelity.py` (fidelity test).** Takes the per-wallet twin rows
-  (`wallets/<wallet>/orderreplay.jsonl`) and decides whether the twin's fill model is close enough
-  to the real fills to be used for that wallet. Input contract: the row fields written by
-  `orderreplay.result`, plus `maker`. Stub: not written here.
-- **`rulefit.py` (rule fitting).** Fits the UNKNOWN and ESTIMATED obligations (price rule, size
-  rule when variable, cancel rule) from the matched orders (`wallets/<wallet>/orders.jsonl`) joined
-  to book state at placement. Stub: not written here.
-- **Simulation-based inference.** For what stays invisible (never-filled quotes), fit a quoting
-  rule by simulating it through the intl twin and comparing simulated footprints with the observed
-  ones (filled orders, fingerprint counts, lives). It needs `rulefit.py` for the candidate rule
-  and an intl twin to simulate in. Stub: not designed here.
+Pass the training run's `manifest.json` to `doppel-rulefit --reconstruct-manifest` with the
+wallet, tape and training interval. It checks the order tape and placement results against the
+manifest and writes a fit report. It emits a draft genome when a pricing rule can be fitted and
+records the full fit interval in `evidence.fit_range`.
+
+Use `doppel-fidelity --reconstruct-manifest` with a separate reconstruction covering the exact
+holdout and the frozen draft genome. The holdout must begin at or after the fit interval ends.
+Fidelity compares simulated fills against the verified order tape and removes the wallet's
+identified resting orders using the placement rows. A verdict requires an independent
+`--coverage-receipt` confirming the wallet, the exact UTC interval and the order-tape checksum.
+Otherwise the result is inconclusive. Orders that never filled remain anonymous.

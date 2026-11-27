@@ -24,6 +24,23 @@ about one thing only: **the genotype fully determines the behaviour, and that ma
 4. Adding a feature requires adding it to the probe set and bumping `PROBE_VERSION`; existing hashes
    are re-derived only by an explicit, reviewed migration, never silently.
 
+## Recording a final verdict
+
+After the preregistered window closes, use `doppel-genome result --id ID --data SEALED_TAPE`.
+For intl-flow genomes, also supply `--lab FROZEN_LAB` with the frozen token map. The command
+replays the registered genome with the canonical settings and checks each segment against its
+manifest and reads through the compressed frames with CRC verification. Every evaluation hour
+needs a closed receipt covering the genome's market horizons.
+The evaluator compares each attested stream with its segment. Version 2 receipts also pin the
+compressed SHA-256 of each segment, reject unattested inputs for the hour and flag missing
+required streams. Flow evaluations need recorded RTDS data on at least one socket each hour.
+Legacy receipts keep their original byte-count and CRC checks. The registry records the evaluator
+source hash, settings and a digest that includes the input files and their manifests. Flow replay
+also records `tokens_sha256` to compare with the frozen token map. A manifest
+revision marked `diagnostic_only` is available for integrity checks and blocks a binding replay.
+New CLI registrations pin the evaluator before the window opens. Earlier registrations lack this
+pin and report that fact in their result metadata. Imported JSON and manual p-values are nonbinding.
+
 ## What a genome cannot express yet (v2 schema work)
 
 Hedge legs on another venue (S5, S6), side selection by condition (quote one side when flow is

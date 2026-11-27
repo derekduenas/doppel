@@ -112,6 +112,11 @@ def test_record_guards(tmp_path):
     with pytest.raises(RegistryError, match="no complete block"):
         reg.record_monitor(ids[2], _results(ids[2], 0.0))
     clock.t = START + 86400
+    # The first recorded result cannot pick its threshold after inspecting the data.
+    before = reg.path.read_bytes()
+    with pytest.raises(RegistryError, match="alpha is frozen"):
+        reg.record_monitor(ids[2], _results(ids[2], 0.0), alpha=0.9)
+    assert reg.path.read_bytes() == before
     with pytest.raises(RegistryError, match="DIAGNOSTIC"):
         reg.record_monitor(ids[2], _results(ids[2], 0.0, diagnostic=True))
     reg.record_monitor(ids[2], _results(ids[2], 0.0))
@@ -182,7 +187,7 @@ def test_real_registry_copy_still_verifies(tmp_path):
     assert (root / "registry" / "genomes.jsonl").read_bytes() == original == REAL.read_bytes()
 
 
-def test_cli_monitor(tmp_path, capsys):
+def test_cli_monitor(tmp_path, capsys, monkeypatch):
     root = tmp_path / "repo"
     reg, clock, ids = _setup(root)
     res = tmp_path / "res.json"
@@ -194,9 +199,34 @@ def test_cli_monitor(tmp_path, capsys):
     assert cli(["monitor", "--root", str(root), "--genome", ids[0][:10], "--results", str(res)]) == 0
     out = capsys.readouterr().out
     assert "EARLY_PASS" in out and "not recorded" in out and reg.path.read_bytes() == before
-    assert cli(["monitor", "--root", str(root), "--genome", str(gpath), "--results", str(res), "--record"]) == 0
+    assert cli(["monitor", "--root", str(root), "--genome", str(gpath), "--results", str(res), "--record"]) == 2
+    assert reg.path.read_bytes() == before
+    def replay(data, lab, registration, through):
+        assert data == tmp_path and through == END and registration["genome_id"] == ids[0]
+        return _results(ids[0], 25.0)["windows"], {"code_sha256": "ab"*32, "range": [START, END],
+                                                     "input_sha256": "cd"*32}
+    monkeypatch.setattr("doppel.twin.evaluate.replay_snapshot", replay)
+    assert cli(["monitor", "--root", str(root), "--genome", str(gpath), "--data", str(tmp_path), "--record"]) == 0
     out = capsys.readouterr().out
     assert "recorded early_pass" in out and len(reg.lines()) == 4
-    assert reg.records()[-1]["source"]["results_sha256"] == hashlib.sha256(res.read_bytes()).hexdigest()
+    assert reg.records()[-1]["source"]["evaluation"]["input_sha256"] == "cd"*32
     assert cli(["monitor", "--root", str(root), "--genome", "zz", "--results", str(res)]) == 2
     assert cli(["verify", "--root", str(root)]) == 0
+
+
+def test_record_monitor_pins_the_already_scored_window_prefix(tmp_path):
+    reg, clock, ids = _setup(tmp_path, k=1)
+    gid = ids[0]
+    doc = _results(gid, 0.0)
+    clock.t = START + 86400
+    initial = reg.record_monitor(gid, doc)
+    assert initial["kind"] == "interim"
+    before = reg.path.read_bytes()
+    clock.t += 86400
+    # Replace one already used value, without changing the window count or the observation cutoff.
+    doc["windows"][10]["net_c"] += 1.0
+    with pytest.raises(RegistryError, match="previously recorded window"):
+        reg.record_monitor(gid, doc)
+    assert reg.path.read_bytes() == before
+    extending = reg.record_monitor(gid, _results(gid, 0.0))
+    assert extending["stats"]["windows_used"] > initial["stats"]["windows_used"]

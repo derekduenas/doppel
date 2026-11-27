@@ -13,7 +13,7 @@ SupplementaryGroups=pmus-market-data
 LoadCredential=kalshi-profile.json:/etc/edge-engine/riskd/kalshi-production-readonly.json
 WorkingDirectory=/opt/doppel
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/doppel/.venv/bin/doppel-tape run --data /mnt/volume_nyc1_1793485122853/doppel/tape
+ExecStart=/opt/doppel/.venv/bin/doppel-tape run --data /mnt/volume_nyc1_1793485122853/doppel/tape --require-brti-import
 Restart=always
 RestartSec=3
 # Recorder measured at ~0.5 core / ~80 MB RSS; cap so it can never starve a shared host.

@@ -177,7 +177,7 @@ class Registry:
                 fcntl.flock(fh, fcntl.LOCK_UN)
 
     def register(self, genome: Genome | dict, family: str, hypothesis: str,
-                 data_window: tuple[TimeLike, TimeLike]) -> dict:
+                 data_window: tuple[TimeLike, TimeLike], *, evaluation_protocol: dict | None = None) -> dict:
         """Preregister ``genome`` in ``family`` with its evaluation window (start, end). The window
         must start after now. Returns the registration record (the existing one if the id is
         already registered: no-op)."""
@@ -212,7 +212,8 @@ class Registry:
                     "family": family.strip(), "hypothesis": hypothesis.strip(),
                     "eval_window": {"start": iso(start), "end": iso(end), "start_s": start, "end_s": end},
                     "code_sha": code.get("sha"), "code_dirty": code.get("dirty"),
-                    "genome": orjson.loads(orjson.dumps(to_dict(g)))}
+                    "genome": orjson.loads(orjson.dumps(to_dict(g))),
+                    **({"evaluation_protocol": evaluation_protocol} if evaluation_protocol is not None else {})}
         return self._append(build)
 
     def record_result(self, genome_id: str, verdict: dict, data_range: tuple[int, int] | None = None) -> dict:
@@ -220,8 +221,8 @@ class Registry:
         H1: net per window > 0. Refused before the evaluation window has closed.
 
         Binding (Astra audit 2026-11-26): a twin verdict counts only if ``data_range`` is exactly the
-        preregistered [start, end) window; anything else is refused. A manual verdict (``p_source``
-        "manual") is recorded but never binding, so it can never make a family winner."""
+        preregistered [start, end) window; anything else is refused. Manual and imported verdicts
+        are recorded as nonbinding."""
         if not isinstance(verdict, dict) or "p_value" not in verdict:
             raise RegistryError("verdict must be a dict with p_value (one-sided, H1: net per window > 0)")
         p = verdict["p_value"]
@@ -241,15 +242,22 @@ class Registry:
                 raise RegistryError(f"evaluation window closes {reg['eval_window']['end']}: a result before "
                                     "then is not on the preregistered window")
             manual = vd.get("p_source") == "manual"
+            nonbinding = manual or vd.get("p_source") == "imported"
+            protocol = reg.get("evaluation_protocol")
+            if protocol is not None and not nonbinding:
+                actual = vd.get("evaluation")
+                if (vd.get("p_source") != "twin-replay" or not isinstance(actual, dict)
+                        or any(actual.get(k) != v for k, v in protocol.items())):
+                    raise RegistryError("result does not match the preregistered evaluation protocol")
             if not manual:
                 w = reg["eval_window"]
-                if data_range is None or [int(data_range[0]), int(data_range[1])] != [int(w["start_s"]), int(w["end_s"])]:
+                if data_range != (w["start_s"], w["end_s"]):
                     raise RegistryError(f"twin results cover {data_range}, not the preregistered window "
                                         f"[{w['start_s']}, {w['end_s']}) ({w['start']} .. {w['end']})")
             prior = sum(1 for r in recs if r["kind"] == "result" and r["genome_id"] == genome_id
                         and r.get("binding"))
             return {"kind": "result", "tw": int(now * 1e9), "genome_id": genome_id,
-                    "family": reg["family"], "binding": (not manual) and prior == 0,
+                    "family": reg["family"], "binding": (not nonbinding) and prior == 0,
                     "data_range": list(data_range) if data_range else None, "verdict": vd}
         return self._append(build)
 
@@ -304,14 +312,19 @@ class Registry:
         ``as_of`` moves backwards."""
         def build(recs: list[dict]) -> dict:
             now = self._now()
-            m = self._monitor(recs, genome_id, results, alpha, now, source)
+            mine = [r for r in recs if r["kind"] in SEQ_KINDS and r["genome_id"] == genome_id]
+            m = self._monitor(recs, genome_id, results, alpha, now, source, previous=mine[-1] if mine else None)
             if (results.get("twin") or {}).get("diagnostic"):
                 raise RegistryError("twin run is DIAGNOSTIC (relaxed data gates): not evidence, not recorded")
             if m["stats"]["n_blocks"] < 1:
                 raise RegistryError(f"no complete block of {m['params']['block']} windows inside the "
                                     "evaluation window yet")
-            mine = [r for r in recs if r["kind"] in SEQ_KINDS and r["genome_id"] == genome_id]
             fam = [r for r in recs if r["kind"] in SEQ_KINDS and r["family"] == m["family"]]
+            registration = next(r for r in recs if r["kind"] == "register" and r["genome_id"] == genome_id)
+            policy = registration.get("evaluation_protocol") or {}
+            fixed_alpha = policy.get("sequential_alpha", fam[0]["params"]["alpha"] if fam else seq.ALPHA)
+            if alpha != fixed_alpha:
+                raise RegistryError(f"recorded sequential alpha is frozen at {fixed_alpha}")
             if mine and mine[0]["params"] != m["params"]:
                 raise RegistryError(f"monitoring parameters {m['params']} differ from this genome's first "
                                     f"event {mine[0]['params']}: parameters are frozen")
@@ -319,8 +332,6 @@ class Registry:
             if fam and any(fam[0]["params"][k] != m["params"][k] for k in frozen):
                 first = {k: fam[0]["params"][k] for k in frozen}
                 raise RegistryError(f"family {m['family']} is monitored with {first}: parameters are frozen")
-            if mine and m["as_of_s"] < mine[-1]["as_of_s"]:
-                raise RegistryError(f"as_of {m['as_of']} is before the last recorded {mine[-1]['as_of']}")
             kind = {"EARLY_PASS": "early_pass", "EARLY_KILL": "early_kill"}.get(m["decision"], "interim")
             prior_early = any(r["kind"] != "interim" for r in mine)
             return {"kind": kind, "tw": int(now * 1e9), "genome_id": genome_id, "family": m["family"],
@@ -331,7 +342,7 @@ class Registry:
         return self._append(build)
 
     def _monitor(self, recs: list[dict], genome_id: str, results: dict, alpha: float, now: float,
-                 source: dict | None) -> dict:
+                 source: dict | None, *, previous: dict | None = None) -> dict:
         if not 0.0 < alpha < 1.0:
             raise RegistryError("alpha must be in (0, 1)")
         reg = next((r for r in recs if r["kind"] == "register" and r["genome_id"] == genome_id), None)
@@ -347,10 +358,23 @@ class Registry:
         prm = seq.params(g, alpha)
         rows = seq.eval_windows(results.get("windows") or [], w["start_s"], w["end_s"], now)
         used = rows[: len(rows) // prm["block"] * prm["block"]]
+        as_of_s = float(used[-1]["end"]) if used else float(w["start_s"])
+        # A sequential test can extend its observed prefix. A feed revision that changes a
+        # completed block (including moving a previously excluded window into it) is a new sample.
+        observations = [(r["start"], r["end"], r.get("slug"), r["net_c"], r.get("contracts") or 0)
+                        for r in used]
+        if previous is not None:
+            if as_of_s < previous["as_of_s"]:
+                raise RegistryError(f"as_of {iso(as_of_s)} is before the last recorded {previous['as_of']}")
+            prior = previous["stats"]
+            if "observations_sha256" in prior:
+                prefix = observations[:prior["windows_used"]]
+                if _sha(orjson.dumps(prefix)) != prior["observations_sha256"]:
+                    raise RegistryError("previously recorded window observations changed")
         stats = seq.e_processes([float(r["net_c"]) for r in used], prm["bound_c"], prm["block"], alpha)
         n_traded = sum(1 for r in used if (r.get("contracts") or 0) > 0)
-        stats.update({"windows_seen": len(rows), "windows_traded": n_traded})
-        as_of_s = float(used[-1]["end"]) if used else float(w["start_s"])
+        stats.update({"windows_seen": len(rows), "windows_traded": n_traded,
+                      "observations_sha256": _sha(orjson.dumps(observations))})
         fam = self._family_e(recs, reg["family"], {genome_id: stats["pass"]["e_max"]})
         p_holm = seq.e_holm([x["e_max"] for x in fam])
         me = [x["genome_id"] for x in fam].index(genome_id)

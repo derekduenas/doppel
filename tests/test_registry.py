@@ -249,3 +249,148 @@ def test_result_must_cover_the_preregistered_window_and_kill_never_wins(tmp_path
     # a manual p is recorded but never binding, so it cannot rescue the family either
     m = reg.record_result(b, {"p_value": 0.0001, "decision": "PASS", "p_source": "manual"})
     assert m["binding"] is False and reg.ledger("h1")["winner"] is None and reg.verify() == []
+
+
+def test_cli_only_canonical_replay_can_bind(tmp_path, monkeypatch):
+    from doppel.tape.receipts import build_receipt
+    from doppel.tape.segment import SegmentWriter
+    from doppel.twin import evaluate
+
+    root = tmp_path / "registry-root"
+    clock = Clock(0)
+    reg = _reg(root, clock)
+    genome = _g()
+    reg.register(genome, "h1", "canonical evaluation", (10, 20),
+                 evaluation_protocol=evaluate.protocol())
+    data = tmp_path / "tape"
+    segment = SegmentWriter(data, "pmus_ws_5m")
+    segment.append("{}", tw=11_000_000_000)
+    segment.close()
+    build_receipt(data, "19700101", 0)
+    forged = tmp_path / "external.json"
+    forged.write_bytes(orjson.dumps({"genome": {"id": genome.id}, "range": [10, 20],
+                                    "verdict": {"decision": "PASS", "p_value": 0.0}}))
+    opts = ["result", "--root", str(root), "--id", genome.id]
+    assert cli([*opts, "--results", str(forged)]) == 0
+    assert reg.records()[-1]["binding"] is False
+
+    def replay(path, g, start, end, config, lab):
+        assert (path, g.id, start, end, lab) == (data, genome.id, 10, 20, None)
+        assert config == evaluate.SimConfig()
+        return []
+
+    monkeypatch.setattr(evaluate, "run_twin", replay)
+    monkeypatch.setattr(evaluate, "verdict", lambda *a, **kw: {"decision": "KILL", "p_value": 0.42})
+    assert cli([*opts, "--data", str(data)]) == 0
+    recorded = reg.records()[-1]
+    assert recorded["binding"] and recorded["verdict"]["p_value"] == 0.42
+    assert recorded["verdict"]["evaluation"]["protocol_preregistered"]
+    assert len(recorded["verdict"]["evaluation"]["input_sha256"]) == 64
+
+    part = next(data.glob("*/*/*.dtape.zst"))
+    part.write_bytes(b"changed")
+    assert cli([*opts, "--data", str(data)]) == 2
+    assert reg.records()[-1] == recorded
+
+
+def test_canonical_replay_refuses_missing_evaluation_hour(tmp_path):
+    from doppel.tape.receipts import build_receipt
+    from doppel.tape.segment import SegmentWriter
+    from doppel.twin.evaluate import evaluation_inputs, verify_hours
+    w = SegmentWriter(tmp_path, "pmus_ws_5m")
+    w.append("{}", tw=1)
+    w.close()
+    build_receipt(tmp_path, "19700101", 0)
+    paths = evaluation_inputs(tmp_path, None)
+    with pytest.raises(FileNotFoundError):
+        verify_hours(tmp_path, ["5m"], 0, 3601, paths)
+    with pytest.raises(ValueError, match="15m"):
+        verify_hours(tmp_path, ["5m", "15m"], 0, 3600, paths)
+    with pytest.raises(ValueError, match="differs"):
+        verify_hours(tmp_path, ["5m"], 0, 3600, {})
+
+
+def test_canonical_fingerprint_rejects_a_self_hashed_broken_tail(tmp_path):
+    import hashlib
+    from doppel.tape.segment import SegmentWriter
+    from doppel.twin.evaluate import evaluation_inputs, fingerprint
+    w = SegmentWriter(tmp_path, "pmus_ws_5m")
+    w.append("{}", tw=1)
+    w.close()
+    path = next(tmp_path.glob("*/*/*.dtape.zst"))
+    path.write_bytes(path.read_bytes()[:-1])
+    man = path.parent.parent / "manifest.jsonl"
+    row = orjson.loads(man.read_bytes())
+    row.update(bytes=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+    man.write_bytes(orjson.dumps(row) + b"\n")
+    with pytest.raises(ValueError, match="truncated zstd"):
+        fingerprint(tmp_path, evaluation_inputs(tmp_path, None))
+
+
+def test_receipt_digest_membership_and_flow_coverage(tmp_path):
+    from doppel.tape.receipts import build_receipt
+    from doppel.tape.segment import SegmentWriter
+    from doppel.twin.evaluate import evaluation_inputs, verify_hours
+
+    for stream in ("pmus_ws_5m", "ref_brti_raw", "rtds_a"):
+        w = SegmentWriter(tmp_path, stream)
+        w.append("{}", tw=1)
+        w.close()
+    (tmp_path / "ref_brti_raw/import-watermark.json").write_bytes(orjson.dumps({"max_t_ms": 3600000}))
+    receipt = tmp_path / "receipts/19700101/00.json"
+    doc = build_receipt(tmp_path, "19700101", 0)
+    doc["schema_version"] = 2
+    paths = evaluation_inputs(tmp_path, tmp_path / "tokens.jsonl")
+    for stream, row in doc["streams"].items():
+        row["sha256"] = hashlib.sha256(paths[f"{stream}/19700101/00.dtape.zst"].read_bytes()).hexdigest()
+    receipt.write_bytes(orjson.dumps(doc))
+    verify_hours(tmp_path, ["5m"], 0, 3600, paths)
+
+    doc["missing_expected_streams"] = ["ref_brti_raw"]
+    receipt.write_bytes(orjson.dumps(doc))
+    with pytest.raises(ValueError, match="missing expected streams"):
+        verify_hours(tmp_path, ["5m"], 0, 3600, paths)
+    doc["missing_expected_streams"] = []
+    row = doc["streams"]["ref_brti_raw"]
+    digest = row.pop("sha256")
+    for bad in (None, "0" * 64):
+        if bad is not None:
+            row["sha256"] = bad
+        receipt.write_bytes(orjson.dumps(doc))
+        with pytest.raises(ValueError, match="digest"):
+            verify_hours(tmp_path, ["5m"], 0, 3600, paths)
+    row["sha256"] = digest
+    del doc["streams"]["ref_brti_raw"]
+    receipt.write_bytes(orjson.dumps(doc))
+    with pytest.raises(ValueError, match="not in hourly receipt"):
+        verify_hours(tmp_path, ["5m"], 0, 3600, paths)
+
+    doc["streams"]["ref_brti_raw"] = row
+    doc["streams"]["rtds_a"]["data_records"] = 0
+    receipt.write_bytes(orjson.dumps(doc))
+    with pytest.raises(ValueError, match="RTDS"):
+        verify_hours(tmp_path, ["5m"], 0, 3600, paths)
+    # A non-flow strategy does not consume RTDS.
+    verify_hours(tmp_path, ["5m"], 0, 3600, evaluation_inputs(tmp_path, None))
+
+
+def test_binding_replay_refuses_diagnostic_only_reconstruction(tmp_path, monkeypatch):
+    from doppel.tape.receipts import build_receipt
+    from doppel.tape.segment import SegmentWriter
+    from doppel.twin import evaluate
+
+    w = SegmentWriter(tmp_path, "pmus_ws_5m")
+    w.append("{}", tw=1)
+    w.close()
+    build_receipt(tmp_path, "19700101", 0)
+    manifest = tmp_path / "pmus_ws_5m/manifest.jsonl"
+    row = orjson.loads(manifest.read_bytes())
+    row.update(evidence_use="diagnostic_only", provenance="receipt_prefix_upstream_reconstructed")
+    manifest.write_bytes(orjson.dumps(row) + b"\n")
+    paths = evaluate.evaluation_inputs(tmp_path, None)
+    evaluate.fingerprint(tmp_path, paths)
+    evaluate.verify_hours(tmp_path, ["5m"], 0, 3600, paths)
+    monkeypatch.setattr(evaluate, "run_twin", lambda *a, **k: pytest.fail("opened strategy outcomes"))
+    with pytest.raises(ValueError, match="diagnostic_only"):
+        evaluate.replay_snapshot(tmp_path, None, {"genome": to_dict(_g()), "eval_window": {
+            "start_s": 0, "end_s": 3600}})
