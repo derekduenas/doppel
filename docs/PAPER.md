@@ -27,7 +27,7 @@ ref_prices                ──tail──►    CRC-checked, offsets)      with
 | `paper/journal.py` | Hash-chained JSONL, batch commit, cut-and-trace of an interrupted batch. |
 | `paper/agree.py` | G5 paper-vs-twin agreement. |
 | `paper/footprint.py` | Journal → public footprint + full decision record. |
-| `paper/cli.py` | `python -m doppel.paper {run, agree, footprint, verify}`. |
+| `paper/cli.py` | `doppel-paper {run, agree, footprint, verify}` (also `python -m doppel.paper`). |
 
 ### Same strategy code
 
@@ -38,9 +38,13 @@ queue, post-only rejects, book-cross fills, IOC at the landed book, latency L, f
 only the venue (see below). Paper and twin can therefore disagree only when their inputs differ.
 
 The engine settings (`SimConfig`: latency, BRTI delay, opening rule) are stored in the `run`
-record and must not change for the life of a journal. Run a genome with its family's bound
-evaluation protocol, for example `--opening received_raw` for H1–H4. Both rules are covered by the
-agreement test.
+record and must not change for the life of a journal. `--opening` has no default. When the genome
+has an evaluation-protocol binding in `registry/genomes.jsonl` (`--registry`, read only), every
+simulation setting of the binding must match or the run is refused (exit 2); H1–H4 therefore run
+only with `--opening received_raw`. A missing registry is also a refusal. Both opening rules are
+covered by the agreement test. The opening SOURCE (computed or published) is fixed for a window by
+its first decision that knew one, as the twin's rule fixes it; with paper's causal receive stamps it
+cannot switch, and a switch would be counted in the window's `settle` record.
 
 ### Clock: tape time, never wall time
 
@@ -51,35 +55,56 @@ received by `d`.
 
 - `grace` defaults to 6 s. The Python recorder flushes a frame on an append at least 1 s after the
   last one, and every 5 s regardless; the Rust recorder flushes every 1 s.
-- A record that arrives with `tw ≤ W` after `W` passed it is journaled as `late` and used only from
-  the next instant on, never retroactively.
-- The 60 s cap only matters during catch-up.
+- A record that arrives with `tw ≤ cursor` is journaled as `late` and known only from cursor + 1 ns
+  on: its receive stamp (BRTI second, boundary row) is raised to that, so it never changes what an
+  already-taken decision could have known.
+- Each poll reads at most one `max_step` (60 s) of tape past the cursor and at most 64 MiB per stream;
+  the watermark never passes what a capped stream has read.
+- Raw BRTI comes from two causal sources: our own Kalshi poller on the tape (`ref_brti_live`,
+  known at its `tw`) and PERELMAN's stream directory read directly (`--perelman`, read only), each
+  row known at max(PERELMAN's receive stamp, the cycle clock that first read it). The imported
+  `ref_brti_raw` tape stream is never read: its rows reach the tape up to 15 min late, so under the
+  same rule they could never inform a decision.
 
 ### Risk
 
 - **Genome limits.** `|inventory|`, notional per window, daily-loss stand-down and `max_open_windows`
   are enforced by the engine and by the twin's cross-window rules (`run_windows` order: start,
   horizon length, asset).
-- **Kill switch.** Any `--kill-file` existing (default `JOURNAL/KILL`) halts at the previous
-  watermark + 1 ns, before any decision of the cycle. Every working quote gets a cancel intent, the
-  window stops deciding, and windows created later are born halted. An IOC already in flight still
-  lands; it cannot be recalled.
-- **Global max-loss stop.** Settled net plus the worst case of open windows
-  (cash − fees + min(0, inventory)) ≤ −`max_loss_usd` (default `risk.max_loss_per_day`) halts the
-  same way.
+- **Kill switch.** Any `--kill-file` existing (default `JOURNAL/KILL`) halts at the cycle's starting
+  cursor + 1 ns, before any decision of the cycle. Every working quote gets a cancel intent, every
+  window stops deciding and no new window is opened. An IOC already in flight still lands; it
+  cannot be recalled. The halt is committed once; a kill file left in place does not commit again.
+- **Daily max-loss stop.** Today's (UTC) settled net plus the worst case of every open window
+  ≤ −`max_loss_usd` (default `risk.max_loss_per_day`) halts the same way. Worst case = the worse
+  outcome with every quote that can still fill (live or about to land) filled in full.
+- **Stale book.** A WS book older than `max_book_age_s` (30 s) is not traded against: the window
+  pulls its quotes and skips the decision (`skips: ["stale_book"]`). The twin has no such rule, so
+  this is a deliberate paper-only divergence on a dead feed.
+- **Tape failure.** A CRC or JSON error, or segment bytes that never become a complete frame within
+  `stall_s` (30 s), are journaled (`risk: tape_error`) and stop the run with exit 3.
 
-A halt is permanent for that journal: start a new journal to trade again.
+A halt is permanent for that journal: start a new journal to trade again. A halted run whose windows
+have all settled exits 0.
 
 ### Journal
 
-One JSON object per line with `n`, `prev` and `h = sha256(prev ‖ canonical body)`. Any edit,
-insertion, deletion or reorder breaks the chain (`python -m doppel.paper verify`).
+One JSON object per line with `n`, `prev` and `h = sha256(prev ‖ canonical body)`, in daily files
+`journal-YYYYMMDD.jsonl` (UTC day of the batch's tape time) that form one chain. Any edit,
+insertion, deletion or reorder, or a missing day file, breaks the chain (`doppel-paper verify`).
+**The chain is not keyed**: it detects changes to what was written, but a writer with access to the
+directory could rewrite the whole chain consistently. Anchor the head hash elsewhere (git, the
+registry, an off-host log) for tamper evidence against such a writer. The runtime keeps only the
+chain head and line count in memory; every reader streams.
 
 Each cycle is written in one `write` + `fsync` and committed by its final `cycle` record. That
-record holds `W`, the clock reading, the kill flag and the tail offsets that advanced. A cycle is
-committed only when it wrote records, saw a late event, saw the kill file, or hit the 60 s
-heartbeat. Merging the other cycles is exact, because merging changes results only when something
-is processed late.
+record holds the cycle's starting cursor `c0`, `W`, the clock reading, whether it newly applied the
+kill, and the tail and PERELMAN offsets that advanced. A cycle is committed only when it wrote
+records, saw a late event, read PERELMAN rows, newly applied the kill, or hit the 60 s heartbeat.
+The other cycles are merged into the next committed one: replay first advances to `c0` with every
+record read so far except those the committed cycle journaled as `late` (they were read only in it),
+then runs the cycle. That is exact because a merged cycle had no late event, no PERELMAN row, no new
+window, settlement or halt.
 
 On open, lines after the last commit are cut, and a `recovery` record names their count and sha256.
 A torn final line counts as a crash. Any other bad line is tampering, and the journal refuses to
@@ -91,36 +116,41 @@ Record kinds:
 |---|---|
 | `run` | genome, config, settings, code sha |
 | `open` | a window was created |
-| `decide` | every decision second: `xh` = feature-vector hash, inventory; the full vector `x` when the decision produced an intent or a skip |
+| `decide` | every decision second: `xh` = feature-vector hash, `sh` = engine-state hash (inventory, cash, live and pending quotes, taker bookkeeping), inventory; the full vector `x` when the decision produced an intent or a skip |
 | `intent` | post, amend, cancel (with reason) or take |
 | `ack` | live with queue ahead; rejected:post_only, no_book or closed; superseded; cancelled; filled; IOC miss reason |
 | `fill` | role, side, price, quantity, fee, via, order id, inventory, cash |
 | `skip` | stood_down, no_book, no_fair, paused, self_cross, risk_blocked |
-| `risk` | halt_all, halt, max_loss, recovery_mismatch |
-| `settle` | outcome, net, gross, fees, contracts |
+| `risk` | halt_all, halt, max_loss, recovery_mismatch, tape_error |
+| `settle` | outcome, net, gross, fees, contracts, opening source, stale-book seconds |
 | `late`, `resume` | a late record; a completed recovery |
 
 ### Restart recovery
 
 Every `checkpoint_s` (300 s) of tape time, a commit also pickles the runtime state into
-`JOURNAL/checkpoints/`, and the `cycle` record pins the pickle's sha256 inside the chain. A pickle
-is loaded only if it matches, so a swapped file is never unpickled.
+`JOURNAL/checkpoints/`, and the `cycle` record pins the pickle's sha256 and format version inside
+the chain. A pickle is loaded only if it matches, so a swapped file is never unpickled. Order ids
+live on the quote objects, so they survive the pickle.
 
-Recovery runs in five steps:
+Recovery runs in six steps, all streaming:
 
 1. Verify the chain and cut an uncommitted tail.
-2. Load the newest valid checkpoint, or start from the `run` record if none is valid.
-3. Re-run every committed cycle after it, from the same tape bytes (offsets).
-4. Require the regenerated records to equal the journal's, and cross-check each open window's
-   inventory, cash and resting orders against the journal's own fill and ack records.
-5. Continue.
+2. Refuse if the paper/twin code hash differs from the `run` record's, or the checkpoint format
+   differs from this code's.
+3. Load the newest valid checkpoint, or start from the `run` record if none is valid.
+4. Re-run every committed cycle after it from the same tape and PERELMAN bytes, and require each
+   cycle's regenerated records to equal its journaled batch.
+5. Cross-check each open window's inventory, cash, resting orders and fill order ids against the
+   journal's own records.
+6. Continue.
 
 Any mismatch writes `risk: recovery_mismatch` and refuses to start (exit 3). This covers a changed
 tape, other settings or another genome.
 
 ## Where the twin knows more than paper can (G5 divergence sources)
 
-The twin replays a finished tape. Seven of its inputs are not causal for a live process. Paper uses
+The twin replays a finished tape. Seven of its inputs are not causal for a live process, and paper
+adds one rule of its own. Paper uses
 what it had actually received, and `agree` reports the effect:
 
 1. **Book stream.** Per window, the twin uses the WS stream with the most snapshots over the whole
@@ -133,18 +163,25 @@ what it had actually received, and `agree` reports the effect:
    only prints already received.
 4. **Settlement value.** The twin uses the last boundary revision. Paper uses the one it had when
    both boundaries were known.
-5. **Imported raw BRTI** (`ref_brti_raw`, every 15 min on Apex). It carries receive stamps earlier
-   than its arrival on the tape. The twin's fair value uses them; paper's past decisions could not.
-   Live, paper's fair value is effectively `ref_brti_live` only. *This is the divergence most
-   likely to dominate real G5 numbers.*
+5. **Raw BRTI receive time.** The twin reads PERELMAN's rows from the tape import (`ref_brti_raw`)
+   at PERELMAN's own receive stamp. Paper reads PERELMAN's files directly and knows a row at
+   max(that stamp, the cycle clock that first read it), so it is later by the poll interval
+   (0.25 s) plus PERELMAN's write lag. Decisions near a BRTI second can differ; `agree` shows it as
+   `inputs_identical_share` < 1. Without `--perelman`, paper has only `ref_brti_live` (5 s poller).
 6. **Window exclusions.** The twin decides them after the fact (feed gaps, coverage, unsettled).
    Paper trades every window; `agree` lists such windows under `paper_only`.
 7. **Daily stand-down.** At a window's start the previous window's outcome is not yet received, so
    paper counts it at its worst case. The twin uses the final net. Paper is therefore stricter.
 
-`agree` separates "inputs differed" (`inputs_identical_share`) from "same inputs, different intent"
-(`same_input_diff_intent`). The second must always be 0, and `agree` exits 1 otherwise. The
-synthetic test tape avoids all seven sources: one boundary value, no late prints, no unprinted
+8. **Stale book.** Paper pulls quotes on a WS book older than 30 s; the twin does not.
+
+`agree` separates "inputs differed" (`inputs_identical_share`: feature vector AND engine state)
+from "same inputs, different intent" (`same_input_diff_intent`). The second must always be 0, and
+`agree` exits 1 otherwise, or when no window was compared. Shares are weighted by the larger of the
+paper and twin counts. Windows the twin excludes are listed with paper's P&L there
+(`paper_only_net_usd`). Windows decided long after their time (median wall − t > 120 s, a catch-up)
+are reported apart from live ones (`by_mode`). The
+synthetic test tape avoids all eight sources: one boundary value, no late prints, no unprinted
 volume, live BRTI only. **The 100% agreement in the tests proves the plumbing, not live agreement.**
 
 ## Footprint for the reconstruction machine (G3)
@@ -168,7 +205,8 @@ tape.
 
 ## Validate on Apex (in order)
 
-1. `python -m doppel.paper run --from-now` for one H-family maker on real tape, for 2 hours. Then
+1. `doppel-paper run --from-now --opening received_raw --perelman ...` for one H-family maker on
+   real tape, for 2 hours. Then
    measure:
    - the wall-clock lag `wall − t` of `decide` records (expected ~grace + cycle);
    - `late` counts per stream;
@@ -176,12 +214,17 @@ tape.
 2. Check the frame cadence of the **live** tape root on each stream the unit tails, to confirm the
    6 s grace. Do the same for `tape-rust` if the Rust recorder becomes the source.
 3. `agree` after each settled hour, and record `inputs_identical_share`. Expect it below 1 from
-   divergence 5 whenever the BRTI import filled seconds the live poller missed. Decide whether G5
-   should run the twin with `ref_brti_live` only. That would be a twin-side option, which is frozen
-   until 2026-12-01.
-4. Kill drill: `touch KILL` → a `halt_all` record within one cycle, cancels only afterwards.
-5. Restart drill: `systemctl restart` mid-window → a `resume` record, no `recovery_mismatch`.
-6. Footprint on a day of paper journal, then fillstore row counts.
+   divergence 5. Decide whether G5 should run the twin with the same causal BRTI stamps. That would
+   be a twin-side option, which is frozen until 2026-12-01.
+4. That `User=doppel` can read PERELMAN's stream through the unit's read-only bind
+   (`/var/lib/private` is 0700), and PERELMAN's file naming and rotation (`*.jsonl` → `*.jsonl.gz`).
+5. Whether PM US sends WS book snapshots on a quiet book often enough for the 30 s stale-book bound.
+6. Kill drill: `touch KILL` → a `halt_all` record within one cycle, cancels only afterwards, exit 0
+   once every window settled.
+7. Restart drill: `systemctl restart` mid-window, and across a BRTI import → a `resume` record, no
+   `recovery_mismatch`.
+8. Memory: RSS flat over 24 h; journal rotates at UTC midnight.
+9. Footprint on a day of paper journal, then fillstore row counts.
 
 ## Interfaces a future live adapter implements (documented, not built)
 
@@ -237,8 +280,6 @@ tape's 1–5 s flush lag is fine for paper and fatal live.
   `_push`, `_on_quote_land`, `_on_ioc`, `_maker_fill`, `_fill`, `_maker`, `_on_decide`), and
   `record_windows` mirrors `run_windows`. A test pins both to the engine, but a hook API would remove
   the mirror.
-- `pyproject.toml`: `doppel-paper = "doppel.paper.cli:main"`. Until then, use
-  `python -m doppel.paper`.
 - A causal-BRTI option for the twin (`ref_brti_live` only), for G5 (divergence 5).
 - Kalshi: the twin replays PM US only, so paper refuses other venues. A Kalshi paper run needs a
   Kalshi twin on `lab/kalshi_ws.py` books first. Genomes with `intl_*` flow features are refused

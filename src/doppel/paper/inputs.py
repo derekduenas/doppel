@@ -16,8 +16,14 @@ cannot have, paper uses what was received and ``docs/PAPER.md`` lists the differ
    arrive later).
 4. The window's outcome is the boundary value received first after the close (the twin uses the
    last revision).
-5. BRTI seconds imported later (``ref_brti_raw``, every 15 min on Apex) carry an earlier documented
-   receive time; the twin uses it, paper cannot have used it for decisions already taken.
+5. Raw BRTI: the twin also reads ``ref_brti_raw`` (PERELMAN's rows, imported to the tape every
+   15 min) at PERELMAN's documented receive time. Paper reads PERELMAN's files directly
+   (``tail.PerelmanTail``) and a row is known at max(PERELMAN received, the cycle clock that first
+   read it); it never reads ``ref_brti_raw``, whose rows reach the tape too late to matter.
+
+Anything that arrives late (``tw`` already behind the processed watermark) is known from the next
+instant only: its receive stamp is raised to cursor + 1 ns, so it can never change what an
+already-taken decision could have known, nor which opening source a window had chosen.
 """
 
 from __future__ import annotations
@@ -29,7 +35,7 @@ import orjson
 
 from ..lab.brti_import import _first_received, _imported_receive_s
 from ..twin.engine import P_BOOK, P_GAP, P_TRADE, SimConfig
-from ..twin.features import BOUNDARY, RAW_PAD_S, WindowRef
+from ..twin.features import BOUNDARY, RAW_PAD_S, FeatureConfig, Features, WindowRef
 from ..twin.tape import (GROUP_GAP_CTL, INFERRED, NS, POST_S, PRE_S, STREAM_GAP_CTL, UNIDENTIFIED, Book, Trade,
                          WindowTape, rid_group, ws_event)
 from ..tape.universe import HORIZONS, pmus_slug
@@ -43,17 +49,19 @@ class RefLive:
         self.brti: dict[int, tuple[float, float]] = {}
         self.bounds: dict[str, dict[int, dict[int, float | None]]] = {}
 
-    def on_brti_raw(self, rec: dict) -> list[int]:
-        if not rec.get("raw"):
-            return []
-        d = orjson.loads(rec["raw"])
-        ts = int(d["t_ms"])
-        _first_received(self.brti, ts, d["v"], _imported_receive_s(d.get("received")))
-        return [ts // 1000]
-
-    def on_brti_live(self, rec: dict) -> list[int]:
+    def on_perelman(self, rows, now_ns: int) -> list[int]:
+        """PERELMAN rows, known at max(their documented receive time, ``now_ns`` when first read)."""
         out = []
-        tw = rec["tw"]
+        floor = now_ns / 1e9
+        for t_ms, v, received in rows:
+            rcv = _imported_receive_s(received)
+            _first_received(self.brti, t_ms, v, max(rcv, floor) if math.isfinite(rcv) else floor)
+            out.append(t_ms // 1000)
+        return out
+
+    def on_brti_live(self, rec: dict, floor_ns: int = 0) -> list[int]:
+        out = []
+        tw = max(rec["tw"], floor_ns)
         seconds, remainder = divmod(tw, NS)
         received = tw / 1e9
         if remainder and received == seconds:
@@ -63,13 +71,13 @@ class RefLive:
             out.append(int(t_ms) // 1000)
         return out
 
-    def on_prices(self, rec: dict) -> list[tuple[str, int]]:
+    def on_prices(self, rec: dict, floor_ns: int = 0) -> list[tuple[str, int]]:
         m = rec.get("meta") or {}
         asset = m.get("asset")
         if not isinstance(asset, str) or not asset.startswith("crypto:") or m.get("status") != 200:
             return []
         a = asset.removeprefix("crypto:")
-        tw = rec["tw"]
+        tw = max(rec["tw"], floor_ns)
         out = []
         for ser in orjson.loads(rec["raw"]).get("series", []):
             for c in ser.get("candles") or []:
@@ -92,6 +100,33 @@ class RefLive:
     def prune(self, before_s: int) -> None:
         for s in [s for s in self.brti if s < before_s]:
             del self.brti[s]
+        for b in self.bounds.values():
+            for t in [t for t in b if t < before_s]:
+                del b[t]
+
+
+class PaperFeatures(Features):
+    """The twin's Features; the opening SOURCE is fixed by the first decision that knew one, as the
+    twin's rule fixes it for the whole window. With paper's causal receive stamps the rule cannot
+    switch anyway; if it ever would, the first source is kept and the window counts it."""
+
+    def __init__(self, genome, ref: WindowRef, cfg: FeatureConfig):
+        super().__init__(genome, ref, cfg)
+        self.source: str | None = None
+        self.switches = 0
+
+    def opening(self, d: int) -> float | None:
+        src, value = self.ref.opening_known(d, self.cfg.opening, self.cfg.fair_lag_s)
+        if src is None:
+            return None
+        if self.source is None:
+            self.source = src
+        elif src != self.source:
+            self.switches += 1
+            if self.source == "published":
+                return self.ref.opening_at(d * NS)[1]
+            return self.ref.computed_opening(self.cfg.fair_lag_s)[0]
+        return value
 
 
 class LiveWindow:
@@ -116,7 +151,8 @@ class LiveWindow:
                 if s in ref_live.brti:
                     self.set_brti(s, ref_live.brti[s])
         self.refresh_bounds(ref_live)
-        self.sim = PaperSim(g, self.wt, self.ref, cfg, **sim_kw)
+        self.feats = PaperFeatures(g, self.ref, cfg.feature_config())
+        self.sim = PaperSim(g, self.wt, self.ref, cfg, features=self.feats, **sim_kw)
         self.sim.schedule_decisions()
         self.seen: set = set()
         self.vbooks: list[Book] = []

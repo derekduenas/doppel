@@ -3,15 +3,18 @@
 same observed engine (``PaperSim``), and compare decision by decision.
 
 Per window both ran:
-- inputs: share of decision seconds whose feature-vector hash is identical;
+- inputs: share of decision seconds whose inputs are identical: the feature-vector hash AND the
+  engine-state hash (own inventory, cash, live/pending quotes, taker bookkeeping) before deciding;
 - intents: share of identical intents (time, kind, side, price, size / qty, rule), as matched
-  multiset count over the larger of the two lists;
+  multiset count over the larger of the two lists; window shares are weighted by the larger count;
 - ``same_input_diff_intent``: decision seconds with identical inputs whose intents differ. With one
   engine this must be 0; anything else is a defect, not drift;
 - fills: share of identical fills (time, role, side, price, qty, via);
 - net P&L difference (paper - twin).
 Windows the twin excludes (feed gaps, coverage, unsettled, no WS) are listed under ``paper_only``
-with the twin's reason: paper traded them, the twin never scores them.
+with the twin's reason and paper's P&L there: paper traded them, the twin never scores them.
+Windows paper decided long after their time (catch-up: median wall - t > ``CATCHUP_LAG_S``) are
+reported separately from live ones. Zero compared windows is a failure, not a pass.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from .journal import load
 from .sim import record_windows
 
 KINDS = ("decide", "intent", "ack", "fill", "skip")
+CATCHUP_LAG_S = 120
 
 
 def intent_key(r: dict) -> tuple:
@@ -46,8 +50,8 @@ def _share(a: list, b: list) -> float | None:
 
 
 def compare_window(paper: list[dict], twin: list[dict]) -> dict:
-    px = {r["d"]: r["xh"] for r in paper if r["k"] == "decide"}
-    tx = {r["d"]: r["xh"] for r in twin if r["k"] == "decide"}
+    px = {r["d"]: (r.get("xh"), r.get("sh")) for r in paper if r["k"] == "decide"}
+    tx = {r["d"]: (r.get("xh"), r.get("sh")) for r in twin if r["k"] == "decide"}
     ds = set(px) | set(tx)
     same = {d for d in ds if px.get(d) == tx.get(d)}
     pi = [intent_key(r) for r in paper if r["k"] == "intent"]
@@ -74,7 +78,7 @@ def agree(journal_dir: Path, data: Path) -> dict:
     cfg = SimConfig(**raw_cfg)
     settled = {r["slug"]: r for r in recs if r["k"] == "settle"}
     if not settled:
-        return {"genome_id": g.id, "windows": 0, "note": "no settled paper window yet"}
+        return {"genome_id": g.id, "windows_compared": 0, "note": "no settled paper window yet"}
     t_from = head["first_start"]
     t_to = max(r["end"] for r in settled.values())
     store = RefStore(data)
@@ -89,38 +93,53 @@ def agree(journal_dir: Path, data: Path) -> dict:
         if r["k"] in KINDS and r.get("slug"):
             paper_recs[r["slug"]].append(r)
     per, paper_only = {}, {}
+
+    def lag_s(slug: str) -> float | None:
+        xs = sorted((r["wall"] - r["t"]) / 1e9 for r in paper_recs[slug] if r["k"] == "decide" and "wall" in r)
+        return xs[len(xs) // 2] if xs else None
     for res in results:
         slug = res["slug"]
         if slug not in settled:
             continue
         if not res.get("eligible", True) or res.get("excluded"):
-            paper_only[slug] = res.get("excluded")
+            paper_only[slug] = {"twin_excluded": res.get("excluded"), "net_paper_usd": settled[slug].get("net_usd")}
             continue
         c = compare_window(paper_recs[slug], twin_recs[slug])
         c["net_paper_usd"] = settled[slug].get("net_usd")
         c["net_twin_usd"] = res["net_usd"]
         c["net_diff_usd"] = None if c["net_paper_usd"] is None else round(c["net_paper_usd"] - res["net_usd"], 6)
         c["late_events"] = settled[slug].get("late", 0)
+        c["lag_s"] = lag_s(slug)
+        c["mode"] = "catchup" if c["lag_s"] is not None and c["lag_s"] > CATCHUP_LAG_S else "live"
         per[slug] = c
     missing = sorted(set(settled) - {r["slug"] for r in results})
-    tot = Counter()
+    out = {"genome_id": g.id, "range": [t_from, t_to], **summary(per), "paper_only": paper_only,
+           "paper_only_net_usd": round(sum(v["net_paper_usd"] or 0.0 for v in paper_only.values()), 6),
+           "missing_in_twin": missing,
+           "by_mode": {m: summary({k: c for k, c in per.items() if c["mode"] == m}) for m in ("live", "catchup")},
+           "windows": per}
+    return out
+
+
+def summary(per: dict[str, dict]) -> dict:
+    tot: Counter = Counter()
     for c in per.values():
         for k in ("decisions", "intents_paper", "intents_twin", "fills_paper", "fills_twin", "same_input_diff_intent"):
             tot[k] += c[k]
 
-    def wmean(key: str, wkey: str) -> float | None:
-        xs = [(c[key], max(c[wkey], 1)) for c in per.values() if c[key] is not None]
+    def wmean(key: str, a: str, b: str | None = None) -> float | None:
+        xs = [(c[key], max(c[a], c[b] if b else 0, 1)) for c in per.values() if c[key] is not None]
         den = sum(w for _, w in xs)
         return round(sum(v * w for v, w in xs) / den, 6) if den else None
 
-    return {"genome_id": g.id, "range": [t_from, t_to], "windows_compared": len(per),
+    return {"windows_compared": len(per),
             "windows_identical": sum(1 for c in per.values() if c["intents_identical_share"] in (1.0, None)
                                      and c["fills_identical_share"] in (1.0, None) and c["net_diff_usd"] == 0),
             "inputs_identical_share": wmean("inputs_identical_share", "decisions"),
-            "intents_identical_share": wmean("intents_identical_share", "intents_paper"),
-            "fills_identical_share": wmean("fills_identical_share", "fills_paper"),
+            "intents_identical_share": wmean("intents_identical_share", "intents_paper", "intents_twin"),
+            "fills_identical_share": wmean("fills_identical_share", "fills_paper", "fills_twin"),
             "same_input_diff_intent": tot["same_input_diff_intent"],
             "net_paper_usd": round(sum(c["net_paper_usd"] or 0.0 for c in per.values()), 6),
             "net_twin_usd": round(sum(c["net_twin_usd"] for c in per.values()), 6),
             "net_diff_usd": round(sum(c["net_diff_usd"] or 0.0 for c in per.values()), 6),
-            "totals": dict(tot), "paper_only": paper_only, "missing_in_twin": missing, "windows": per}
+            "totals": dict(tot)}

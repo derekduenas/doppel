@@ -1,12 +1,16 @@
 # DOPPEL paper runtime for one sealed genome (instance = genome name). FILE ONLY: not installed.
-# The lead installs it through ops/deploy.sh after review. Paper only: the unit has no network, no
-# credentials and no market-data group, so it cannot reach any venue even by mistake. It reads the
-# tape read-only and writes only its own journal directory.
+# The lead installs it through ops/deploy.sh after review. Paper only: the unit has no network at
+# all (no address family, private network namespace), no credentials, no market-data group and no
+# view of the credential directories, so it cannot reach any venue even by mistake. It reads the tape
+# and PERELMAN's raw BRTI stream read-only and writes only its own journal directory.
 #   genome:  /mnt/volume_nyc1_1793485122853/doppel/paper/%i/genome.json  (copy of the sealed genome)
-#   journal: /mnt/volume_nyc1_1793485122853/doppel/paper/%i/              (journal.jsonl, checkpoints/)
+#   journal: /mnt/volume_nyc1_1793485122853/doppel/paper/%i/              (journal-*.jsonl, checkpoints/)
 #   halt:    touch .../paper/%i/KILL (this genome) or .../paper/KILL (every paper run)
-# First start needs --from-now once (a new journal); later starts resume the journal. Use
-#   systemctl edit doppel-paper@NAME  to add --from-now for the very first start only.
+# --opening must be the genome's bound protocol rule (the runtime checks registry/genomes.jsonl and
+# refuses otherwise): received_raw for H1-H4. First start needs --from-now once (a new journal):
+#   systemctl edit doppel-paper@NAME   (add --from-now for the very first start only)
+# PERELMAN's directory is 0700 under /var/lib/private: check on Apex that User=doppel can read the
+# bind-mounted copy (or grant a read-only ACL) before installing.
 [Unit]
 Description=DOPPEL paper runtime (genome %i) on the live tape, no orders
 After=doppel-tape.service
@@ -16,13 +20,17 @@ Type=simple
 User=doppel
 WorkingDirectory=/opt/doppel
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/doppel/.venv/bin/python -m doppel.paper run \
+ExecStart=/opt/doppel/.venv/bin/doppel-paper run \
   --genome /mnt/volume_nyc1_1793485122853/doppel/paper/%i/genome.json \
   --data /mnt/volume_nyc1_1793485122853/doppel/tape \
   --journal /mnt/volume_nyc1_1793485122853/doppel/paper/%i \
+  --opening received_raw \
+  --registry /opt/doppel \
+  --perelman /run/doppel-paper-perelman \
   --kill-file /mnt/volume_nyc1_1793485122853/doppel/paper/%i/KILL \
   --kill-file /mnt/volume_nyc1_1793485122853/doppel/paper/KILL
-# An invalid genome (2) or a journal that fails recovery (3) must not restart-loop.
+# An invalid or unbound-mismatched genome (2), a journal that fails recovery, or a tape failure (3)
+# must not restart-loop. A halted run with every window settled exits 0 and stays down.
 Restart=on-failure
 RestartPreventExitStatus=2 3
 RestartSec=10
@@ -32,11 +40,26 @@ MemoryMax=1G
 Nice=10
 NoNewPrivileges=true
 PrivateNetwork=true
-RestrictAddressFamilies=AF_UNIX
+RestrictAddressFamilies=none
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+InaccessiblePaths=-/etc/edge-engine -/etc/atlas -/etc/doppel -/etc/credstore.encrypted
 ReadOnlyPaths=/mnt/volume_nyc1_1793485122853/doppel/tape
+BindReadOnlyPaths=/var/lib/private/perelman/stream:/run/doppel-paper-perelman
 ReadWritePaths=/mnt/volume_nyc1_1793485122853/doppel/paper/%i
 
 [Install]

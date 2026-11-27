@@ -64,8 +64,9 @@ class PaperSim(WindowSim):
     def __init__(self, g: Genome, wt: WindowTape, ref: WindowRef, cfg: SimConfig = SimConfig(),
                  features: Features | None = None, can_open: Callable[[int], bool] | None = None,
                  stood_down: bool = False, emit: Emit | None = None,
-                 stand_down_fn: Callable[[], bool] | None = None):
+                 stand_down_fn: Callable[[], bool] | None = None, max_book_age_ns: int | None = None):
         super().__init__(g, wt, ref, cfg, features=features, can_open=can_open, stood_down=stood_down)
+        self.max_book_age_ns = max_book_age_ns
         self.feats = _Spy(self.feats)   # type: ignore[assignment]
         self.emit: Emit = emit or (lambda r: None)
         self.slug = wt.slug
@@ -74,13 +75,31 @@ class PaperSim(WindowSim):
         self.halted: str | None = None
         self._why: str | None = None
         self._intents = 0
-        self._oid: dict[int, str] = {}
         self._cur_oid: str | None = None
+        self.stale_book_s = 0
 
     def rec(self, k: str, t: int, **kw) -> None:
         self.emit({"k": k, "slug": self.slug, "t": t, **kw})
         if k == "intent":
             self._intents += 1
+
+    def valid_book(self, t_ns: int):
+        """The engine's rule, plus (paper only, ``max_book_age_ns``) no book older than the bound: a WS
+        feed that stopped sending snapshots must not be quoted against."""
+        b = super().valid_book(t_ns)
+        if b is not None and self.max_book_age_ns is not None and t_ns - b.tw > self.max_book_age_ns:
+            return None
+        return b
+
+    def state_hash(self) -> str:
+        """The engine state a decision starts from (own inventory, cash, live and pending quotes, taker
+        bookkeeping): with the feature vector, the full input of the decision."""
+        live = {s: None if q is None else [q.price, round(q.remaining, 6), q.live_ns, q.decided_ns]
+                for s, q in self.live.items()}
+        pend = {s: [v, None if q is None else [q.price, q.size, q.decided_ns]] for s, (v, q) in self.pending.items()}
+        st = [round(self.inv, 6), round(self.cash, 6), round(self.fees, 6), round(self.notional, 6), live, pend,
+              self.entries, self.last_attempt, self.inflight, self.flatten_inflight, self.flattening, self.stood_down]
+        return hashlib.sha256(orjson.dumps(st, option=orjson.OPT_SORT_KEYS)).hexdigest()[:16]
 
     # ------------------------------------------------------------------ decisions
     def _on_decide(self, d: int) -> None:
@@ -95,6 +114,17 @@ class PaperSim(WindowSim):
             return
         before = {(a, b): self.st.taker[b] if a == "taker" else self.st.maker[b] for a, b in SKIP_KEYS}
         n0 = self._intents
+        sh = self.state_hash()
+        if self.max_book_age_ns is not None and super().valid_book(t) is not None and self.valid_book(t) is None:
+            # the WS book stopped updating: pull every quote and do not decide (paper-only rule)
+            self.stale_book_s += 1
+            self._why = "stale_book"
+            for side in ("bid", "ask"):
+                if self._working(side) is not None:
+                    self._schedule_quote(side, None, t)
+            self._why = None
+            self.rec("decide", t, d=d, sh=sh, inv=self.inv, skips=["stale_book"])
+            return
         self.feats.last = None   # type: ignore[attr-defined]
         super()._on_decide(d)
         x = self.feats.last      # type: ignore[attr-defined]
@@ -103,7 +133,7 @@ class PaperSim(WindowSim):
         skips = [b.removesuffix("_s") for (a, b), v in before.items()
                  if (self.st.taker[b] if a == "taker" else self.st.maker[b]) > v]
         cx = _clean(x)
-        r = {"d": d, "xh": xhash(cx), "inv": self.inv}
+        r = {"d": d, "xh": xhash(cx), "sh": sh, "inv": self.inv}
         if skips or self._intents > n0:
             r["x"] = cx
             if skips:
@@ -135,7 +165,7 @@ class PaperSim(WindowSim):
                      why=self.halted or self._why or ("flatten" if self.flattening else "cancel"))
             return
         oid = f"{self.slug}:{side}:{ver}"
-        self._oid[id(q)] = oid
+        setattr(q, "paper_oid", oid)     # on the quote itself, so it survives a checkpoint
         self.rec("intent", t, kind=kind, side=side, ver=ver, oid=oid, px=q.price, size=q.size,
                  ref_c=None if q.ref_c != q.ref_c else q.ref_c, why="quote")
 
@@ -189,7 +219,7 @@ class PaperSim(WindowSim):
         self.rec("ack", t, oid=f"{self.slug}:take:{o.decided_ns}:{o.rule}", status=status)
 
     def _maker_fill(self, t: int, q, f: float, via: str, ref_qty: float) -> None:
-        self._cur_oid = self._oid.get(id(q))
+        self._cur_oid = getattr(q, "paper_oid", None)
         super()._maker_fill(t, q, f, via, ref_qty)
         self._cur_oid = None
 

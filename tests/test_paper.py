@@ -26,6 +26,7 @@ from doppel.twin.engine import SimConfig, run_windows
 from doppel.twin.features import RefStore
 from doppel.twin.tape import NS, iter_windows
 
+REPO = Path(__file__).resolve().parents[1]
 T0 = 1795046400
 S = T0 + 3600            # first window starts on an hour boundary; the tail starts in the hour before
 MS = 1_000_000
@@ -168,10 +169,10 @@ def twin_records(data, g, t_from, t_to, cfg=SimConfig()):
 def test_journal_chain_detects_tampering(tmp_path):
     j = Journal(tmp_path)
     j.open()
-    j.append([{"k": "run", "t": 0}])
-    j.append([{"k": "fill", "t": 1, "qty": 10.0}, {"k": "cycle", "t": 1}])
+    j.append([{"k": "run", "t": 0}], t_ns=0)
+    j.append([{"k": "fill", "t": 1, "qty": 10.0}, {"k": "cycle", "t": 1}], t_ns=1)
     assert len(journal.load(tmp_path)) == 3
-    p = tmp_path / journal.FILE
+    p = journal.files(tmp_path)[0]
     good = p.read_bytes()
     p.write_bytes(good.replace(b'"qty":10.0', b'"qty":11.0'))
     with pytest.raises(JournalError, match="line 1"):
@@ -189,11 +190,12 @@ def test_journal_chain_detects_tampering(tmp_path):
 def test_journal_cuts_uncommitted_tail_with_a_trace(tmp_path):
     j = Journal(tmp_path)
     j.open()
-    j.append([{"k": "run", "t": 0}, {"k": "cycle", "t": 0}])
-    j.append([{"k": "fill", "t": 1}])                       # batch without its commit record
-    with open(tmp_path / journal.FILE, "ab") as fh:
+    j.append([{"k": "run", "t": 0}, {"k": "cycle", "t": 0}], t_ns=0)
+    j.append([{"k": "fill", "t": 1}], t_ns=1)              # batch without its commit record
+    with open(journal.files(tmp_path)[0], "ab") as fh:
         fh.write(b'{"k":"fil')                               # torn write
-    recs = Journal(tmp_path).open()
+    Journal(tmp_path).open()
+    recs = journal.load(tmp_path)
     assert [r["k"] for r in recs] == ["run", "cycle", "recovery"]
     assert recs[-1]["dropped_lines"] == 1 and recs[-1]["torn_bytes"] == 9
     assert len(journal.load(tmp_path)) == 3
@@ -264,7 +266,7 @@ def test_decisions_use_only_data_received_by_decision_time(tmp_path):
         pass
     tape.close()
     sim = rt.st.windows[pmus_slug("btc", "5m", S)].sim
-    ds = [r["d"] for r in kinds(rt.journal.records, "decide")]
+    ds = [r["d"] for r in kinds(journal.load(rt.journal.dir), "decide")]
     assert max(ds) == J
     assert sim.feats.last["mid_up_c"] == pytest.approx(50.0)     # the vector decision J used
     assert sim.feats.last["tau_s"] == 100
@@ -286,16 +288,16 @@ def test_late_record_is_journaled_never_used_retroactively(tmp_path):
     tape.until(clock.t)
     while rt.cycle() < clock.t:
         pass
-    n_dec = len(kinds(rt.journal.records, "decide"))
+    n_dec = len(kinds(journal.load(rt.journal.dir), "decide"))
     tape.w["pmus_ws_5m"].append(orjson.dumps(_md(pmus_slug("btc", "5m", S), 0.10, 0.90, 0.0)).decode(),
                                 tw=(S + 30) * NS + 1)
     tape.until((S + 61) * NS)
     clock.t = (S + 61) * NS
     rt.cycle()
     tape.close()
-    late = kinds(rt.journal.records, "late")
+    late = kinds(journal.load(rt.journal.dir), "late")
     assert len(late) == 1 and late[0]["tw"] == (S + 30) * NS + 1 and late[0]["t"] > (S + 60) * NS
-    old = [r for r in kinds(rt.journal.records, "decide") if r["d"] <= S + 60]
+    old = [r for r in kinds(journal.load(rt.journal.dir), "decide") if r["d"] <= S + 60]
     assert len(old) == n_dec              # nothing re-decided
 
 
@@ -333,7 +335,7 @@ def test_kill_switch_halts_within_one_cycle(tmp_path):
         clock.t = t * NS
         tape.until(clock.t)
         rt.cycle()
-    assert kinds(rt.journal.records, "intent")
+    assert kinds(journal.load(rt.journal.dir), "intent")
     (jdir / "KILL").touch()
     kill_cursor = rt.st.cursor
     for t in range(S + 125, S + 700, 5):
@@ -341,14 +343,14 @@ def test_kill_switch_halts_within_one_cycle(tmp_path):
         tape.until(clock.t)
         rt.cycle()
     tape.close()
-    recs = rt.journal.records
+    recs = journal.load(rt.journal.dir)
     halt = kinds(recs, "risk")[0]
     assert halt["event"] == "halt_all" and halt["why"] == "kill_switch" and halt["t"] == kill_cursor + 1
     later = [r for r in kinds(recs, "intent") if r["t"] >= halt["t"]]
     assert later and all(r["kind"] == "cancel" and r["why"] == "kill_switch" for r in later)
     w = pmus_slug("btc", "5m", S)
     assert open_orders(recs, w) == {}
-    assert all(r.get("why") == ["kill_switch"] for r in kinds(recs, "skip", pmus_slug("btc", "5m", S + 300)))
+    assert not kinds(recs, "open", pmus_slug("btc", "5m", S + 300))      # a halted run opens no window
 
 
 def test_max_loss_stop_halts_everything(tmp_path):
@@ -356,8 +358,11 @@ def test_max_loss_stop_halts_everything(tmp_path):
     _, jdir = run_paper(tmp_path, g, market(2), settings=Settings(grace_s=0.0, max_loss_usd=0.5))
     recs = journal.load(jdir)
     ev = [r for r in kinds(recs, "risk") if r["event"] == "max_loss"]
-    assert ev and ev[0]["worst_case_net_usd"] <= -0.5
+    assert ev and ev[0]["day_worst_case_net_usd"] <= -0.5
     t = ev[0]["t"]
+    # resting quotes count at their worst: the stop fires on the first live quote, before any fill
+    first_live = min(r["t"] for r in kinds(recs, "ack") if r["status"] == "live")
+    assert t < first_live + 10 * NS and not [r for r in kinds(recs, "fill") if r["t"] < t]
     assert not [r for r in kinds(recs, "intent") if r["t"] > t and r["kind"] != "cancel"]
 
 
@@ -387,7 +392,7 @@ def test_restart_recovers_and_continues(tmp_path, ckpt):
     # second life: same journal, recovered from it, then the rest of the tape
     rt2 = PaperRuntime(g, data, jdir, SimConfig(), st, clock=clock)
     rt2.start(None)
-    resume = kinds(rt2.journal.records, "resume")
+    resume = kinds(journal.load(jdir), "resume")
     assert resume and pmus_slug("btc", "5m", S + 300) in resume[0]["open_windows"]
     assert rt2.st.windows[pmus_slug("btc", "5m", S + 300)].sim.inv == inv_before
     end = recs[-1][1] // NS + 1
@@ -507,6 +512,7 @@ def test_cli_run_until_then_resume(tmp_path):
     gp.write_bytes(orjson.dumps(to_dict(g)))
     jdir = tmp_path / "j"
     base = ["run", "--genome", str(gp), "--data", str(data), "--journal", str(jdir), "--grace-s", "0",
+            "--opening", "published", "--registry", str(REPO),
             "--poll-s", "0"]
     assert paper_main(base + ["--from", str(S), "--until", str(S + 400)]) == 0
     recs = journal.load(jdir)
