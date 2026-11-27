@@ -122,6 +122,7 @@ def signed_sources(folder, layer1, layer2, inspection):
             raise ValueError("duplicate Layer 2 signed-order row")
         inspected[key] = row
     economic = {}
+    conditions = {}
     source_receipts = {}
     exclusions = set()
     for tag, wallet in WALLETS.items():
@@ -152,8 +153,10 @@ def signed_sources(folder, layer1, layer2, inspection):
             idx = tmap[f["token_id"]]["idx"]
             info = tmap[f["token_id"]]
             economic_token = from_ledger[f["token_id"]]
-            if (idx not in (0, 1) or info["condition"].lower().removeprefix("0x") !=
-                    economic_token["condition"].lower().removeprefix("0x")):
+            condition = info["condition"].lower().removeprefix("0x")
+            if (idx not in (0, 1) or economic_token["idx"] != idx or
+                    condition != economic_token["condition"].lower().removeprefix("0x") or
+                    conditions.setdefault(info["slug"], condition) != condition):
                 raise ValueError("fill-token market differs from the economic ledger")
             oid = f["order_id"].lower().removeprefix("0x")
             tx = f["transaction_hash"].lower()
@@ -165,7 +168,7 @@ def signed_sources(folder, layer1, layer2, inspection):
                 if not any(s["tx"] == tx and s["block_ts"] == t and s["role"] == "maker" for s in order["fills"]):
                     raise ValueError("maker transaction absent from reconciled signed order")
             fills.append({"tx": tx, "token": f["token_id"], "slug": info["slug"], "idx": idx, "side": f["side"],
-                          "block_ts": t, "role": f["order_type"], "id": oid})
+                          "block_ts": t, "role": f["order_type"], "id": oid, "mate": owner.pairs[f["token_id"]]})
             exclusions.add(tx)
         if len(fills) != owner.receipt["bound_source_fills"] or len(fills) != record["goldsky_fills"]:
             raise ValueError("re-read fill denominator mismatch")
@@ -183,11 +186,15 @@ def signed_sources(folder, layer1, layer2, inspection):
 
 def wallet_targets(public, wallet, fills, inspected):
     """Score first observed executions as an economic target. A missing execution censors potential negatives."""
+    from doppel.lab.rivals import public_reason
+
     markets = [intl_slug("btc", "5m", w) for w in range(public["start"], public["end"], MARKET_S)]
     by_market = {slug: {"fills_whole_reconciled_day": 0, "fills_in_market_by_block_clock": 0,
                         "maker_fills_whole_reconciled_day": 0, "maker_orders": set(), "down_buy_maker_orders": set(),
                         "located_qualifying_first_executions": 0, "unlocated_qualifying_first_executions": 0,
-                        "positive_cells": 0, "observable_negative_cells": 0, "missing_execution_target_cells": 0}
+                        "positive_cells": 0, "observable_negative_cells": 0, "missing_execution_target_cells": 0,
+                        "unobservable_book_cells": 0, "negative_censored_by_unlocated_order": 0,
+                        "first_positive_example": None}
                  for slug in markets}
     matched_orders = {}
     for f in fills:
@@ -215,7 +222,7 @@ def wallet_targets(public, wallet, fills, inspected):
             tw = row["anchor"]["tw_ns"]
             if type(tw) is not int or tw <= 0:
                 raise ValueError("invalid Layer 2 execution receipt")
-            located[key].append(tw)
+            located[key].append((tw, oid))
             by_market[slug]["located_qualifying_first_executions"] += 1
         else:
             missing.add(key)
@@ -225,12 +232,24 @@ def wallet_targets(public, wallet, fills, inspected):
         t = c["cutoff_s"]
         slug = intl_slug("btc", "5m", t - t % MARKET_S)
         value = None
-        if c["capture"] == "covered" and c["book"] is not None:
+        if c["capture"] == "covered" and public_reason(c["book"], t, DEPTH_AGE_NS // NS) is None:
             key = slug, px(c["book"]["bid"])
-            if any(t * NS <= tw < (t + GRID_S) * NS for tw in located[key]):
+            active = sorted((tw, oid) for tw, oid in located[key] if t * NS <= tw < (t + GRID_S) * NS)
+            if active:
                 value = True
+                if by_market[slug]["first_positive_example"] is None:
+                    tw, oid = active[0]
+                    ir = inspected[wallet, oid]
+                    by_market[slug]["first_positive_example"] = {
+                        "cutoff_s": t, "order_id": oid, "signed_limit": ir["price"],
+                        "signed_shares": ir["size"], "first_tx": ir["first_observed_tx"],
+                        "first_receipt_tw_ns": tw, "native_seq": ir["anchor"]["seq"]}
             elif key not in missing:
                 value = False
+            else:
+                by_market[slug]["negative_censored_by_unlocated_order"] += 1
+        else:
+            by_market[slug]["unobservable_book_cells"] += 1
         labels.append({"cutoff_s": t, "action": None, "execution": value})
         count_key = ("missing_execution_target_cells" if value is None else "positive_cells" if value else
                      "observable_negative_cells")
@@ -282,7 +301,12 @@ def main():
     economic, sources, _, inspected = signed_sources(layer1_root, layer1, layer2,
         args.archive / "research/wallet-inspection.jOPOHm/qualified-day")
     subjects, diagnostics = {}, {}
+    witnessed_tokens = {info["slug"]: token for token, info in receipt["holdout_down_witnesses"].values()}
     for wallet, fills in economic.items():
+        for f in fills:
+            witnessed = witnessed_tokens.get(f["slug"])
+            if witnessed is not None and (f["token"] if f["idx"] == 1 else f["mate"]) != witnessed:
+                raise ValueError("independent Down identity differs from reconciled economic market")
         subjects[wallet], diagnostics[wallet] = wallet_targets(public, wallet, fills, inspected)
     write_json(out/"labels.json", {"schema": "rival-labels/1", "scope": "real", "start": START, "end": END,
                                   "public_sha256": sha, "predictions_sha256": digest(args.predictions), "subjects": subjects})

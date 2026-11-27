@@ -17,7 +17,8 @@ def test_real_execution_target_is_first_signed_receipt_with_unknowns_and_complet
     cells = [{
         "cutoff_s": start + t,
         "capture": "gap" if t == 50 else "covered",
-        "book": None if t == 60 else {"bid": .07 if t <= 30 else .08}
+        "book": None if t == 60 else {"bid": .07 if t <= 30 else .08, "ask": .09,
+            "depth_tw_ns": (start+t)*study.NS-1, "identity_tw_ns":start*study.NS-1, "bid_shares":60.}
     } for t in range(0, 600, 10)]
     public = {"start": start, "end": start+600, "cells": cells}
     wallet = study.CANDIDATE
@@ -28,7 +29,8 @@ def test_real_execution_target_is_first_signed_receipt_with_unknowns_and_complet
              f | {"side": "SELL", "id": "sell"}]
     # The two observed fills in one signed order supply one first execution target.
     # Its cutoff boundary is included; a print at that same time was outside the prior cell.
-    observed = {"price": .07, "anchor_status": "located", "anchor": {"tw_ns": (start+10)*study.NS},
+    observed = {"price": .07, "size": 2., "first_observed_tx":"one", "anchor_status": "located",
+                "anchor": {"tw_ns": (start+10)*study.NS, "seq":33},
                 "placement_identity": "unknown"}
     inspected = {(wallet, "first"): observed, (wallet, "ambiguous"): observed | {"anchor_status": "missing_print"}}
     labels, counts = study.wallet_targets(public, wallet, fills, inspected)
@@ -39,5 +41,7 @@ def test_real_execution_target_is_first_signed_receipt_with_unknowns_and_complet
     assert counts[slug]["fills_in_market_by_block_clock"] == 0
     assert counts[slug]["maker_orders"] == 4 and counts[slug]["down_buy_maker_orders"] == 2
     assert counts[slug]["located_qualifying_first_executions"] == counts[slug]["positive_cells"] == 1
+    assert counts[slug]["first_positive_example"]["first_tx"] == "one"
+    assert counts[slug]["negative_censored_by_unlocated_order"] == 3 and counts[slug]["unobservable_book_cells"] == 2
     assert counts[later_slug]["fills_whole_reconciled_day"] == 0
     assert counts[later_slug]["observable_negative_cells"] == 30

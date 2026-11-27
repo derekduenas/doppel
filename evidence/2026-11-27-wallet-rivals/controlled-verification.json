@@ -1,0 +1,179 @@
+{
+  "forecast_seal_revision": "3d109e6",
+  "splits": {
+    "dev": {
+      "byte_identical_artifacts_sha256": {
+        "journal": "4abc486ee95ba9ef7cf6cd02a3bf049a9666d943c6676ca1d20641d436dd4923",
+        "labels": "c6cb3d0843308fccb52301f6b32e4590c272685dce09bfe3c6e60178a7c3a86a",
+        "predictions": "7e4bebdcacf0b45a110b0a9487c0e948064d563d1b65a157193930ed6902a0cf",
+        "public": "8dd6d99c3b005e0cabd2a58b6d4ab26b4e310230e9a437f65fe30935c81ae7d5",
+        "scores": "8534a956da5b4fc2c352bd19e9981d529a8f89c7cc5317e43a0d676f8a83a653"
+      },
+      "subjects": {
+        "sim-a": {
+          "counts": {
+            "disagreements": 84,
+            "positive": 168,
+            "public_eligible": 168,
+            "public_excluded": 12,
+            "scheduled": 180,
+            "scored": 168,
+            "unknown_target": 0
+          },
+          "mean_disagreement_difference_touch_minus_queue": 1.0,
+          "mean_market_accuracy": {
+            "never_bid": 0.0,
+            "queue_at_most": 0.5,
+            "touch": 1.0
+          },
+          "sign_test_two_sided_p": 0.03125,
+          "verdict": "development_only",
+          "votes": {
+            "queue_at_most": 0,
+            "ties": 0,
+            "touch": 6
+          },
+          "winner": null
+        },
+        "sim-b": {
+          "counts": {
+            "disagreements": 84,
+            "positive": 84,
+            "public_eligible": 168,
+            "public_excluded": 12,
+            "scheduled": 180,
+            "scored": 168,
+            "unknown_target": 0
+          },
+          "mean_disagreement_difference_touch_minus_queue": -1.0,
+          "mean_market_accuracy": {
+            "never_bid": 0.5,
+            "queue_at_most": 1.0,
+            "touch": 0.5
+          },
+          "sign_test_two_sided_p": 0.03125,
+          "verdict": "development_only",
+          "votes": {
+            "queue_at_most": 6,
+            "ties": 0,
+            "touch": 0
+          },
+          "winner": null
+        },
+        "sim-c": {
+          "counts": {
+            "disagreements": 84,
+            "positive": 85,
+            "public_eligible": 168,
+            "public_excluded": 12,
+            "scheduled": 180,
+            "scored": 168,
+            "unknown_target": 0
+          },
+          "mean_disagreement_difference_touch_minus_queue": 0.047619047619047616,
+          "mean_market_accuracy": {
+            "never_bid": 0.49404761904761907,
+            "queue_at_most": 0.48214285714285715,
+            "touch": 0.5059523809523809
+          },
+          "sign_test_two_sided_p": 0.625,
+          "verdict": "development_only",
+          "votes": {
+            "queue_at_most": 1,
+            "ties": 2,
+            "touch": 3
+          },
+          "winner": null
+        }
+      },
+      "verified_owner_decisions": 540
+    },
+    "eval": {
+      "byte_identical_artifacts_sha256": {
+        "journal": "9819278a734b8cb09086ff321d03e26f9d1a1923d02ef6509874c7787543c550",
+        "labels": "ce3c0fd0f695ff50c967a4e12da07340bb8e86daa398ec7d9c3558c61b83d5cc",
+        "predictions": "b8a6c3a39fc1e5c56d39094fa915afb6b19133c01b478982825a1a15020500ad",
+        "public": "641461b602cbdeb84577bd3f146c7f3716f5ed23dd829bf22b92acacf0f73998",
+        "scores": "8f20ed8a46d3679bba7305aaea5eaa142a1b8dd3ef147b41793584ac96ed9f37"
+      },
+      "subjects": {
+        "sim-a": {
+          "counts": {
+            "disagreements": 168,
+            "positive": 336,
+            "public_eligible": 336,
+            "public_excluded": 24,
+            "scheduled": 360,
+            "scored": 336,
+            "unknown_target": 0
+          },
+          "mean_disagreement_difference_touch_minus_queue": 1.0,
+          "mean_market_accuracy": {
+            "never_bid": 0.0,
+            "queue_at_most": 0.5,
+            "touch": 1.0
+          },
+          "sign_test_two_sided_p": 0.00048828125,
+          "verdict": "recovered_among_registered_rivals",
+          "votes": {
+            "queue_at_most": 0,
+            "ties": 0,
+            "touch": 12
+          },
+          "winner": "touch"
+        },
+        "sim-b": {
+          "counts": {
+            "disagreements": 168,
+            "positive": 168,
+            "public_eligible": 336,
+            "public_excluded": 24,
+            "scheduled": 360,
+            "scored": 336,
+            "unknown_target": 0
+          },
+          "mean_disagreement_difference_touch_minus_queue": -1.0,
+          "mean_market_accuracy": {
+            "never_bid": 0.5,
+            "queue_at_most": 1.0,
+            "touch": 0.5
+          },
+          "sign_test_two_sided_p": 0.00048828125,
+          "verdict": "recovered_among_registered_rivals",
+          "votes": {
+            "queue_at_most": 12,
+            "ties": 0,
+            "touch": 0
+          },
+          "winner": "queue_at_most"
+        },
+        "sim-c": {
+          "counts": {
+            "disagreements": 168,
+            "positive": 173,
+            "public_eligible": 336,
+            "public_excluded": 24,
+            "scheduled": 360,
+            "scored": 336,
+            "unknown_target": 0
+          },
+          "mean_disagreement_difference_touch_minus_queue": -0.011904761904761904,
+          "mean_market_accuracy": {
+            "never_bid": 0.4851190476190476,
+            "queue_at_most": 0.5208333333333334,
+            "touch": 0.5148809523809523
+          },
+          "sign_test_two_sided_p": 1.0,
+          "verdict": "abstain",
+          "votes": {
+            "queue_at_most": 4,
+            "ties": 3,
+            "touch": 5
+          },
+          "winner": null
+        }
+      },
+      "verified_owner_decisions": 1080
+    }
+  }
+}

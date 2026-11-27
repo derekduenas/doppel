@@ -31,6 +31,16 @@ def registered(plan, panel):
             or plan["rivals"] != list(RULES[:2]) or plan["baseline"] != RULES[2]
             or (plan["asset"], plan["outcome"], plan["market_s"], plan["grid_s"]) != ("btc","Down",300,10)):
         raise ValueError("unexpected registration or public grid")
+    integer_gates = ("depth_max_age_s", "min_scored_cells_per_market", "min_disagreement_cells_per_market",
+                     "min_informative_markets")
+    if any(type(plan[k]) is not int or plan[k] <= 0 for k in integer_gates):
+        raise ValueError("registered age and sample gates must be positive integers")
+    for key in ("mean_disagreement_advantage_min", "mean_accuracy_min", "advantage_over_never_min", "two_sided_sign_p_max"):
+        if type(plan[key]) not in (int, float) or not 0 < plan[key] <= 1:
+            raise ValueError(f"invalid registered probability or advantage: {key}")
+    for key in ("proposed_shares", "queue_at_most_shares"):
+        if type(plan[key]) not in (int, float) or not math.isfinite(plan[key]) or plan[key] <= 0:
+            raise ValueError(f"invalid share quantity: {key}")
     match = [(key, split) for key, split in plan["splits"].items()
              if all(split[k] == panel[k] for k in ("start", "end", "scope"))]
     if len(match) != 1:
@@ -144,11 +154,16 @@ def evaluate(pred, labels, target, policy):
     delta = mean(diffs) if diffs else None
     acc = {k:mean(m["accuracy"][k] for m in informed) if informed else None for k in RULES}
     best = "touch" if delta is not None and delta > 0 else "queue_at_most" if delta is not None and delta < 0 else None
-    supported = (best is not None and wins+losses >= policy["min_informative_markets"]
-                 and p is not None and p <= policy["two_sided_sign_p_max"]
-                 and delta is not None and abs(delta) >= policy["mean_disagreement_advantage_min"]
-                 and acc[best] >= policy["mean_accuracy_min"]
-                 and acc[best] - acc["never_bid"] >= policy["advantage_over_never_min"])
+    supported = False
+    if best is not None and delta is not None and p is not None:
+        best_accuracy, silent_accuracy = acc[best], acc["never_bid"]
+        # The sign test must support the same side as the magnitude of the market-average effect.
+        same_direction = wins > losses if best == "touch" else losses > wins
+        supported = (same_direction and wins + losses >= policy["min_informative_markets"]
+                     and p <= policy["two_sided_sign_p_max"]
+                     and abs(delta) >= policy["mean_disagreement_advantage_min"]
+                     and best_accuracy is not None and best_accuracy >= policy["mean_accuracy_min"]
+                     and silent_accuracy is not None and best_accuracy - silent_accuracy >= policy["advantage_over_never_min"])
     winner = None
     if target == "execution":
         verdict = "execution_diagnostic_only"
