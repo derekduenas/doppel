@@ -139,7 +139,11 @@ a step is trusted only when every gate of that step and of the steps it reads fr
 Three conditions make a step untrusted for every wallet, whatever the gates say:
 
 - `ordertape:incomplete`: the last order tape call left transactions failed, missing, undecodable
-  or not attempted (for example it hit `--max-requests`). Chain fills are then missing.
+  or not attempted (for example it hit `--max-requests`), or any selected transaction has no
+  decoded rows on the tape. The second test is made on disk, not taken from the call's own
+  counts, so a tape with 1 of 35 selected transactions decoded can never read as complete
+  however well that one verifies. Chain fills are then missing; every run calls the order tape
+  again until it is complete.
 - `<step>:stale`: a kept output was made from other inputs or code than the current ones, or
   chunk outputs exist without their merge.
 - `<step>:mem_budget_stop`: the run stopped on `--mem-budget-mb`.
