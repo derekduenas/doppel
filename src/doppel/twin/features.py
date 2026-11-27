@@ -16,6 +16,7 @@ those features are NaN, NaN never satisfies a condition, and the engine never qu
 
 from __future__ import annotations
 
+from bisect import bisect_right
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,7 @@ from pathlib import Path
 import numpy as np
 import orjson
 
+from ..lab.brti_import import raw_observations
 from ..lab.fair import fair_up_raw
 from ..strategy.genome import FEATURES, Genome, fee_c
 from ..tape.segment import read_segment
@@ -44,6 +46,17 @@ class WindowRef:
     raw_t0: int = 0
     rcv: np.ndarray | None = None       # our receive time (unix s, float) of each raw second; NaN unknown
 
+    # None is an explicitly supplied static reference (e.g. a synthetic test).
+    # Tape-backed windows always carry a history, including an empty one.
+    ptb_history: tuple[tuple[int, float | None], ...] | None = None
+
+    def opening_at(self, receive_ns: int) -> tuple[int | None, float | None]:
+        """Latest opening value recorded by receive_ns, inclusive, and its receipt."""
+        if self.ptb_history is None:
+            return None, self.ptb
+        i = bisect_right(self.ptb_history, receive_ns, key=lambda x: x[0])
+        return self.ptb_history[i-1] if i else (None, None)
+
     @property
     def outcome(self) -> int | None:
         """1 = Up (YES pays $1), 0 = Down. Ties settle Up."""
@@ -59,17 +72,16 @@ class RefStore:
         self.root = Path(root)
         self.keep_hours = keep_hours
         self._brti: dict[int, dict[int, tuple[float, float]]] = {}
-        self._bounds: dict[str, dict[int, float]] = {}
+        self._bounds: dict[str, dict[int, tuple[tuple[int, float | None], ...]]] = {}
         self._bounds_range: dict[str, tuple[int, int]] = {}
 
     # -- published series ---------------------------------------------------------------------
     def load_boundaries(self, asset: str, lo: int, hi: int) -> None:
-        """Boundary values A(t) with t + 1 a multiple of 300, lo <= t <= hi. Later chunks override
-        earlier ones (same order as ``lab.refprice.load_series``)."""
+        """Load boundary revisions in receive order for decisions and final settlement labels."""
         key = f"crypto:{asset}"
-        out: dict[int, float] = {}
+        out: dict[int, dict[int, float | None]] = {}
         for f in sorted((self.root / "ref_prices").glob("*/*.dtape.zst")):
-            for rec in read_segment(f, verify=True):
+            for rec in read_segment(f, verify=True, strict=True):
                 m = rec.get("meta") or {}
                 if m.get("asset") != key or m.get("status") != 200:
                     continue
@@ -79,15 +91,24 @@ class RefStore:
                     for c in ser.get("candles") or []:
                         t = int(c["timestamp"])
                         if lo <= t <= hi and (t + 1) % BOUNDARY == 0:
-                            out[t] = float(c["close"])
-        self._bounds[asset] = out
+                            tw = rec["tw"]
+                            value = float(c["close"])
+                            if type(tw) is not int or tw < (t + 1) * NS or not math.isfinite(value) or value <= 0:
+                                continue
+                            history = out.setdefault(t, {})
+                            if tw not in history:
+                                history[tw] = value
+                            elif history[tw] != value:
+                                history[tw] = None
+        self._bounds[asset] = {t: tuple(sorted(versions.items())) for t, versions in out.items()}
         self._bounds_range[asset] = (lo, hi)
 
     def boundary(self, asset: str, t: int) -> float | None:
         r = self._bounds_range.get(asset)
         if r is None or not r[0] <= t <= r[1]:
             raise KeyError(f"boundaries for {asset} not loaded around {t}")
-        return self._bounds[asset].get(t)
+        revisions = self._bounds[asset].get(t)
+        return revisions[-1][1] if revisions else None
 
     # -- raw BRTI -----------------------------------------------------------------------------
     def _hour(self, hour: int) -> dict[int, tuple[float, float]]:
@@ -95,24 +116,11 @@ class RefStore:
         KNOWN (audit 2026-11-26: the 5 s live poller can deliver a second ~4 s after it prints)."""
         if hour in self._brti:
             return self._brti[hour]
-        out: dict[int, tuple[float, float]] = {}
-        p = hour_path(self.root, "ref_brti_raw", hour)
-        if p.exists():
-            for rec in read_segment(p, verify=True):
-                if rec["raw"]:
-                    d = orjson.loads(rec["raw"])
-                    s = int(d["t_ms"]) // 1000
-                    if hour <= s < hour + 3600:
-                        out[s] = (float(d["v"]), _recv_s(d.get("received"), int(d["t_ms"])))
-        for h in (hour, hour + 3600):     # live poller files are by receive hour (>= print hour)
-            p = hour_path(self.root, "ref_brti_live", h)
-            if not p.exists():
-                continue
-            for rec in read_segment(p, verify=True):
-                for t_ms, v in (rec.get("meta") or {}).get("new") or []:
-                    s = int(t_ms) // 1000
-                    if hour <= s < hour + 3600:
-                        out.setdefault(s, (float(v), rec["tw"] / 1e9))
+        source = hour_path(self.root, "ref_brti_raw", hour)
+        # Live files are indexed by capture hour; a poll can cross the publication-hour boundary.
+        live = [hour_path(self.root, "ref_brti_live", h) for h in (hour, hour+3600)]
+        out = raw_observations([source] if source.exists() else [], [p for p in live if p.exists()],
+                               hour, hour+3599)
         self._brti[hour] = out
         for h in [h for h in self._brti if h < hour - self.keep_hours * 3600]:
             del self._brti[h]
@@ -135,19 +143,12 @@ class RefStore:
 
     def window_ref(self, asset: str, start: int, end: int, vol_window_s: int) -> WindowRef:
         ref = WindowRef(asset=asset, start=start, end=end, ptb=self.boundary(asset, start - 1),
-                        settle=self.boundary(asset, end - 1))
+                        settle=self.boundary(asset, end - 1),
+                        ptb_history=self._bounds[asset].get(start - 1, ()))
         if asset == "btc":
             ref.raw_t0 = start - vol_window_s - RAW_PAD_S
             ref.raw, ref.rcv = self.brti_rcv(ref.raw_t0, end)
         return ref
-
-
-def _recv_s(received, t_ms: int) -> float:
-    """PERELMAN's ``received`` stamp in unix seconds (s or ms); publication + 1 s if absent."""
-    if received is None:
-        return t_ms / 1000.0 + 1.0
-    r = float(received)
-    return r / 1000.0 if r > 1e11 else r
 
 
 # ---------------------------------------------------------------------------- features
@@ -210,14 +211,15 @@ class Features:
 
     def fair(self, d: int) -> float:
         r = self.ref
-        if r.raw is None or r.ptb is None:
+        _, opening = r.opening_at(d * NS)
+        if r.raw is None or opening is None:
             return NAN
         de = d - self.cfg.brti_delay_s
         if de - self.vol_window < r.raw_t0:
             return NAN
         known = self._raw_known(d)
         assert known is not None
-        p = fair_up_raw(known, r.raw_t0, r.ptb, de, r.end, self.cfg.fair_lag_s, self.vol_window)
+        p = fair_up_raw(known, r.raw_t0, opening, de, r.end, self.cfg.fair_lag_s, self.vol_window)
         return NAN if p is None else float(p)
 
     def at(self, d: int, book: Book | None, inventory_up: float) -> dict[str, float]:
@@ -235,10 +237,11 @@ class Features:
         now = self.brti_at(de, known)
         for k, name in ((1, "brti_move_1s"), (5, "brti_move_5s"), (30, "brti_move_30s")):
             x[name] = now - self.brti_at(de - k, known)
-        if known is not None and r.ptb is not None:
+        _, opening = r.opening_at(d * NS)
+        if known is not None and opening is not None:
             proj = projected_settlement(known, r.raw_t0, de, r.end, self.cfg.fair_lag_s)
             if proj is not None:
-                x["dist_to_open_usd"] = proj - r.ptb
+                x["dist_to_open_usd"] = proj - opening
         if book is not None and book.open:
             bb, ba = book.best_bid, book.best_ask
             if ba is not None:

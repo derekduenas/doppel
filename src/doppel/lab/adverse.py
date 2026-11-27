@@ -37,6 +37,9 @@ TTE_BUCKETS = ((0, 30), (30, 60), (60, 120), (120, 240), (240, 900))
 EDGE_BUCKETS = ((-100, -5), (-5, -2), (-2, 0), (0, 2), (2, 5), (5, 100))
 
 
+EVIDENCE_SCOPE = 'Retrospective reference study. The published opening index level has no decision-time receipt gate.'
+
+
 def _ts(s: str) -> float:
     base, _, frac = s.rstrip("Z").partition(".")
     return datetime.fromisoformat(base + "+00:00").timestamp() + (float("0." + frac) if frac else 0.0)
@@ -111,7 +114,7 @@ def study(root: Path, hz: str = "5m") -> dict:
                 "maker_pnl_c": round(100 * c["pnl"] / c["q"], 3),
                 "model_edge_c": round(100 * c["edge"] / c["q"], 3),
                 "adverse_c": round(100 * (c["pnl"] - c["edge"]) / c["q"], 3)}
-    out = {"hz": hz, "built_tw": time.time_ns(), "total": fmt(total), "skipped": dict(skipped),
+    out = {"hz": hz, "built_tw": time.time_ns(), "evidence_scope": EVIDENCE_SCOPE, "total": fmt(total), "skipped": dict(skipped),
            "by_tte": {f"{a}-{b}s": fmt(cells[((a, b), "all")]) for a, b in TTE_BUCKETS},
            "by_model_edge": {f"{a}..{b}c": fmt(cells[("all", (a, b))]) for a, b in EDGE_BUCKETS},
            "grid": {f"{tb[0]}-{tb[1]}s|{eb[0]}..{eb[1]}c": fmt(v) for (tb, eb), v in cells.items()
@@ -129,6 +132,7 @@ def main(argv=None) -> int:
     if a.out:
         a.out.parent.mkdir(parents=True, exist_ok=True)
         a.out.write_bytes(orjson.dumps(res, option=orjson.OPT_INDENT_2))
+    print(EVIDENCE_SCOPE)
     print("total", res["total"], "skipped", res["skipped"])
     for k in ("by_tte", "by_model_edge"):
         print(k)

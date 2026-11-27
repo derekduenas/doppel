@@ -3,7 +3,7 @@
 Joins the wallet's Goldsky fills (fill store) with our intl CLOB tape (``clob_{asset}_{hz}``),
 raw 1 Hz BRTI and the PM US settlement series, then summarises mechanism, edge, order lifecycle,
 inventory policy, counterparties, and a first policy inversion (can a small model say WHEN the
-wallet takes, from data it had at that second?).
+wallet takes, conditional on historical observations and reconstructed state?).
 
 Clocks and look-ahead (read this before trusting any number)
 -------------------------------------------------------------
@@ -16,7 +16,7 @@ Clocks and look-ahead (read this before trusting any number)
   PRE-TRADE input (book, fair, inventory, panel label second) uses ``t_dec = t - BLOCK_SLACK_S``.
   Print-time fills use ``t_dec = t``.
 * fair_v1 (BTC only) is evaluated at second ``floor(t_dec) - 1`` with priceToBeat = A(start-1) from
-  the published series; before the window opens priceToBeat is unknown, so fair is null.
+  the final published series. The raw and opening-price receipt clocks are outside this diagnostic.
 * Everything labelled markout / settlement / luck is an OUTCOME, computed with future data on
   purpose. It is never a feature.
 
@@ -60,6 +60,9 @@ ASSETS = ("btc", "eth", "sol", "xrp")
 HZS = ("5m", "15m")
 STREAMS = tuple(f"clob_{a}_{h}" for a in ASSETS for h in HZS)
 NS = 1_000_000_000
+EVIDENCE_SCOPE = "Retrospective wallet diagnostic. This study uses final reference history, exchange or estimated block fill times and reconstructed inventory. It does not establish the wallet's decision-time inputs."
+
+
 MAX_AGE_S = 3.0
 BLOCK_SLACK_S = 2  # a block_s fill traded up to ~2 s before its block timestamp
 MARKOUTS = (1, 5, 30, 60)
@@ -775,7 +778,7 @@ def dossier(wallet: str, rows: list[dict], tmap: TokenMap, idx: BookIndex, brti:
     fills, skip = enrich(rows, tmap, idx, brti)
     inv, wins = inventory(fills)
     osum, orecs = orders(fills)
-    doc: dict = {"wallet": wallet, "built_tw": time.time_ns(),
+    doc: dict = {"evidence_scope": EVIDENCE_SCOPE, "wallet": wallet, "built_tw": time.time_ns(),
                  "params": {"max_age_s": MAX_AGE_S, "block_slack_s": BLOCK_SLACK_S,
                             "markouts_s": list(MARKOUTS), "fair": "fair_v1 raw BRTI",
                             "fair_lag": brti.lag if brti else None},
@@ -796,7 +799,7 @@ def dossier(wallet: str, rows: list[dict], tmap: TokenMap, idx: BookIndex, brti:
 def card(doc: dict, clock: dict | None = None) -> str:
     m, c, e, o, inv = doc["mechanism"], doc["coverage"], doc["edge"], doc["orders"], doc["inventory"]
     pol = doc.get("policy", {})
-    L = [f"# Dossier {doc['wallet']}", ""]
+    L = [f"# Dossier {doc['wallet']}", "", EVIDENCE_SCOPE, ""]
     tte = (m.get("tte_s_taker") or {}).get("p50")
     L += ["## Mechanism",
           f"- {m['fills']} fills, ${m['notional']:,} notional over {m['windows']} windows; "
@@ -956,6 +959,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     ws = [w.strip() for w in a.wallets.split(",") if w.strip()] if a.wallets else None
     res = run(a.data, a.lab, a.cohort, ws, a.top, a.store, a.lag)
+    print(EVIDENCE_SCOPE)
     for w, v in res["wallets"].items():
         print(f"{w} fills={v['fills']} policy={v['verdict']} -> {a.lab / 'dossiers' / (w + '.md')}")
     for w in res["missing"]:

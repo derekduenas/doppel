@@ -13,6 +13,7 @@ import argparse
 import fcntl
 import gzip
 import hashlib
+import math
 import os
 import shutil
 import sys
@@ -209,26 +210,60 @@ def load_raw(root: Path, include_live: bool = True) -> dict[int, float]:
     return out
 
 
-def load_raw_rcv(root: Path, include_live: bool = True) -> dict[int, tuple[float, float]]:
-    """Like ``load_raw`` but each second carries OUR receive time (unix s), with the twin's rules
-    (``twin.features.RefStore``): PERELMAN's ``received`` stamp, else publication + 1 s; live poller
-    seconds at the record's ``tw``. Analyses that evaluate fair at a decision time must use only
-    seconds received by then (E29; Astra audit 2026-11-26)."""
+def _first_received(out: dict[int, tuple[float, float]], t_ms: int, value, received_s: float) -> None:
+    """Keep the first documented observation. A publication timestamp is not a receive clock."""
+    value = float(value)
+    if not math.isfinite(value) or value <= 0:
+        return
+    if not math.isfinite(received_s) or received_s < t_ms / 1000:
+        received_s = math.nan
+    t = t_ms // 1000
+    prior = out.get(t)
+    if prior is None or (math.isfinite(received_s) and (not math.isfinite(prior[1]) or received_s < prior[1])):
+        out[t] = (value, received_s)
+    elif received_s == prior[1] and value != prior[0]:
+        out[t] = (math.nan, received_s)  # conflicting observations at one clock instant
+
+
+def _imported_receive_s(received) -> float:
+    if isinstance(received, bool) or received is None:
+        return math.nan
+    try:
+        stamp = float(received)
+    except (TypeError, ValueError, OverflowError):
+        return math.nan
+    return stamp / 1000 if stamp > 1e11 else stamp
+
+
+def raw_observations(paths, live_paths, lo: int | None = None, hi: int | None = None) -> dict[int, tuple[float, float]]:
+    """Publication second -> (raw value, first documented receive second), inclusive bounds."""
     out: dict[int, tuple[float, float]] = {}
-    for f in sorted((root / "ref_brti_raw").glob("*/*.dtape.zst")):
-        for rec in read_segment(f, verify=True):
+    for path in paths:
+        for rec in read_segment(path, verify=True, strict=True):
             if rec["raw"]:
                 d = orjson.loads(rec["raw"])
-                t_ms = int(d["t_ms"])
-                rc = d.get("received")
-                rcv = t_ms / 1000.0 + 1.0 if rc is None else (float(rc) / 1000.0 if float(rc) > 1e11 else float(rc))
-                out[t_ms // 1000] = (float(d["v"]), rcv)
-    if include_live:
-        for f in sorted((root / "ref_brti_live").glob("*/*.dtape.zst")):
-            for rec in read_segment(f, verify=True):
-                for t_ms, v in (rec.get("meta") or {}).get("new") or []:
-                    out.setdefault(int(t_ms) // 1000, (float(v), rec["tw"] / 1e9))
+                ts = int(d["t_ms"])
+                if (lo is None or lo <= ts // 1000) and (hi is None or ts // 1000 <= hi):
+                    _first_received(out, ts, d["v"], _imported_receive_s(d.get("received")))
+    for path in live_paths:
+        for rec in read_segment(path, verify=True, strict=True):
+            for t_ms, value in (rec.get("meta") or {}).get("new") or []:
+                ts = int(t_ms)
+                if (lo is None or lo <= ts // 1000) and (hi is None or ts // 1000 <= hi):
+                    tw = rec["tw"]
+                    seconds, remainder = divmod(tw, 10**9)
+                    received = tw / 1e9
+                    if remainder and received == seconds:
+                        # Float seconds must never round a receipt just after a decision onto that decision.
+                        received = math.nextafter(received, math.inf)
+                    _first_received(out, ts, value, received)
     return out
+
+
+def load_raw_rcv(root: Path, include_live: bool = True) -> dict[int, tuple[float, float]]:
+    """Raw BRTI with explicit receive time. An unclocked import carries NaN until a timed source exists."""
+    return raw_observations(sorted((root / "ref_brti_raw").glob("*/*.dtape.zst")),
+                            sorted((root / "ref_brti_live").glob("*/*.dtape.zst")) if include_live else ())
 
 
 def _live_values(root: Path):

@@ -5,6 +5,7 @@ round(mid + 2 - 0.05 * inventory) placed as a BUY on the Down token; sizes 97..1
 inventory vary independently, so touch, mid and the skew are separately identified."""
 
 import dataclasses
+import hashlib
 import math
 import sys
 import time
@@ -136,8 +137,11 @@ def write(tmp, frames, orders, tape, quotes=None, om_doc=None, windows=6, asset=
     if om_doc is not None:
         (om / "ordermatch.json").write_bytes(orjson.dumps(om_doc))
     (tmp / "ordertape.jsonl").write_bytes(jl(tape))
+    (tmp / "coverage_receipt.json").write_bytes(orjson.dumps({"wallet": W, "simulated_flat_start_fills": {
+        "ordertape.jsonl": {"from": T0, "to": T0 + 3600, "sha256": hashlib.sha256(jl(tape)).hexdigest()}}}))
     (tmp / "tokens.jsonl").write_bytes(jl([{"token": f"{'UD'[i]}{k}", "slug": slug(k, asset), "idx": i,
-                                            "status": "open"} for k in range(windows) for i in (0, 1)]))
+                                            "status": "open", "known_tw_ns": (T0 - 3600) * NS,
+                                            "witness_source": "test_config"} for k in range(windows) for i in (0, 1)]))
 
 
 def brti_lab(lab, lo=T0 - 900, hi=T0 + 1300, bump_received_after=None):
@@ -154,6 +158,11 @@ def brti_lab(lab, lo=T0 - 900, hi=T0 + 1300, bump_received_after=None):
                  tw=int((t + 0.3) * NS))
     w.close()
     w = SegmentWriter(lab, "ref_prices")
+    # Record live boundary observations before the later full historical response.
+    for t, v in series.items():
+        if (t + 1) % 300 == 0:
+            w.append(orjson.dumps({"series": [{"candles": [{"timestamp": t, "close": v}]}]}).decode(),
+                     tw=(t + 1) * NS, meta={"asset": "crypto:btc", "status": 200, "from": t, "to": t})
     w.append(orjson.dumps({"series": [{"candles": [{"timestamp": t, "close": v} for t, v in series.items()]}]}).decode(),
              tw=hi * NS, meta={"asset": "crypto:btc", "status": 200, "from": lo + 60, "to": hi - 1})
     w.close()
@@ -403,10 +412,11 @@ def lookahead_diffs(tmp, asof):
     write(tmp / "a", frames, orders, tape, quotes, windows=2)
     brti_lab(tmp / "a" / "lab")
     future = [book(ms, f"{c}{k}", [(0.01, 1)], [(0.99, 1)], f"m{k}")
-              for ms in range(t, t + 60_000, 500) for k in (0, 1) for c in "UD"]
+              for ms in range(t, t + 180_000, 500) for k in (0, 1) for c in "UD"]
     leak = trade(t + 1, cut["token_id"], cut["price"], 500, "0xleak", "m0" if cut["token_id"][1] == "0" else "m1")
     orders_b = [o | {"outcome": "filled", "reason": "chain", "end_ms": o["end_ms"] + 777, "rest_min_ms": 9,
-                     "rest_max_ms": 9, "remainder": 0.0, "filled": o["size"], "fills_at": [], "n_fills": 3}
+                     "rest_max_ms": 9, "remainder": 0.0, "filled": o["size"], "fills_at": [], "n_fills": 3,
+                     "created_ms": o["created_ms"] - (500 if o["placed_tw_ns"] > P + NS else 0)}
                 for o in orders]
     tape_b = [r | {"fill_amount": 7 * r["fill_amount"]} if r["block_ts"] * NS >= P else r for r in tape]
     tape_b.append(tape_row("0xleak", "leak", cut["token_id"], cut["price"], 500.0, 500.0, P // NS + 2, MS + t))
@@ -435,7 +445,11 @@ def test_state_uses_nothing_received_at_or_after_the_cutoff(tmp_path, asof):
     assert len(early) > 150 and changed == []
     # the comparison has teeth: fair, candidates and inventory are in the early rows, and the rewritten
     # future does reach the later rows
-    assert checks["fair"] > 100 and checks["candidates"] > 40 and checks["inventory"] > 100 and checks["cut_row"]
+    assert checks["fair"] > 100 and checks["inventory"] > 100 and checks["cut_row"]
+    if asof == "created":
+        assert checks["candidates"] == 0
+    else:
+        assert checks["candidates"] > 40
     assert len(later_changed) > 100
     assert {"gap_s", "px_c", "d_touch_c", "placed_venue_ms"}.isdisjoint(STATE_COLS)
 
@@ -470,14 +484,19 @@ def test_own_placement_is_not_in_its_state(fitted):
 
 def test_narrow_rulefit_range_filters_orders_and_candidates_but_reads_prior_book_state(tmp_path):
     frames, orders, tape, quotes = world(windows=2, candidates=1)
+    orders[0]["created_ms"] = orders[0]["placed_venue_ms"] + 1
     write(tmp_path, frames, orders, tape, quotes, windows=2)
     start, end = T0 + 10, T0 + 150
     table = rulefit.decision_table(tmp_path / "tape", tmp_path / "om", tmp_path / "ordertape.jsonl", W,
                                    start, end, [tmp_path / "tokens.jsonl"], asof="created")
     expected = {o["order_id"] for o in orders if start * NS <= o["placed_tw_ns"] < end * NS}
+    expected.remove(orders[0]["order_id"])
     assert {r["id"] for r in table["rows"] if r["kind"] == "order"} == expected
-    assert table["stats"]["orders_outside_range_dropped"] == len(orders) - len(expected)
+    assert table["stats"]["orders_outside_range_dropped"] == len(orders) - len(expected) - 1
+    assert table["stats"]["order_created_time_after_placement"] == 1
     assert table["inputs"]["candidates"]["outside_range"] > 0
+    assert table["stats"]["anonymous_created_time_unavailable"] > 0
+    assert all(r["kind"] == "order" for r in table["rows"])
     assert all(start * 1000 <= s["placed_ms"] < end * 1000 for s in table["specs"])
     first = min(table["rows"], key=lambda r: r["cutoff_tw_ns"])
     assert first["mid_c"] is not None
@@ -512,13 +531,12 @@ def test_inventory_and_notional_count_only_fills_located_before_the_cutoff():
              {"tx": "b", "token": "D", "side": "BUY", "shares": 4.0, "price": 0.7, "block_ts": 100},
              {"tx": "c", "token": "D", "side": "SELL", "shares": 1.0, "price": 0.5, "block_ts": 50},
              {"tx": "d", "token": "X", "side": "BUY", "shares": 1.0, "price": 0.5, "block_ts": 50}]
-    inv = Inventory(fills, tok, {"a": 90 * NS, "b": 95 * NS})  # c has no print: block time
-    assert (inv.unmapped, inv.by_block_time) == (1, 1)
-    assert [inv.at("s", t * NS) for t in (50, 51, 90, 91, 95, 96)] == [0, 1, 1, 11, 11, 7]
-    # opening notional as the twin accrues it: c opens 1 Up at 0.5; a adds 10 Up at 0.4; b (4 Down
-    # bought = 4 Up sold) only closes
-    assert [round(inv.notional_at("s", t * NS), 6) for t in (50, 51, 91, 96)] == [0, 0.5, 4.5, 4.5]
-    assert inv.window_notional({"s"}) == [4.5]
+    inv = Inventory(fills, tok, {"a": 90 * NS, "b": 95 * NS})
+    assert (inv.unmapped, inv.without_receipt) == (1, 1)
+    assert [inv.at("s", t * NS) for t in (50, 51, 90, 91, 95, 96)] == [0, 0, 0, 10, 10, 6]
+    # Only the received Up purchase opens exposure. The later Down purchase closes it.
+    assert [round(inv.notional_at("s", t * NS), 6) for t in (50, 51, 91, 96)] == [0, 0, 4, 4]
+    assert inv.window_notional({"s"}) == [4]
     assert inv.any_between("s", 90 * NS, 96 * NS) and not inv.any_between("s", 90 * NS, 95 * NS)
     assert inv.at("other", 10**20) == 0 and inv.notional_at("other", 10**20) == 0
 
@@ -677,7 +695,10 @@ def test_token_map_from_rtds_rows_and_unmapped_rows_are_counted(tmp_path):
     # the participation grid exists although the Up token was mapped only after the scan: it comes
     # from the Down book, mirrored
     part = rulefit.fit_participation(T)
-    assert part["windows_seen"] == 1 and part["cells"] >= 27 and part["presence_rate"]["value"] > 0.9
+    # An unmapped economic fill may belong to any recorded market. The known public book
+    # still supplies opportunity cells, but these ambiguous fills censor absence labels.
+    assert part["eligible_cells"] >= 27 and part["cells"] == 0
+    assert slug(0) in part["windows_with_unlocated_maker_fills"]
     assert {k[2] for k in T["res"]["grid"]} == {1}
     down = next(v for v in T["res"]["grid"].values() if v is not None)
     u = up_view(down, 1)
@@ -707,7 +728,7 @@ def test_triggers_and_the_state_just_before_a_cancel(tmp_path):
               pc(4000, U, 0.50, 800, "BUY", mk),      # c: the ask moved 1 c -> book_move
               trade(4200, U, 0.50, 10, "0xf1", mk),   # c is hit for 10
               pc(4990, U, 0.50, 699, "BUY", mk, ts=5000),  # 101 leave, stamped the cancel's ms: NOT the closest
-              pc(4995, U, 0.51, 50, "BUY", mk),       # someone improves the bid
+              pc(4995, U, 0.51, 50, "BUY", mk, ts=5000),  # improves the bid in the same venue ms
               pc(5000, U, 0.50, 599, "BUY", mk),      # a's 100 leave: the closest decrease at that ms
               pc(6000, U, 0.50, 699, "BUY", mk)]      # d: an own fill since c -> own_fill
     orders = [o("a", 2000, outcome="cancelled", reason="exact_decrease", end_ms=MS + 5000, rest_min_ms=3000,
@@ -732,10 +753,12 @@ def test_triggers_and_the_state_just_before_a_cancel(tmp_path):
     tm = rulefit.fit_timing(T)
     assert {k: v["value"] for k, v in tm["trigger_shares"].items()} == {
         "own_fill": 0.3333, "book_move": 0.3333, "timer": 0.3333, "unknown": 0}
+    T["res"]["state_integrity"][("post", "a")] = "unbracketed_gap"
+    assert rulefit.fit_timing(T)["trigger_shares"]["unknown"]["value"] == 0.3333
     c = tm["cancel"]
     assert c["life_ms"]["value"] == 3000 and c["opposite_best_moved_1c"]["value"] == 1
     assert c["behind_best_at_cancel"]["value"] == 1 and c["replaced_within_1s"]["value"] == 1
-    # --asof created: the state when the order was signed (100 ms before it reached the book)
+    # The signed-time hypothesis subtracts this order's own 100 ms placement delay.
     early = rulefit.decision_table(*args, asof="created")["rows"]
     assert [r["cutoff_tw_ns"] - rows[r["id"]]["cutoff_tw_ns"] for r in early] == [-100_000_000] * 4
     # a tape with a ``verified`` column: only orders with a verified row survive
@@ -999,7 +1022,8 @@ def taker_world(rule, windows=30, seed=2):
         s = slug(k)
         start = T0 + L * k
         for i in (0, 1):
-            tok[f"{'UD'[i]}{k}"] = {"slug": s, "asset": "btc", "hz": "5m", "start": start, "end": start + L, "idx": i}
+            tok[f"{'UD'[i]}{k}"] = {"slug": s, "asset": "btc", "hz": "5m", "start": start, "end": start + L, "idx": i,
+                                    "known_tw_ns": (T0 - 1) * NS}
         mid = 50.0
         for b in range(start + 10, start + L, 10):
             mid = float(np.clip(mid + rng.integers(-4, 5), 10, 90))
@@ -1009,7 +1033,8 @@ def taker_world(rule, windows=30, seed=2):
             for j, (side, idx) in enumerate(rule(mid, f, (start + L - b) / L, rng)):
                 takes.append({"tw": (b + 1 + j % 9) * NS, "token": f"{'UD'[idx]}{k}", "idx": idx, "side": side,
                               "slug": s, "located": True})
-    return {"takes": takes, "tok": tok, "res": {"grid": grid}, "fair": FlatFair(fair)}
+    panel = rulefit.opportunity_panel(T0, T0 + windows * L, [("btc", "5m")], tok, grid, dict.fromkeys(grid, "covered"))
+    return {"takes": takes, "tok": tok, "res": {"grid": grid}, "fair": FlatFair(fair), "opportunity_panel": panel}
 
 
 def test_a_random_taker_gets_no_rule_and_a_rule_following_taker_gets_one():
@@ -1040,6 +1065,9 @@ def test_a_wallet_with_only_taker_fills_gets_a_report_and_exit_0(tmp_path):
     frames, orders, tape, _ = world(seed=6, windows=6)
     rng = np.random.default_rng(0)
     takes = [dict(r, role="taker", order_id=f"t{i}", tx=r["tx"]) for i, r in enumerate(tape) if rng.random() < 0.5]
+    buy_taker_txs = {r["tx"] for r in takes}
+    frames = [(ms, m | {"side": "BUY"} if m.get("transaction_hash") in buy_taker_txs else m)
+              for ms, m in frames]
     write(tmp_path, frames, [], takes, windows=6)
     out = tmp_path / "out"
     out.mkdir()
@@ -1051,8 +1079,9 @@ def test_a_wallet_with_only_taker_fills_gets_a_report_and_exit_0(tmp_path):
     rep = orjson.loads((out / "fit_report.json").read_bytes())
     assert not (out / "genome.json").exists() and rep["genome"]["status"] == "not_emitted"
     assert rep["taker_rule"]["n_takes"] == len(takes) and rep["taker_rule"]["located_by_print"] == len(takes)
-    assert rep["taker_rule"]["found"] is False and rep["explained_by_observed_inputs"]["verdict"] is False
-    assert "no maker order" in rep["genome"]["reasons"][0] and "NO RULE FOUND" in (out / "rule.md").read_text()
+    assert rep["taker_rule"]["found"] is False and rep["explained_by_observed_inputs"]["verdict"] is None
+    assert rep["taker_rule"]["takes_in_known_cells"] < len(takes)
+    assert "no maker order" in rep["genome"]["reasons"][0] and "INSUFFICIENT EVIDENCE" in (out / "rule.md").read_text()
     with pytest.raises(SystemExit, match="no order of .* could be put in a window"):
         main(cli + ["--wallet", "0x" + "9" * 40])
 
@@ -1233,3 +1262,20 @@ def test_constant_training_inventory_cannot_identify_a_skew():
     assert fit["selected_parameters"]["model"] == "const"
     assert fit["selected_parameters"]["skew_c_per_contract"]["ci95"] is None
     assert fit["skew_c_per_contract"]["ci95"] is None
+
+def test_real_price_draft_cannot_depend_on_attributed_fill_proxy(tmp_path):
+    frames, orders, tape, _ = world(seed=4, windows=6)
+    write(tmp_path, frames, orders, tape, windows=6, om_doc=fixture_match_controls(orders))
+    # The orders still have the same retrospective flow. Change the study wallet in the
+    # controlled source receipt so it cannot certify this wallet's holdings.
+    path = tmp_path / "coverage_receipt.json"
+    receipt = orjson.loads(path.read_bytes())
+    receipt["wallet"] = "other"
+    path.write_bytes(orjson.dumps(receipt))
+    genome, rep, _ = fit(tmp_path)
+    assert rep["inputs"]["fills"]["simulated_flat_start_fills"] is False
+    assert rep["expressible_price_rule"]["inventory_skew_evidence"] == "owner_state_unobserved"
+    assert not rep["expressible_price_rule"]["skew_kept"]
+    assert rep["price_rule"]["ask"]["inventory_basis"] == "diagnostic_association_with_attributed_fills_from_zero"
+    assert abs(rep["price_rule"]["ask"]["rule"]["skew_c_per_contract"]) > 0.01
+    assert genome is not None and genome["maker"]["skew_c_per_contract"] == 0

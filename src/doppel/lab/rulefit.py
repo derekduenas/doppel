@@ -15,24 +15,26 @@ INPUTS
 - ``--orders``: the order tape (``doppel-ordertape``): the wallet's own fills (inventory), and
   when it has a ``verified`` column only orders with a verified row there are kept (counted).
 - ``--data``: tape root (``clob_<asset>_<hz>`` books, ``rtds_*`` for the token map).
-- Token -> window and Up/Down, no network: RTDS rows on the tape, ``tokens.jsonl`` files
-  (``--tokens``, ``<brti-lab>/tokens.jsonl``), and the mate of a mapped token. Unmapped rows are
-  counted and left out (they cannot be put in Up terms).
+- RTDS supplies dated token-to-window and outcome witnesses from other wallets and transactions.
+  An independent ``tokens.jsonl`` input may supply ``known_tw_ns`` and ``witness_source`` alongside
+  the identity. Untimed metadata supplies retrospective labels only. A mate inherits identity after
+  its paired tokens and the source identity have both been observed. Missing identities are counted.
 - ``--brti-lab LAB``: enables fair-v1. Raw BRTI and the settlement series are read from LAB when it
   holds ``ref_brti_raw``, else from ``--data``; the same directory may hold ``tokens.jsonl``.
 
 1. DECISION TABLE (``decision_table.jsonl``): one row per order, state as of ``cutoff`` = the
    placement event's receive time ``placed_tw_ns`` (``--asof created``: that minus the order's own
-   sign-to-book delay, the state when it was signed). Book state = ``IntlBook`` after every tape
+   sign-to-book delay, a conditional signing-time estimate for a located order). Anonymous
+   quotes have no established signing cutoff and are withheld in created-time mode. Book state = ``IntlBook`` after every tape
    record with ``tw < cutoff`` and nothing else: the order's own increase is NOT in it.
    Everything is in Up-exposure terms, cents: BUY Up @ p = bid p; SELL Up @ p = ask p;
    BUY Down @ p = ask 100 - p; SELL Down @ p = bid 100 - p; a Down token's book is mirrored.
    STATE columns (``STATE_COLS``; functions of the cutoff and of data received before it, tested
    against a rewritten future): ``bb_c``/``ba_c``/``mid_c``/``spread_c``, ``depth_bid``/
    ``depth_ask`` (size at the best), ``tau_s``/``tte_s``, ``fair_c`` (twin ``Features.fair`` at
-   second floor(cutoff): BRTI received by then, 1 s delay; BTC only, null before the window start;
+   the last whole second strictly before cutoff: BRTI and the opening boundary received by then, 1 s model delay; BTC only, null before the window start;
    cached per (start, end)), ``inv`` (own net Up contracts in the window: tape fills located by a
-   tx-hash print received before the cutoff, else block time < cutoff; maker and taker),
+   economically compatible transaction print received strictly before cutoff, maker and taker; block-only fills are excluded),
    ``notional_usd`` (own opening notional in the window from the same fills, accrued as the twin
    does), ``since_prev_s`` (cutoff minus the receive time of its previous verified order's
    placement on that token).
@@ -63,9 +65,9 @@ INPUTS
       1 s, and at the cancel whether the opposite best had moved >= 1 c or the order was behind
       the best. Ladder: share of orders with another own order live on the same token and side at
       a different price, and how many distinct prices (``fit_ladder``).
-   d. participation: 10 s cells of every window of the wallet's asset-horizons with a known book
+   d. participation: 10 s cells of every window of the recorded asset-horizons with a dated public identity and a known book
       at the cell's start (the Up token's, else the Down token's mirrored); a cell is ``present``
-      when a located order certainly rested in it (placement to ``rest_min_ms``).
+      when a qualified filled-order addition was received in it.
       Rates by time-to-close and mid band, both sides vs one. Absence of a FILLED order is not
       absence of a quote.
 3. GENOME (``genome.json``, ``status: "draft"``; ``Registry.register`` refuses that status): the
@@ -112,14 +114,18 @@ import numpy as np
 import orjson
 
 from ..strategy.genome import Condition, Genome, MakerRule, Risk, Source, Universe, to_dict, validate
-from ..tape.segment import read_segment, segment_path
 from ..twin.engine import MIN_QTY, WindowSim
 from ..twin.features import Features, RefStore
 from .census import LEN, window_of
-from .flow import RTDS_STREAMS, _ts, hours_between, iter_rtds
-from .intlbook import NS, IntlBook, LevelEvent, Print, px
+from ..tape.universe import ASSETS, HORIZONS
+from .flow import _ts
+from .market_opportunities import merge_identity, observable_identity, opportunity_panel, public_listings
+from .decision_book import GRID_S, scan
+from .intlbook import NS, px
+from .goldsky_proof import digest
 from .ledger import TokenMap
 from .ordermatch import PLACEMENT_EVIDENCE_VERSION, filled_shares, qualified_placement
+from .tradeallocation import Allocation, load_allocations
 from .profile import BIAS_LENGTH, BIAS_UPPER, T as PROFILE_THRESHOLDS, _size, load_rows, prepare, stamps_validated
 
 TRAIN_FRAC = 0.7
@@ -143,11 +149,8 @@ MIN_N = 20
 # window on one side of the median: 2**(-n) for one tail, twice that for two.
 MIN_BOUND_WINDOWS = 5
 MIN_CORRECTION_WINDOWS = 6
-GRID_S = 10
 MOVE_C = 1.0
 REPLACE_MS = 1000
-TOL = 0.02  # shares
-TOL_REL = 0.02  # the widest relative size tolerance ordermatch is run with (E39)
 REFS = ("touch", "mid", "fair")
 CAVEAT = ("rule conditional on fill: only orders that filled at least once are visible on chain; "
           "E39 estimates fills at ~0.3% of this kind of maker's quotes, so offsets, sizes, gaps and "
@@ -300,110 +303,24 @@ def _quant(x: np.ndarray) -> dict | None:
 
 
 # ---------------------------------------------------------------- token map (no network)
-def token_map(root: Path, t_from: int, t_to: int, token_files: list[Path]) -> dict[str, dict]:
-    """token -> {slug, asset, hz, start, end, idx} from tokens.jsonl files and RTDS rows on the tape."""
-    out: dict[str, dict] = {}
+def token_map(root: Path, t_from: int, t_to: int, token_files: list[Path], *,
+              exclude_wallets=(), exclude_txs=()) -> dict[str, dict]:
+    """Keep retrospective labels for outcomes, and dated public witnesses for decision inputs."""
+    out, _ = public_listings(root, t_from - 3600, t_to, exclude_wallets=exclude_wallets, exclude_txs=exclude_txs)
     for p in token_files:
         for tok, info in TokenMap(p).m.items():
             w = window_of(info)
             if w and info.get("idx") in (0, 1):
-                out[tok] = w | {"idx": int(info["idx"])}
-    if any((Path(root) / s).exists() for s in RTDS_STREAMS):
-        for _, fills in iter_rtds(Path(root), hours_between(t_from - 3600, t_to)):
-            for f in fills:
-                out.setdefault(f.token, {"asset": f.coin, "hz": f.hz, "start": f.start, "end": f.end,
-                                         "slug": f.slug, "idx": f.idx})
+                known = info.get("known_tw_ns")
+                source = info.get("witness_source")
+                if known is not None and (type(known) is not int or known < 0 or not isinstance(source, str) or not source):
+                    raise ValueError(f"invalid dated market identity for token {tok}")
+                merge_identity(out, tok, w | {"idx": int(info["idx"]), "known_tw_ns": known, "witness_source": source})
     return out
 
 
 def _stream(info: dict) -> str:
     return f"clob_{info['asset']}_{info['hz']}"
-
-
-# ---------------------------------------------------------------- book scan
-def _top(levels: dict | None) -> tuple | None:
-    """(best bid, its size, best ask, its size) of one token; None while its state is unknown."""
-    if levels is None:
-        return None
-    bb = ba = None
-    for (p, side), z in levels.items():
-        if z <= 0:
-            continue
-        if side == "BUY":
-            if bb is None or p > bb:
-                bb = p
-        elif ba is None or p < ba:
-            ba = p
-    return (bb, levels[(bb, "BUY")] if bb is not None else None,
-            ba, levels[(ba, "SELL")] if ba is not None else None)
-
-
-def scan(root: Path, stream: str, t_from: int, t_to: int, queries: list[tuple],
-         cancels: dict[tuple, list], txs: set[str], by_start: dict[int, list[tuple[str, str, int]]],
-         length: int, *, grid_from: int | None = None) -> dict:
-    """One pass over a stream in tape order.
-
-    ``queries`` (tw_ns, token, key) sorted by tw: each is answered with the token's top of book
-    BEFORE the first record with ``tw >= tw_ns`` is applied, i.e. from records received strictly
-    earlier. ``cancels``: (token, price, side, venue_ms) -> [(key, remainder)]: for each entry, the
-    top just before the decrease at that level and venue ms whose size is CLOSEST to the remainder
-    (within max(TOL, TOL_REL * remainder)). ``txs``: earliest receive ns of a print per tx. Grid: each mapped token's top
-    at every GRID_S boundary inside its window, keyed (slug, boundary, idx)."""
-    book = IntlBook()
-    state: dict = {}
-    at_cancel: dict = {}
-    cancel_diff: dict = {}
-    fill_tw: dict[str, int] = {}
-    grid: dict[tuple[str, int, int], tuple | None] = {}
-    qi = 0
-    grid_start = grid_from if grid_from is not None else t_from
-    next_bin = grid_start - grid_start % GRID_S + GRID_S
-
-    def answer(tw: int) -> None:
-        nonlocal qi
-        while qi < len(queries) and queries[qi][0] <= tw:
-            _, tok, key = queries[qi]
-            state[key] = _top(book.levels.get(tok))
-            qi += 1
-
-    def before(tw: int) -> None:
-        nonlocal next_bin
-        answer(tw)
-        while next_bin * NS <= tw:
-            for tok, slug, idx in by_start.get(next_bin - next_bin % length, ()):
-                grid[(slug, next_bin, idx)] = _top(book.levels.get(tok))
-            next_bin += GRID_S
-
-    for hour in range(t_from - t_from % 3600, t_to, 3600):
-        path = segment_path(Path(root), stream, hour * NS)
-        if not path.exists():
-            before(max(hour, t_from) * NS)
-            book.reset()
-            continue
-        for rec in read_segment(path, verify=True):
-            tw = rec["tw"]
-            if not t_from * NS <= tw < t_to * NS:
-                continue
-            before(tw)
-            items = book.feed(rec)
-            for it in items:
-                if isinstance(it, Print):
-                    if it.tx in txs and tw < fill_tw.get(it.tx, 1 << 62):
-                        fill_tw[it.tx] = tw
-                elif isinstance(it, LevelEvent) and it.delta < 0:
-                    dec = -it.delta
-                    near = [c for c in cancels.get((it.asset, it.price, it.side, it.venue_ms), ())
-                            if abs(dec - c[1]) <= max(TOL, TOL_REL * c[1])
-                            and abs(dec - c[1]) < cancel_diff.get(c[0], math.inf)]
-                    if near:
-                        lv = dict(book.levels.get(it.asset) or {})
-                        for e in reversed([x for x in items if isinstance(x, LevelEvent) and x.asset == it.asset]):
-                            lv[(e.price, e.side)] = e.old_size  # undo this record: the state before it
-                        top = _top(lv)
-                        for c in near:
-                            at_cancel[c[0]], cancel_diff[c[0]] = top, abs(dec - c[1])
-    answer(t_to * NS - 1)
-    return {"state": state, "at_cancel": at_cancel, "fill_tw": fill_tw, "grid": grid, "mates": book.mates()}
 
 
 # ---------------------------------------------------------------- Up terms
@@ -550,31 +467,76 @@ def wallet_fills(orders_path: Path, wallet: str) -> tuple[list[dict], dict, set[
     terms = {(r["order_id"], r["token_id"], r["side"], px(r["limit"]), r["size"], r["created_ms"])
              for r in w["orders"] if r["role"] == "maker" and r.get("limit")
              and r.get("ts_flag") is None and type(r.get("created_ms")) is int} if flagged else None
-    out = [{"tx": r["tx"], "token": r["token_id"], "side": r["side"], "shares": filled_shares(r),
-            "price": float(r.get("limit") or 0.5), "block_ts": r["block_ts"], "role": r.get("role")} for r in w["rows"]
+    out = [{"tx": r["tx"], "order_id": r.get("order_id"), "token": r["token_id"], "side": r["side"], "shares": filled_shares(r),
+            "price": r.get("limit"), "condition": r.get("condition_id"), "block_ts": r["block_ts"], "role": r.get("role")} for r in w["rows"]
            if r["side"] == "SELL" or r.get("maker_amount") or r.get("limit")]
     return out, w["input"], terms
 
 
+def simulated_inventory_receipt(orders: Path, wallet: str, start: int, end: int) -> bool:
+    """The controlled generator can attest its flat start and complete public fill stream."""
+    path = orders.parent / "coverage_receipt.json"
+    if not orders.is_file() or not path.is_file():
+        return False
+    receipt = orjson.loads(path.read_bytes())
+    record = (receipt.get("simulated_flat_start_fills") or {}).get(orders.name) or {}
+    return (receipt.get("wallet") == wallet and record.get("from") == start and record.get("to") == end
+            and record.get("sha256") == digest(orders))
+
+
+def bind_fill_receipts(fills, prints, mates, allocations):
+    """Attach the first economically compatible public print; ownership comes from the signed tape."""
+    for fill in fills:
+        tx = fill["tx"]
+        call = allocations.get(tx)
+        valid = []
+        for event in prints.get(tx, ()):
+            if isinstance(call, Allocation):
+                if call.match(event, mates.get(event.asset)) == "allocated":
+                    valid.append(event.tw_ns)
+                continue
+            if call not in (None, "incomplete_call", "unverified_call"):
+                continue
+            # A partial call supports a single direct leg only at the exact signed terms
+            # and filled quantity. Improved-price and aggregate prints need the full call.
+            token = fill["token"]
+            condition = fill.get("condition")
+            if (event.asset != token or not event.market or fill.get("price") is None
+                    or (condition and event.market.lower().removeprefix("0x") != condition.lower().removeprefix("0x"))):
+                continue
+            compatible_side = (event.side == fill["side"]) == (fill["role"] == "taker")
+            if (compatible_side and px(event.price) == px(fill["price"])
+                    and abs(event.size - fill["shares"]) <= 1e-6):
+                valid.append(event.tw_ns)
+        fill["receipt_tw"] = min(valid, default=None)
+        if valid and fill["role"] == "taker" and isinstance(call, Allocation):
+            fill["shares"] = call.total
+            fill["price"] = sum(p * q for p, q in call.levels) / call.total
+
+
 class Inventory:
-    """Own net Up contracts and opening notional per window from tape fills, as of a receive
+    """Relative net Up contracts and opening notional from print-located signed fills, as of a receive
     instant. Notional accrues as in the twin (``WindowSim._fill``): the part of a fill that opens
     or adds exposure, at its Up-terms cost (price for Up bought, 1 - price for Up sold). The fill
-    price is the order's limit."""
+    price is the signed maker limit or the allocated taker execution price. A zero starting exposure is a model convention. Wallet attribution
+    uses the retrospective signed tape and this series excludes nonfill balance movements."""
 
     def __init__(self, fills: list[dict], tok: dict[str, dict], fill_tw: dict[str, int],
                  bounds: tuple[int, int] | None = None):
         by: dict[str, list[tuple[int, float, float]]] = defaultdict(list)
-        self.unmapped = self.by_block_time = 0
+        self.unmapped = self.without_receipt = self.identity_unobserved = 0
         for f in fills:
             info = tok.get(f["token"])
             if info is None:
                 self.unmapped += 1
                 continue
-            t = fill_tw.get(f["tx"])
-            if t is None:  # no print: the block time trails the match, so the fill counts late
-                t = int(f["block_ts"]) * NS
-                self.by_block_time += 1
+            t = f.get("receipt_tw", fill_tw.get(f["tx"]))
+            if t is None:
+                self.without_receipt += 1
+                continue
+            if "known_tw_ns" in info and not observable_identity(info, t):
+                self.identity_unobserved += 1
+                continue
             if bounds is not None and not bounds[0] <= t < bounds[1]:
                 continue
             sign = (1 if f["side"] == "BUY" else -1) * (1 if info["idx"] == 0 else -1)
@@ -627,9 +589,8 @@ class Fair:
                              source=Source(kind="manual"))
         self.feat: dict[tuple[int, int], Features | None] = {}
 
-    def at(self, info: dict, tw: int) -> float | None:
-        d = tw // NS
-        if info["asset"] not in FAIR_ASSETS or d < info["start"]:
+    def _features(self, info: dict) -> Features | None:
+        if info["asset"] not in FAIR_ASSETS:
             return None
         key = (info["start"], info["end"])  # 5m and 15m windows share starts: the end is part of the key
         if key not in self.feat:
@@ -638,9 +599,34 @@ class Fair:
                 self.feat[key] = Features(self.genome, ref)
             except KeyError:
                 self.feat[key] = None
-        f = self.feat[key]
+        return self.feat[key]
+
+    def at(self, info: dict, tw: int) -> float | None:
+        # Integer-second features must be observable strictly before a receipt cutoff.
+        d = (tw - 1) // NS
+        f = self._features(info) if d >= info["start"] else None
         v = f.fair(d) if f is not None else math.nan
-        return 100 * v if v == v else None
+        return 100 * v if math.isfinite(v) else None
+
+    def evidence(self, info: dict, tw: int) -> dict:
+        """Decision-time inputs for the reference proxy. No future publication values enter this record."""
+        d = (tw - 1) // NS
+        f = self._features(info)
+        out = {"decision_second": d, "fair_c": self.at(info, tw), "source": "pmus_btc_brti_proxy"}
+        if f is None or d < info["start"]:
+            return out | {"status": "reference_unavailable"}
+        ref = f.ref
+        receipt, value = ref.opening_at(d * NS)
+        de = d - f.cfg.brti_delay_s
+        lo = de - f.vol_window
+        known = f._raw_known(d)
+        start = lo - ref.raw_t0
+        hist = known[start:de - ref.raw_t0 + 1] if known is not None and start >= 0 else []
+        count = int(np.isfinite(hist).sum())
+        return out | {"opening_value": value, "opening_receipt_ns": receipt,
+                      "volatility_first_second": lo, "volatility_last_second": de,
+                      "raw_seconds_required": f.vol_window + 1, "raw_seconds_known": count,
+                      "status": "available" if out["fair_c"] is not None else "insufficient_reference_evidence"}
 
 
 # ---------------------------------------------------------------- decision table
@@ -667,17 +653,24 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
                                          o["created_ms"]) in verified]
         stats["orders_not_verified_dropped"] = len(orders) - len(signed)
         orders = signed
-    tok = token_map(root, t_from, t_to, token_files)
+    tok = token_map(root, t_from, t_to, token_files, exclude_wallets=[wallet], exclude_txs={f["tx"] for f in fills})
     quotes_path = om_dir / "quotes.jsonl" if om_dir is not None else None
     quotes, cand_info = sample_quotes(quotes_path, wallet, tok, max_candidates, (lo, hi))
     stats["candidates"] = len(quotes)
     stats["candidates_in_file"] = cand_info["total"] + cand_info["outside_range"]
     s2b = [o["placed_venue_ms"] - o["created_ms"] for o in orders]
-    lag_q = int(max(0, np.median(s2b))) if s2b else 0  # candidates have no stamp: the wallet's median
+    # The signed tape carries no local publication receipt for the calibration sample.
+    # Keep anonymous placements at their observed time. They cannot supply a signed-time decision.
+    if asof == "created":
+        stats["anonymous_created_time_unavailable"] = len(quotes)
+        quotes = []
 
     specs = []
     for o in orders:
-        lag = max(0, o["placed_venue_ms"] - o["created_ms"]) if asof == "created" else 0
+        lag = o["placed_venue_ms"] - o["created_ms"] if asof == "created" else 0
+        if lag < 0:
+            stats["order_created_time_after_placement"] += 1
+            continue
         specs.append({"kind": "order", "id": o["order_id"], "token": o["token_id"], "side": o["side"],
                       "price": px(o["price"]), "size": float(o["size"]), "w": 1.0,
                       "placed_tw": int(o["placed_tw_ns"]), "placed_ms": int(o["placed_venue_ms"]),
@@ -686,21 +679,21 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
         specs.append({"kind": "candidate", "id": f"{q['token_id']}:{q['price']}:{q['venue_ms']}:{q['tw_ns']}",
                       "token": q["token_id"], "side": "BUY", "price": px(q["price"]), "size": float(q["size"]),
                       "w": None, "placed_tw": int(q["tw_ns"]), "placed_ms": int(q["venue_ms"]),
-                      "cutoff": int(q["tw_ns"]) - (lag_q if asof == "created" else 0) * 1_000_000, "om": {}})
+                      "cutoff": int(q["tw_ns"]), "om": {}})
     del quotes
     # A created-time cutoff may precede its placement by enough to cross the lower bound.
     # Load one market window of pre-roll to reconstruct state and locate prior fills.
     first_cutoff = min((s["cutoff"] // NS for s in specs), default=t_from)
     scan_from = min(t_from, first_cutoff) - max(LEN.values())
 
-    mapped = {s["token"] for s in specs} & tok.keys()
-    if not orders:  # use the wallet's filled markets even when all the remaining quote specs are anonymous
-        mapped.update(f["token"] for f in fills if f["token"] in tok)
-    streams = sorted({_stream(tok[t]) for t in mapped}) or sorted(
-        d.name for d in Path(root).iterdir() if d.name.startswith("clob_"))
-    pairs = {(tok[t]["asset"], tok[t]["hz"]) for t in mapped}
+    # The recorded families determine the universe independently of this wallet's fills.
+    pairs = {(asset, hz) for asset in ASSETS for hz in HORIZONS if (root / f"clob_{asset}_{hz}").is_dir()}
+    streams = sorted(f"clob_{asset}_{hz}" for asset, hz in pairs)
     txs = {f["tx"] for f in fills}
     res = {"state": {}, "at_cancel": {}, "fill_tw": {}, "grid": {}, "mates": {}}
+    res["grid_integrity"], res["mate_known_tw"] = {}, {}
+    prints = defaultdict(list)
+    res["state_integrity"] = {}
     for s in streams:
         mine = [x for x in specs if x["token"] not in tok or _stream(tok[x["token"]]) == s]
         qs = sorted([(x["cutoff"], x["token"], ("pre", x["id"])) for x in mine]
@@ -720,18 +713,37 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
             if _stream(info) == s and (info["asset"], info["hz"]) in pairs:
                 by_start[info["start"]].append((t, info["slug"], info["idx"]))
         got = scan(root, s, scan_from, t_to, qs, cancels, txs, by_start, LEN.get(hz, 300), grid_from=t_from)
+        res["grid_integrity"].update(got["grid_integrity"])
+        res["mate_known_tw"].update(got["mate_known_tw"])
+        for key, reason in got["state_integrity"].items():
+            # A query can be tried in several streams while its token mapping is unknown.
+            if got["state"].get(key) is not None or key not in res["state_integrity"]:
+                res["state_integrity"][key] = reason
         stats["cancels_asked"] += sum(len(v) for v in cancels.values())
         stats["cancels_state_found"] += len(got["at_cancel"])
         for k in ("state", "at_cancel", "grid", "mates"):
             res[k].update({a: b for a, b in got[k].items() if k != "state" or b is not None or a not in res[k]})
+        for tx, events in got["fill_prints"].items():
+            prints[tx].extend(events)
         for tx, t in got["fill_tw"].items():
             res["fill_tw"][tx] = min(t, res["fill_tw"].get(tx, t))
-    for a, b in res["mates"].items():  # a token never seen by RTDS, but its mate was
-        if a not in tok and b in tok:
-            tok[a] = tok[b] | {"idx": 1 - tok[b]["idx"]}
+    for a, b in res["mates"].items():
+        if b not in tok or a not in res["mate_known_tw"]:
+            continue
+        info = tok[b]
+        if a not in tok:
             stats["tokens_mapped_by_mate"] += 1
+        peer_tw = info.get("known_tw_ns")
+        known = None if peer_tw is None else max(res["mate_known_tw"][a], peer_tw)
+        merge_identity(tok, a, info | {"idx": 1 - info["idx"], "known_tw_ns": known,
+                                      "witness_source": "paired_clob_tokens"})
 
+    panel = opportunity_panel(t_from, t_to, pairs, tok, res["grid"], res["grid_integrity"])
+    call_allocations = load_allocations(orders_path, txs, allow_legacy=True) if verified is not None and txs else {}
+    bind_fill_receipts(fills, prints, res["mates"], call_allocations)
     inv = Inventory(fills, tok, res["fill_tw"], (scan_from * NS, hi))
+    simulated_inventory = (not (inv.unmapped or inv.without_receipt or inv.identity_unobserved)
+                           and simulated_inventory_receipt(orders_path, wallet, t_from, t_to))
     fair = Fair(brti_root, t_from, t_to) if brti_root is not None else None
     rows = []
     prev: dict[str, dict] = {}  # token -> previous verified order's spec
@@ -739,6 +751,13 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
         info = tok.get(x["token"])
         if info is None:
             stats[f"{x['kind']}_unmapped_token"] += 1
+            continue
+        if not observable_identity(info, x["cutoff"]):
+            stats[f"{x['kind']}_identity_not_known"] += 1
+            continue
+        integrity = res["state_integrity"].get(("pre", x["id"]), "right_censored")
+        if integrity != "covered":
+            stats[f"{x['kind']}_capture_excluded:{integrity}"] += 1
             continue
         top = res["state"].get(("pre", x["id"]))
         if top is None:
@@ -756,6 +775,7 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
                # state (STATE_COLS): functions of the cutoff and of data received before it
                **v, "fair_c": _r(f),
                "tau_s": _r(x["cutoff"] / NS - info["start"], 3), "tte_s": _r(info["end"] - x["cutoff"] / NS, 3),
+               "inventory_basis": "attributed_fill_delta_from_zero_at_compatible_transaction_prints",
                "inv": _r(inv.at(info["slug"], x["cutoff"])),
                "notional_usd": _r(inv.notional_at(info["slug"], x["cutoff"])),
                "since_prev_s": None if p is None else _r((x["cutoff"] - p["placed_tw"]) / NS, 3),
@@ -774,21 +794,47 @@ def decision_table(root: Path, om_dir: Path | None, orders_path: Path, wallet: s
         rows.append(row)
     takes = []
     for f in fills:
-        t = res["fill_tw"].get(f["tx"], (int(f["block_ts"]) - 2) * NS)  # no print: ~2 s before its block
-        if f["token"] not in tok or not lo <= t < hi:
+        t = f["receipt_tw"]
+        scope_time = t if t is not None else int(f["block_ts"]) * NS
+        if not lo <= scope_time < hi:
             continue
-        if f["role"] == "maker":
+        info = tok.get(f["token"], {})
+        if f["role"] == "maker" and info:
             stats["mapped_maker_fills"] += 1
         elif f["role"] == "taker":
-            takes.append({"tw": t, "token": f["token"], "idx": tok[f["token"]]["idx"], "side": f["side"],
-                          "slug": tok[f["token"]]["slug"], "located": f["tx"] in res["fill_tw"]})
+            takes.append({"tw": t, "token": f["token"], "idx": info.get("idx"), "side": f["side"],
+                          "slug": info.get("slug"), "located": t is not None,
+                          "identity_observed": t is not None and observable_identity(info, t),
+                          "time_source": "compatible_transaction_print" if t is not None else "block_only",
+                          "block_ts": f["block_ts"]})
+    located = {x["id"] for x in specs if x["kind"] == "order" and "row" in x}
+    unlocated = set()
+    for f in fills:
+        if f["role"] != "maker" or f["order_id"] in located:
+            continue
+        info = tok.get(f["token"])
+        if info is not None:
+            unlocated.add(info["slug"])
+        elif lo <= int(f["block_ts"]) * NS < hi:
+            # Its identity is unknown. A filled order could have rested anywhere in the observed universe.
+            unlocated.update(c["slug"] for c in panel)
+    scope = {"scheduled_cells": len(panel), "scheduled_windows": len({c["slug"] for c in panel}),
+             "listed_cells": sum(c["identity_observed"] for c in panel),
+             "eligible_cells": sum(c["eligible"] for c in panel),
+             "windows_with_unlocated_maker_fills": sorted(unlocated & {c["slug"] for c in panel})}
     return {"rows": rows, "specs": [x for x in specs if "row" in x], "res": res, "inv": inv, "tok": tok,
+            "opportunity_panel": panel, "unlocated_maker_slugs": unlocated,
             "takes": takes, "fair": fair, "cand": quote_events(quotes_path, wallet, (lo, hi)),
             "om_doc": om_doc, "stats": stats, "pairs": sorted(pairs),
             "inputs": {"fills": fill_input | {"n": inv.n, "unmapped": inv.unmapped,
-                                              "timed_by_block": inv.by_block_time},
-                       "streams": streams, "asof": asof, "from": t_from, "to": t_to, "fair": fair is not None,
-                       "sign_to_book_ms_p50": lag_q, "candidates": cand_info}}
+                                              "without_print_receipt": inv.without_receipt, "timed_by_block": 0,
+                                              "identity_unobserved_at_fill": inv.identity_unobserved,
+                                              "simulated_flat_start_fills": simulated_inventory,
+                                              "inventory_basis": "attributed_fill_delta_from_zero_at_compatible_transaction_prints"},
+                       "streams": streams, "opportunities": scope, "asof": asof, "from": t_from, "to": t_to, "fair": fair is not None,
+                       "sign_to_book_ms_p50": float(np.median(s2b)) if s2b else None,
+                       "anonymous_created_time": "unavailable_without_prior_signed_publication_receipts",
+                       "candidates": cand_info}}
 
 
 # ---------------------------------------------------------------- 2a price rule
@@ -963,7 +1009,7 @@ def _side_pred(rows: list[dict], price: dict) -> np.ndarray:
     return out
 
 
-def fit_expressible(rows: list[dict], price: dict, th: tuple[int, int]) -> dict:
+def fit_expressible(rows: list[dict], price: dict, th: tuple[int, int], *, allow_skew: bool = True) -> dict:
     """The best rule MakerRule v1 can hold: one ref (mid|fair), symmetric half-spread, one skew.
     Only rows of assets with fair-v1 enter (a v1 maker cannot quote without fair). Mid and fair
     are compared on one common set of rows; the choice of reference and of keeping the skew is
@@ -1007,7 +1053,7 @@ def fit_expressible(rows: list[dict], price: dict, th: tuple[int, int]) -> dict:
     def err(d: np.ndarray, p: tuple[float, float, float]) -> np.ndarray:
         return np.abs(d - sm * max(p[0], 0.0) + p[2] * im)  # the centre shift cannot be held: not used
 
-    grid = [(ref, skew) for ref in refs for skew in (False, True)]
+    grid = [(ref, skew) for ref in refs for skew in ((False, True) if allow_skew else (False,))]
     vmae = {c: wmean(err(dref[c[0]][m], params(dref[c[0]][m], fit, c[1]))[val], wm[val]) for c in grid}
     ref, skew = min(grid, key=lambda c: (vmae[c], grid.index(c)))
     d = dref[ref][m]
@@ -1140,10 +1186,12 @@ def fit_timing(T: dict) -> dict:
     trig = []
     for x in gaps:
         p = x["prev"]
-        a, b = state.get(("post", p["id"])), state.get(("pre", x["id"]))
+        post, pre = ("post", p["id"]), ("pre", x["id"])
+        a, b = state.get(post), state.get(pre)
         if inv.any_between(x["info"]["slug"], p["placed_tw"], x["cutoff"]):
             trig.append("own_fill")
-        elif a is None or b is None or p["placed_tw"] >= x["cutoff"]:
+        elif (a is None or b is None or p["placed_tw"] >= x["cutoff"]
+              or any(T["res"]["state_integrity"].get(k) != "covered" for k in (post, pre))):
             trig.append("unknown")
         elif any(u is None or v is None or abs(u - v) * 100 >= MOVE_C - 1e-9 for u, v in ((a[0], b[0]), (a[2], b[2]))):
             trig.append("book_move")
@@ -1156,6 +1204,7 @@ def fit_timing(T: dict) -> dict:
         own_t[x["token"]].append(x["placed_ms"] - T["cand"]["t0_ms"])
     out: dict = {"n_orders": len(xs), "gap_s": fit_cadence(g, cl, own_t, T["cand"]["times"], fb),
                  "footprint": fb,
+                 "trigger_scope": "Temporal associations with prior attributed prints. Client acknowledgements and causation are unobserved.",
                  "gap_note": "gap_s.status identifies the corrected estimate, upper bound, or insufficient data. "
                              "gap_s.filled describes observed fills on one token.",
                  "trigger_shares": {k: _share([t == k for t in trig], cl)
@@ -1320,33 +1369,21 @@ def fit_life(vis: np.ndarray, vcl: np.ndarray, cand: dict[str, Any], tok: dict[s
 def grid_cells(T: dict) -> list[tuple]:
     """(slug, window start, share of the window left, Up mid, cell start) of every GRID_S cell with a
     known book at its start, in window order."""
-    win = {i["slug"]: i for i in T["tok"].values()}
-    seen: dict[tuple[str, int], dict] = {}
-    for (slug, b, idx), top in sorted(T["res"]["grid"].items()):  # idx 0 first: the Up book when it is known
-        v = up_view(top, idx)
-        if v["mid_c"] is not None:
-            seen.setdefault((slug, b), v)
-    out = []
-    for (slug, b), v in sorted(seen.items()):
-        i = win[slug]
-        out.append((slug, i["start"], (i["end"] - b) / (i["end"] - i["start"]), v["mid_c"], b))
-    return sorted(out, key=lambda r: r[1])
+    return [(c["slug"], c["window_start"], (c["window_end"] - c["cell_start"]) / (c["window_end"] - c["window_start"]),
+             c["mid_c"], c["cell_start"]) for c in T.get("opportunity_panel", ()) if c["eligible"]]
 
 
 def presence_cells(T: dict) -> list[tuple]:
-    """``grid_cells`` with the Up sides on which a verified order rested in the cell, in place of its start."""
+    """Up sides of qualified, filled-order additions received during each eligible local-clock cell."""
     cells: dict[tuple[str, int], set[str]] = defaultdict(set)
     for x in T["specs"]:
-        if x["kind"] != "order":
-            continue
-        o = x["om"]
-        if o.get("placement_candidates") not in (None, 1):
-            continue  # a selected candidate does not establish presence in this cell
-        rest = o.get("rest_min_ms") or 0
-        lo, hi = x["placed_ms"] // 1000, (x["placed_ms"] + max(0, rest - 1)) // 1000
-        for b in range(lo - lo % GRID_S, hi + 1, GRID_S):  # every cell [b, b + GRID_S) it rested in
-            cells[(x["row"]["window"], b)].add(x["row"]["up_side"])
-    return [(slug, start, frac, mid, cells.get((slug, b), set())) for slug, start, frac, mid, b in grid_cells(T)]
+        if x["kind"] == "order" and x["om"].get("placement_candidates") == 1:
+            # Venue residence and publication latency are distinct clocks. A venue duration
+            # cannot identify the last local-clock cell in which the order was resting.
+            second = x["placed_tw"] // NS
+            cells[x["row"]["window"], second - second % GRID_S].add(x["row"]["up_side"])
+    return [(slug, start, frac, mid, cells.get((slug, b), set())) for slug, start, frac, mid, b in grid_cells(T)
+            if slug not in T.get("unlocated_maker_slugs", ())]
 
 
 def fit_participation(T: dict) -> dict:
@@ -1357,11 +1394,12 @@ def fit_participation(T: dict) -> dict:
     inwin = (tau >= 0) & (tte > 0)
     ocl = np.array([x["row"]["window"] for x in xs], dtype=object).astype(str)
     p1 = lambda v: np.percentile(v, 1)  # noqa: E731
-    out: dict = {"cells": len(recs), "cell_s": GRID_S, "orders": len(xs),
+    out: dict = {"cells": len(recs), "cell_s": GRID_S, "orders": len(xs), **T.get("inputs", {}).get("opportunities", {}),
                  "pre_open_order_share": _r(np.mean(tau < 0)) if len(xs) else None,
                  "tte_s_in_window": _quant(tte[inwin]), "tau_s_in_window": _quant(tau[inwin]),
                  "tte_s_p1": describe(tte[inwin], ocl[inwin], p1), "tau_s_p1": describe(tau[inwin], ocl[inwin], p1),
-                 "note": "present = a FILLED order was resting in the cell; unfilled quotes are invisible"}
+                 "note": "Presence measures receipt of a qualified filled-order placement hypothesis in a covered cell. "
+                         "Markets with unlocated maker fills are excluded. Unfilled quotes and deliberate skips are unobserved."}
     if not recs:
         return out | {"reason": "no grid cell with a known book"}
     cl = np.array([r[0] for r in recs], dtype=str)
@@ -1566,12 +1604,12 @@ def side_test(rows: list[dict], th: tuple[int, int]) -> dict:
 
 
 def presence_skill(T: dict, th: tuple[int, int]) -> dict:
-    """How much of WHEN the wallet is in the book a rule of the genome's kind explains.
+    """How much observed filled-order placement timing a rule of the genome's kind explains.
 
     The rule (a span of the window, from tau_min to tte_min, and dead mid bands) is fitted on the
     fit windows; on the later windows its presence probabilities are scored against the null "the
     same presence rate in every cell" (always present, when that rate is ~1). Skill = 1 -
-    log-loss(rule) / log-loss(null). Presence means a FILLED order rested in the cell, so this is
+    log-loss(rule) / log-loss(null). Presence means a FILLED order's qualified addition arrived in the cell, so this is
     evidence about observable participation. An unsupported timing rule blocks a draft."""
     recs = presence_cells(T)
     null = "one presence rate for every cell (the fit windows' rate)"
@@ -1597,7 +1635,7 @@ def presence_skill(T: dict, th: tuple[int, int]) -> dict:
         "null": null, "rule": {"window_share_left": [_r(hi), _r(lo)], "dead_mid_bands_c": [[10 * b, 10 * b + 10] for b in dead],
                                "presence_when_on": _r(rate[True]), "presence_when_off": _r(rate[False])},
         "presence_rate_held_out": _r(y[~fit].mean()),
-        "bias": "presence is a FILLED order resting in the cell: fill-conditional"}
+        "bias": "presence is a received filled-order placement hypothesis, conditional on a fill"}
 
 
 # ---------------------------------------------------------------- takers
@@ -1621,6 +1659,10 @@ def fit_taker(T: dict) -> dict:
     takes, cells = T["takes"], grid_cells(T)
     out: dict = {"found": False, "n_takes": len(takes), "located_by_print": sum(t["located"] for t in takes),
                  "cells": len(cells), "cell_s": GRID_S}
+    if any(not t["located"] or t["tw"] is None for t in takes):
+        return out | {"verdict": None, "reason": "taker executions without observed print receipts cannot be assigned to decision cells"}
+    if any(not t.get("identity_observed", True) for t in takes):
+        return out | {"verdict": None, "reason": "market identity unavailable at a taker execution cutoff"}
     if len(takes) < MIN_N or not cells:
         return out | {"reason": f"fewer than {MIN_N} taker fills in mapped windows, or no cell with a known book"}
     win = {i["slug"]: i for i in T["tok"].values()}
@@ -1644,6 +1686,8 @@ def fit_taker(T: dict) -> dict:
             t_cell.append(i)
             t_up.append(float((t["side"] == "BUY") == (t["idx"] == 0)))
     out["takes_in_known_cells"] = len(t_cell)
+    if len(t_cell) != len(takes):
+        return out | {"verdict": None, "reason": "at least one taker execution lacks an eligible decision cell"}
     bins = {"time_to_close": np.minimum((frac * 5).astype(int), 4), "price_band": np.digitize(np.abs(mid - 50), [5, 10, 20, 30])}
     if np.isfinite(fair).mean() >= 0.5:
         bins["edge_vs_fair"] = np.where(np.isfinite(fair), np.digitize(np.abs(fair - mid), [1, 2, 4]), 4)
@@ -1773,7 +1817,13 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
     ver = [r for r in rows if r["kind"] == "order"]
     th = thresholds(ver)
     price = fit_price(ver, th)
-    expr = fit_expressible(ver, price, th)
+    inventory_supported = T["inputs"]["fills"].get("simulated_flat_start_fills") is True
+    expr = fit_expressible(ver, price, th, allow_skew=inventory_supported)
+    expr["inventory_skew_evidence"] = ("controlled_simulation" if inventory_supported else "owner_state_unobserved")
+    for fit in price.values():
+        if fit.get("chosen"):
+            fit["inventory_basis"] = ("controlled_simulation" if inventory_supported else
+                                      "diagnostic_association_with_attributed_fills_from_zero")
     size = fit_size(T["specs"])
     timing = fit_timing(T)
     ladder = fit_ladder(T["specs"], timing["gap_s"]["value"])
@@ -1836,10 +1886,10 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
                     {f"p{q}": _r(np.percentile(ai, q)) for q in (50, 90, 99, 100)} if len(ai) else None),
                 "window_opening_notional_usd": ({f"p{q}": _r(np.percentile(wn, q)) for q in (50, 95, 100)}
                                                 | {"windows": int(len(wn))} if len(wn) else None),
-                "note": "MEASURED from this wallet, not a DOPPEL risk limit: max_inventory = ceil(max(fitted size, "
+                "note": "Replay envelope fitted to attributed fill deltas from an assumed zero balance. Client risk limits are unobserved. max_inventory = ceil(max(fitted size, "
                         "p99 |inventory at placement|)), max_notional_per_window = ceil(p95 of its opening notional "
                         "per window, accrued as in the twin). Set the real envelope before any run with money"}
-    prov["risk.max_inventory/max_notional_per_window"] = "fit_report.risk_fit (measured from the wallet)"
+    prov["risk.max_inventory/max_notional_per_window"] = "fit_report.risk_fit (replay envelope from attributed fill deltas)"
     prov["risk.max_loss_per_day/max_open_windows, costs, kill, exit"] = "schema defaults, not fitted"
     not_fitted = {"costs": "schema default (PM US taker coefficient); intl fees are not fitted",
                   "kill_exit": "schema defaults", "risk": "max_loss_per_day and max_open_windows are schema defaults",
@@ -1992,7 +2042,7 @@ def build(T: dict, wallet: str, precision: float | None = None) -> tuple[dict | 
         cannot("sub-second quote life", {"cancel_life_ms": life}, "max_quote_age_s is whole seconds")
     ts = timing.get("trigger_shares") or {}
     if ts and (ts["own_fill"]["value"] or 0) > 0:
-        cannot("re-post triggered by an own fill", {k: v["value"] for k, v in ts.items()},
+        cannot("re-post followed an attributed fill", {k: v["value"] for k, v in ts.items()},
                "requote happens on a ref move (requote_threshold_c) or age only")
     d = size.get("descriptor") or {}
     if d.get("n_sizes_90", 1) > 1:
@@ -2039,6 +2089,9 @@ def card(rep: dict) -> str:
     L = [f"# rule fit {rep['wallet']}  [RULE CONDITIONAL ON FILL]", "", rep["selection_caveat"], "",
          f"orders {rep['inputs']['rows_orders']}, candidates {rep['inputs']['rows_candidates']}, "
          f"counts {rep['inputs']['counts']}", "", "## price (Up cents)"]
+    if rep["expressible_price_rule"].get("inventory_skew_evidence") == "owner_state_unobserved":
+        L.append("Inventory-dependent side fits describe the attributed fill series. The draft price fit uses "
+                 "book or reference features only. Client inventory and limits are unobserved.")
     for s in ("bid", "ask"):
         v = rep["price_rule"][s]
         if not v.get("chosen"):
@@ -2192,9 +2245,9 @@ def main(argv=None) -> int:
     ap.add_argument("--brti-lab", type=Path, default=None,
                     help="enables fair-v1; BRTI is read from here if it holds ref_brti_raw, else from --data; "
                          "its tokens.jsonl (if any) joins the token map")
-    ap.add_argument("--tokens", type=Path, action="append", default=[], help="extra tokens.jsonl (no network)")
+    ap.add_argument("--tokens", type=Path, action="append", default=[], help="offline token identities; decision inputs require known_tw_ns and witness_source or a prior public receipt")
     ap.add_argument("--asof", choices=("placement", "created"), default="placement",
-                    help="state cutoff: the placement's receive time, or that minus the sign-to-book delay")
+                    help="use the placement receipt or estimate the signing cutoff from that signed order's own delay")
     ap.add_argument("--identity-precision", type=float, default=None,
                     help="weight of fingerprint candidates (default: ordermatch.json identity_precision_upper)")
     ap.add_argument("--max-candidates", type=int, default=MAX_CANDIDATES,

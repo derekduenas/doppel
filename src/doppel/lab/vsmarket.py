@@ -36,6 +36,9 @@ URL = "https://gateway.polymarket.us/v1/price-history"
 FEE = 0.095
 
 
+EVIDENCE_SCOPE = 'Retrospective reference study. The published opening index level has no decision-time receipt gate.'
+
+
 def slug(start: int) -> str:
     return "cpc-btc-updown-5m-" + time.strftime("%Y-%m-%d-%H%M", time.gmtime(start)) + "z"
 
@@ -95,7 +98,7 @@ def evaluate(root: Path, margin: float = 0.0, taus=(60, 120, 180, 240, 270)) -> 
     lo, hi = max(min(raw), min(ser)) + 400, min(max(raw), max(ser)) - 300
     starts = list(range((lo // 300 + 1) * 300, hi, 300))
     books = tape_books(root)
-    res: dict = {"windows": 0, "by_tau": {}, "source": "pmus_ws* tape (WS only), as-of receipt <= decision, age <= 3 s"}
+    res: dict = {"evidence_scope": EVIDENCE_SCOPE, "windows": 0, "by_tau": {}, "source": "pmus_ws* tape (WS only), as-of receipt <= decision, age <= 3 s"}
     acc = {t: {"m": [], "f": [], "y": [], "pnl": [], "trades": 0} for t in taus}
     for st in starts:
         end = st + 300
@@ -152,6 +155,7 @@ def main(argv=None) -> int:
     if a.out:
         a.out.parent.mkdir(parents=True, exist_ok=True)
         a.out.write_bytes(orjson.dumps(res, option=orjson.OPT_INDENT_2))
+    print(EVIDENCE_SCOPE)
     print(f"windows={res['windows']} margin={a.margin}")
     for tau, v in res["by_tau"].items():
         print(f"  tau={tau:>3}s n={v['n']:>4} brier market={v['brier_market']:.4f} fair_v1={v['brier_fair_v1']:.4f} "

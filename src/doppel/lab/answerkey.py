@@ -54,7 +54,7 @@ THE PUBLIC EVIDENCE (``public/``), in the formats the tools read, and nothing mo
              Every tx is a complete call: maker fills carry the anonymous taker row, taker fills the
              anonymous maker row (``verified`` false, as a cohort tape has them).
   fills/     the fill store (``fillstore.compact`` of goldsky_activity frames of the subject's fills).
-  lab/tokens.jsonl  copy of the public token map; coverage_receipt.json for fidelity's holdout
+  lab/tokens.jsonl  token metadata and identities configured before simulation; coverage_receipt.json for fidelity's holdout
              (true by construction: the lab wrote every fill).
   NEVER written there: cancels as events, unfilled or rejected orders, parameters, the signal.
 
@@ -81,7 +81,6 @@ import hashlib
 import math
 import os
 import resource
-import shutil
 import subprocess
 import sys
 import time
@@ -769,10 +768,12 @@ def goldsky_rows(sim: Sim) -> list[dict]:
     return out
 
 
-def write_public(sim: Sim, root: Path, stream: str, tokens: Path, pub: Path, hold: tuple[int, int]) -> None:
+def write_public(sim: Sim, root: Path, tokens: Path, pub: Path, hold: tuple[int, int], configured_from: int) -> None:
     """Everything but the rewritten stream (already under ``pub/tape``)."""
     for d in sorted(Path(root).iterdir()):
-        if d.is_dir() and d.name != stream and not d.name.startswith(("rtds_", "goldsky")) and not (pub / "tape" / d.name).exists():
+        # Only the simulated CLOB stream was available to this policy. Preserve reference
+        # inputs without widening the registered opportunity universe to unrelated books.
+        if d.is_dir() and not d.name.startswith(("clob_", "rtds_", "goldsky")) and not (pub / "tape" / d.name).exists():
             (pub / "tape" / d.name).symlink_to(d.resolve(), target_is_directory=True)
     cond = {t: m.removeprefix("0x") for t, m in sim.book.market_of.items()}
     rows = ordertape_rows(sim, cond)
@@ -790,10 +791,26 @@ def write_public(sim: Sim, root: Path, stream: str, tokens: Path, pub: Path, hol
     g.close()
     compact(pub / "goldsky", pub / "fills")
     (pub / "lab").mkdir(exist_ok=True)
-    shutil.copyfile(tokens, pub / "lab" / "tokens.jsonl")
+    # These identities were supplied to the simulator when its experiment was configured.
+    # Only that configured universe gains a dated witness in the simulated public inputs.
+    with tokens.open("rb") as src, (pub / "lab" / "tokens.jsonl").open("wb") as dst:
+        for line in src:
+            if line.strip():
+                info = orjson.loads(line)
+                if info["token"] in sim.win_of:
+                    info.update(known_tw_ns=configured_from * NS - 1, witness_source="answerkey_config")
+                dst.write(orjson.dumps(info) + b"\n")
     sha = hashlib.sha256((pub / "orders.jsonl").read_bytes()).hexdigest()
+    inventory_files = {"orders.jsonl": {"from": configured_from, "to": hold[1], "sha256": sha}}
+    # A block-second train split can omit a fill observed just before the boundary.
+    # Only attest a complete simulation stream when every such fill was included.
+    if all(math.ceil(ms / 1000) + 1 < hold[0] for o in sim.orders for ms, *_ in o.fills if ms < hold[0] * 1000):
+        inventory_files["train-orders.jsonl"] = {
+            "from": configured_from, "to": hold[0],
+            "sha256": hashlib.sha256((pub / "train-orders.jsonl").read_bytes()).hexdigest()}
     (pub / "coverage_receipt.json").write_bytes(orjson.dumps(
         {"wallet": sim.wallet, "from": hold[0], "to": hold[1], "complete": True, "order_tape_sha256": sha,
+         "simulated_flat_start_fills": inventory_files,
          "basis": "answer-key lab: every fill of the subject was written by the lab"}))
 
 
@@ -1255,7 +1272,7 @@ def run_strategy(key: str, root: Path, tokens: Path, stream: str, t_from: int, s
     pub = d / "public"
     t0, c0 = time.time(), time.process_time()
     sim.run(root, stream, pub / "tape", t_from, t_to)
-    write_public(sim, root, stream, tokens, pub, (split, t_to))
+    write_public(sim, root, tokens, pub, (split, t_to), t_from)
     sim_s = round(time.time() - t0, 1)
     rss_sim = _mb(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     truth = truth_summary(sim, pol)

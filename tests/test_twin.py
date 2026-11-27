@@ -449,10 +449,15 @@ def _write_tape(data):
     raw = {t: 90000 + float(v) for t, v in zip(range(lo, hi), np.cumsum(rng.normal(0, 3, hi - lo)))}
     w = SegmentWriter(data, "ref_brti_raw")
     for t, v in raw.items():
-        w.append(orjson.dumps({"t_ms": t * 1000, "v": str(v)}).decode(), tw=t * NS)
+        w.append(orjson.dumps({"t_ms": t * 1000, "v": str(v), "received": (t + 0.3) * 1000}).decode(), tw=t * NS)
     w.close()
     series = {t: sum(raw[s] for s in range(t - 59, t + 1)) / 60 for t in range(lo + 60, hi)}
     w = SegmentWriter(data, "ref_prices")
+    # Record live boundary observations before the later full historical response.
+    for t, v in series.items():
+        if (t + 1) % 300 == 0:
+            w.append(orjson.dumps({"series": [{"candles": [{"timestamp": t, "close": v}]}]}).decode(),
+                     tw=(t + 1) * NS, meta={"asset": "crypto:btc", "status": 200, "from": t, "to": t})
     w.append(orjson.dumps({"series": [{"candles": [{"timestamp": t, "close": v} for t, v in series.items()]}]}).decode(),
              tw=hi * NS, meta={"asset": "crypto:btc", "status": 200, "from": lo + 60, "to": hi - 1})
     w.close()

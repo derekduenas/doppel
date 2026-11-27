@@ -121,6 +121,11 @@ def synth(root, minutes=30, seed=3, rate_hz=4):
     b.close()
     series = {t: sum(raw[x] for x in range(t - 59, t + 1)) / 60 for t in range(lo + 60, hi)}
     r = SegmentWriter(root, "ref_prices")
+    # Record live boundary observations before the later full historical response.
+    for t, v in series.items():
+        if (t + 1) % 300 == 0:
+            r.append(orjson.dumps({"series": [{"candles": [{"timestamp": t, "close": v}]}]}).decode(),
+                     tw=(t + 1) * NS, meta={"asset": "crypto:btc", "status": 200, "from": t, "to": t})
     r.append(orjson.dumps({"series": [{"candles": [{"timestamp": t, "close": v} for t, v in series.items()]}]}).decode(),
              tw=hi * NS, meta={"asset": "crypto:btc", "status": 200, "from": lo + 60, "to": hi - 1})
     r.close()

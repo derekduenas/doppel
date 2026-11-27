@@ -102,7 +102,7 @@ COLS = ("tx", "role", "condition_id", "n_makers", "order_id", "token_id", "side"
         "taker_amount", "fill_amount", "verified")
 
 
-def load_allocations(path: Path, wanted: set[str] | None = None) -> dict[str, Allocation | str]:
+def load_allocations(path: Path, wanted: set[str] | None = None, *, allow_legacy: bool = False) -> dict[str, Allocation | str]:
     """Keep one compact split per transaction. A committed ordertape part contains whole calls."""
     index: dict[str, Allocation | str] = {}
 
@@ -115,7 +115,7 @@ def load_allocations(path: Path, wanted: set[str] | None = None) -> dict[str, Al
             index[tx] = allocation(call) if tx not in index else "duplicate_call"
 
     if path.is_dir():
-        for p in committed_parts(path):
+        for p in committed_parts(path, allow_legacy=allow_legacy):
             pf = pq.ParquetFile(p)
             consume(pf.read(columns=[c for c in COLS if c in pf.schema_arrow.names]).to_pylist())
     else:

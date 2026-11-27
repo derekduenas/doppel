@@ -431,6 +431,7 @@ def _taker(doc: dict, wallet: str, mechanism: str | None, refusals: list[dict] |
     m = doc.get("mechanism") or {}
     evidence = {
         "extractor": "doppel.strategy.extract v1",
+        "evidence_scope": doc.get("evidence_scope", "Retrospective dossier. Decision-time inputs unverified."),
         "wallet": wallet,
         "policy": {"verdict": pol.get("verdict"), "split": pol.get("split"),
                    "took_any": {k: ta.get(k) for k in ("auc_hgb", "auc_tree", "train_pos", "test_pos",
@@ -615,6 +616,7 @@ def _maker(doc: dict, wallet: str, orders: list[dict] | None, fills: list[dict] 
                      requote_threshold_c=1.0, max_quote_age_s=age, pause_when=(), min_edge_vs_fair_c=0.0)
     evidence = {
         "extractor": "doppel.strategy.extract v1",
+        "evidence_scope": doc.get("evidence_scope", "Retrospective dossier. Decision-time inputs unverified."),
         "wallet": wallet,
         "fields": fields,
         "distances": {"mid": qm or None, "fair": qf or None,
