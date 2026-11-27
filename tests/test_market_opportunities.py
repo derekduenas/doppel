@@ -79,7 +79,11 @@ def test_rulefit_unlocated_fill_prevents_negative_market_labels(tmp_path):
 
     # Retrospective labels can map economic activity. They establish no prior listing witness.
     metadata = tmp_path / "tokens.jsonl"
-    later = [orjson.loads(line) for line in metadata.read_bytes().splitlines()]
+    # Even a semantically identical rewrite breaks the controlled source hash.
+    metadata.write_bytes(metadata.read_bytes() + b"\n")
+    changed = rulefit.token_map(tmp_path / "tape", T0, T0 + 600, [metadata])
+    assert changed and all(info["known_tw_ns"] is None for info in changed.values())
+    later = [orjson.loads(line) for line in metadata.read_bytes().splitlines() if line.strip()]
     for row in later:
         row.pop("known_tw_ns")
         row.pop("witness_source")
