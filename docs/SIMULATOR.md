@@ -144,8 +144,15 @@ The first run exposed two defects, both fixed before the fresh run:
   in a little under (0.83), but the 95% CI includes 0.9.
 - *Zero confident-wrong*: **not met**. One of 11 IDENTIFIED cells was wrong on the fresh run, and 2
   of 10 on the development run. All three were the midpoint offset `h_c` or the complete-set band
-  `band_c`, with the truth 0.1–0.5 c or a few cents outside a narrow interval. MidMaker's floor/ceil
-  rounding puts `h_c` on 0.5 c plateaus, and k = 12 particles give coarse interval ends.
+  `band_c`:
+  - `h_c` truth 0.81 against an interval of 0.85–1.88, and 3.71 against 2.53–3.30;
+  - `band_c` truth 49.9, at the prior's upper edge, against 33.9–48.8.
+
+  MidMaker's floor/ceil rounding puts `h_c` on 0.5 c plateaus, and k = 12 particles give coarse
+  interval ends.
+- *Explained by the wrong family*: 0 subjects in either final run (it did happen once in a
+  12-draw smoke run). Coverage counts explained subjects only: 5 of 16 rule subjects (seed 4242) and
+  2 of 16 (seed 9091) were not explained and are absent from the coverage cells.
 - *Hidden-signal subject "not explained"*: met, 8 of 8 across both runs. Random and decoy subjects
   were never explained either.
 
@@ -174,8 +181,8 @@ The first run exposed two defects, both fixed before the fresh run:
   `QuoteSim` on real books is fitted, not detected. Plan section 4 condition 1 (real-order replay,
   bracket violations ≤ 5%) must be met before reading a real wallet's posterior.
 - **The harness runs candidates on the pristine tape.** Subjects publish into their own copy. A real
-  wallet's tape already contains its quotes, which candidates never see in their book. The
-  harness numbers are optimistic on this point.
+  wallet's tape already contains its quotes, which candidates never see in their book. The size of
+  this gap is unmeasured, and the harness numbers are likely optimistic on this point.
 - **Ordermatch placement and outcome rows are not used.** They need each candidate's rewritten tape
   on disk and an ordermatch run per candidate. Age at the first fill, from the signed `created_ms`,
   carries most of that information, but cancels of unfilled quotes stay invisible.
@@ -202,5 +209,8 @@ does not overlap the reserved exam (the exam is Nov 26, 06:00–12:00).
    --from F --to T --n 150 --per-family 4 --hidden 4 --loo 10 --workers 1 --seed <new>
    --out SCRATCH/sim-validate`. Start with `--workers 1` and read `peak_rss_mb` and `sim_s_median`
    before raising either.
+   Cost: `validate` writes one rewritten copy of the stream per subject (28 copies of the range),
+   and 6 × 150 candidates at one worker run about 900 × the per-candidate time (8.5 s per
+   synthetic hour). That takes hours on a dense real book, so start with a short range.
 3. Only if (2) shows no wrongly confident cells, run `doppel-simulate table` on the wallet's range
    and `doppel-simulate infer` with its order-tape JSONL.
