@@ -1,0 +1,207 @@
+{
+  "arms": {
+    "actual": {
+      "continuous": true,
+      "endpoint_ms": 1795629743926,
+      "endpoint_tw": 1795629744042136014,
+      "fragment_candidate_count": 2,
+      "fragment_candidates": [
+        {
+          "change_index": 0,
+          "message_index": 0,
+          "new_size": 1630.84,
+          "old_size": 1570.84,
+          "seq": 39659,
+          "span": 7,
+          "tw_ns": 1795629742997199250,
+          "venue_ms": 1795629742895
+        },
+        {
+          "change_index": 0,
+          "message_index": 0,
+          "new_size": 1745.84,
+          "old_size": 1685.84,
+          "seq": 39674,
+          "span": 7,
+          "tw_ns": 1795629743009910470,
+          "venue_ms": 1795629742915
+        }
+      ],
+      "overlapping_initialized_fragments": [
+        {
+          "first": {
+            "change_index": 0,
+            "message_index": 0,
+            "seq": 28829,
+            "tw_ns": 1795629722457714586,
+            "venue_ms": 1795629722380
+          },
+          "id": 7,
+          "last": {
+            "change_index": 1,
+            "message_index": 0,
+            "seq": 58099,
+            "tw_ns": 1795629771228682091,
+            "venue_ms": 1795629766116
+          },
+          "reset_reason": "venue timestamp reversal",
+          "reset_seen": {
+            "change_index": 0,
+            "message_index": 0,
+            "seq": 58101,
+            "tw_ns": 1795629771228867675,
+            "venue_ms": 1795629766104
+          }
+        }
+      ],
+      "search_start_ms": 1795629733926,
+      "search_start_tw": 1795629734042136014
+    },
+    "placebo": {
+      "continuous": false,
+      "endpoint_ms": 1795629683926,
+      "endpoint_tw": 1795629684042136014,
+      "fragment_candidate_count": 0,
+      "fragment_candidates": [],
+      "overlapping_initialized_fragments": [
+        {
+          "first": {
+            "change_index": 0,
+            "message_index": 0,
+            "seq": 342,
+            "tw_ns": 1795629655970608530,
+            "venue_ms": 1795629655919
+          },
+          "id": 2,
+          "last": {
+            "change_index": 1,
+            "message_index": 0,
+            "seq": 11545,
+            "tw_ns": 1795629679029294849,
+            "venue_ms": 1795629678983
+          },
+          "reset_reason": "venue timestamp reversal",
+          "reset_seen": {
+            "change_index": 0,
+            "message_index": 0,
+            "seq": 11548,
+            "tw_ns": 1795629679029497055,
+            "venue_ms": 1795629678969
+          }
+        },
+        {
+          "first": {
+            "change_index": 0,
+            "message_index": 0,
+            "seq": 11548,
+            "tw_ns": 1795629679029497055,
+            "venue_ms": 1795629678969
+          },
+          "id": 3,
+          "last": {
+            "change_index": 1,
+            "message_index": 0,
+            "seq": 12794,
+            "tw_ns": 1795629682336608370,
+            "venue_ms": 1795629682292
+          },
+          "reset_reason": "venue timestamp reversal",
+          "reset_seen": {
+            "change_index": 0,
+            "message_index": 0,
+            "seq": 12796,
+            "tw_ns": 1795629682338015470,
+            "venue_ms": 1795629682285
+          }
+        },
+        {
+          "first": {
+            "change_index": 0,
+            "message_index": 0,
+            "seq": 12796,
+            "tw_ns": 1795629682338015470,
+            "venue_ms": 1795629682285
+          },
+          "id": 4,
+          "last": {
+            "change_index": 1,
+            "message_index": 0,
+            "seq": 14386,
+            "tw_ns": 1795629689542278274,
+            "venue_ms": 1795629689497
+          },
+          "reset_reason": "venue timestamp reversal",
+          "reset_seen": {
+            "change_index": 0,
+            "message_index": 0,
+            "seq": 14388,
+            "tw_ns": 1795629689543636868,
+            "venue_ms": 1795629689476
+          }
+        }
+      ],
+      "search_start_ms": 1795629673926,
+      "search_start_tw": 1795629674042136014
+    }
+  },
+  "interpretation": "The print labels an aggregate execution. Depth updates are anonymous. Fragment counts can establish multiplicity over the entire search window only when the window is continuously covered. A missing continuous window is excluded from the paired comparison.",
+  "last_zero_in_print_span": {
+    "change_index": 0,
+    "message_index": 0,
+    "seq": 39305,
+    "source": "before_price_change",
+    "span": 7,
+    "tw_ns": 1795629742658914065,
+    "venue_ms": 1795629742597
+  },
+  "order_hash": "e1a6ed8291ccbf3794e99f5ce9c8ce8c196a9473d1883c073dad35b73b78253a",
+  "qualified_residence_upper_ms": 1329,
+  "schema": "wallet-inspection-first-order-crosscheck/1",
+  "signed_evidence": "../2026-11-27-wallet-absorption/first-trade.json",
+  "signed_maker_side": "BUY",
+  "signed_price": 0.07,
+  "signed_size": 60.0,
+  "source": {
+    "bytes": 236324236,
+    "file": "clob_btc_5m/20261125/18.dtape.zst",
+    "section_control_counts": {
+      "connect": 4,
+      "disconnect": 3,
+      "subscribe": 4,
+      "subscribe_add": 2,
+      "unsubscribe": 2
+    },
+    "selected_utc": [
+      1795629600,
+      1795630500
+    ],
+    "sha256": "9691cd2cc196e6d9e5a36dedf10eba79a9d4cfbacb3146aa6bcda53dc83de883"
+  },
+  "superseded_print_clock": {
+    "actual": {
+      "complete": false,
+      "initialized_fragments": 12,
+      "partial_adds": 2
+    },
+    "placebo": {
+      "complete": false,
+      "initialized_fragments": 15,
+      "partial_adds": 0
+    }
+  },
+  "transaction": "0x32aa9fa6cb2815070bc6e3a9d9d56163e24c3aa09a5ca78017f27fc977a2b6d8",
+  "tx_print": {
+    "aggregate_shares": 934.2,
+    "change_index": 0,
+    "market": "0x54960a36107b4c53431898bcf2d991af3038ca75ffe9b266ea0f54fbd0007204",
+    "message_index": 0,
+    "price": 0.07,
+    "seq": 40549,
+    "span": 7,
+    "taker_side": "SELL",
+    "token": "26573549377964720488352327783145014153434918240677129399684144995785340448937",
+    "tw_ns": 1795629744042136014,
+    "venue_ms": 1795629743926
+  },
+  "wallet": "0xf9b7876ba2c35370e0bedb7f8ee772da722aa37c"
+}
