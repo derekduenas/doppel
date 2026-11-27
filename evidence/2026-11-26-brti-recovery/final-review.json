@@ -1,0 +1,20 @@
+{
+  "binding_rejection": "diagnostic_only tape revision cannot enter a canonical replay: ref_brti_raw/20261126/02.dtape.zst",
+  "classifications": {
+    "historical_seal": 2,
+    "upstream_reconstructed_diagnostic": 10
+  },
+  "evaluated_strategy": false,
+  "files": 187,
+  "fingerprint": "passed",
+  "hour_checks": "passed",
+  "hours": 22,
+  "input_sha256": "a73ff4ca16e2fbe9152abdea35bd0fb9e467fb0d53238ab8ed3fd7a5000e0940",
+  "mode": "diagnostic only",
+  "recovery_report_sha256": "5baffc99b45017e2ca52512f8fa5221ab8265548737d58ebe256652897d37d4e",
+  "root": "/var/backups/doppel-sealed-20261126/research/input-recovery.OigFxO/h1/recovery",
+  "runner_sha256": "53b41973237a62d853fe60c2f877c314af79e3c97c643a55aff26e19e5ff1b3e",
+  "upstream_matches": 37924,
+  "verified_at_utc": "2026-11-26T23:04:08+00:00",
+  "verifier_sha256": "e6610760907a96fded107d4c13592694d2f1fbe0194d2be6c263669414d9c464"
+}

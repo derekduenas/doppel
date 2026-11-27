@@ -36,6 +36,11 @@ def write_tape(root, frames):
     w.close()
 
 
+def append_received(writer, elapsed_ns, *events):
+    """Write a single captured record, preserving each message's independent venue stamp."""
+    writer.append(orjson.dumps([msg for _, msg in events]).decode(), tw=MS * 1_000_000 + elapsed_ns)
+
+
 def orow(oid, side, price, size, placed, end, outcome, filled, fills_at, token="A", wrong=False):
     o, r = outcome.split(":")
     return {"order_id": oid, "token_id": token, "side": side, "price": price, "size": size,
@@ -219,12 +224,12 @@ def test_reset_cut_and_undelivered_fill_are_flagged_not_scored(tmp_path):
         pc(1000, "A", 0.5, 150, "BUY"),             # r1: 50 behind 100, then the connection drops
         pc(2000, "A", 0.4, 50, "BUY"),              # r2: alone at 0.40, filled 50 by tx u2 at 2500 ...
         pc(2600, "A", 0.01, 1, "BUY"),              # ... but a later-stamped frame precedes that print
-        trade(2500, "A", 0.4, 50, "SELL", "u2"),
     ]
     w = SegmentWriter(tmp_path / "tape", "clob_btc_5m")
     for ms, m in frames:
         w.append(orjson.dumps([m]).decode(), tw=(MS + ms) * 1_000_000)
-    w.append("", tw=(MS + 3000) * 1_000_000, meta={"ctl": "disconnect"})
+    append_received(w, 3_600_000_001, trade(2500, "A", 0.4, 50, "SELL", "u2"))
+    w.append("", tw=(MS + 4000) * 1_000_000, meta={"ctl": "disconnect"})
     w.close()
     write_dir(tmp_path / "om", [
         orow("r1", "BUY", 0.5, 50.0, 1000, 5000, "cancelled:exact_decrease", 10.0, [("u1", 4000, 10.0)]),
@@ -239,11 +244,213 @@ def test_reset_cut_and_undelivered_fill_are_flagged_not_scored(tmp_path):
     assert doc["bracket_violations"]["optimistic_underfilled"] == 1
 
 
+@pytest.mark.parametrize(("receipt_delta_ns", "delivered"), [
+    (-1, 0), (0, 1), (1_000_000_000, 1), (1_000_000_001, 0),
+])
+def test_delayed_end_print_uses_first_crossing_receipt(tmp_path, receipt_delta_ns, delivered):
+    tape, matches = tmp_path / "tape", tmp_path / "om"
+    w = SegmentWriter(tape, "clob_btc_5m")
+    append_received(w, 0, book(0, "A", bids=[(0.5, 10)]))
+    append_received(w, 1_000_000_000, pc(1000, "A", 0.5, 20, "BUY"))
+    crossing = 8_000_000_000  # network latency is independent of the one-second grace
+    append_received(w, crossing, pc(2001, "A", 0.3, 10, "BUY"))
+    if receipt_delta_ns > 10_000:
+        append_received(w, crossing + 10_000, pc(2002, "A", 0.3, 20, "BUY"))
+    append_received(w, crossing + receipt_delta_ns, trade(2000, "A", 0.5, 20, "SELL", "own"))
+    w.close()
+    write_dir(matches, [orow("o", "BUY", 0.5, 10, 1000, 2000, "filled:chain", 10, [("own", 2000, 10)])])
+    doc, (r,) = run(tape, matches, T0, T0 + 12)
+    assert r["fills_seen"] == r["fills_routed"] == 1
+    assert r["fills_delivered"] == delivered
+    assert r["pessimistic"]["filled"] == r["optimistic"]["filled"] == 10 * delivered
+    assert doc["bracket_violations"]["optimistic_underfilled"] == 1 - delivered
+    assert r["expiry_observed_tw_ns"] == MS * 1_000_000 + crossing
+    assert r["fills_delivered_during_grace"] == doc["adapter_gate"]["delivered_during_receipt_grace"] == delivered
+    assert doc["adapter_gate"]["delivered_before_expiry_observed"] == 0
+    expected = {"own": {"venue_ms": MS + 2000, "tw_ns": MS * 1_000_000 + crossing + receipt_delta_ns}}
+    assert r["late_deliveries"] == (expected if delivered else {})
+
+
+@pytest.mark.parametrize(("candidate", "finalize"), [
+    (False, "sample_end"), (True, "sample_end"), (True, "reset"), (True, "grace_exhausted"),
+])
+def test_late_public_prints_share_frozen_queue_and_mirror_dedup(tmp_path, candidate, finalize):
+    tape, matches = tmp_path / "tape", tmp_path / "om"
+    w = SegmentWriter(tape, "clob_btc_5m")
+    append_received(w, 0, book(0, "A", bids=[(0.5, 30)]), book(0, "B"))
+    append_received(w, 1_000_000_000, pc(1000, "A", 0.5, 70, "BUY"))
+    # The crossing record's visible 40-share ask would clear the whole bid if admitted.
+    append_received(w, 3_000_000_000, pc(2001, "A", 0.5, 40, "SELL"))
+    # Even a book stamped inside the lifetime cannot retrospectively change this frozen queue.
+    append_received(w, 3_010_000_000, pc(1990, "A", 0.5, 50, "SELL"))
+    append_received(w, 3_020_000_000, trade(2002, "A", 0.5, 40, "SELL", "post_end"))
+    append_received(w, 3_030_000_000, trade(999, "A", 0.5, 40, "SELL", "pre_placement"))
+    append_received(w, 3_040_000_000, trade(1900, "B", 0.5, 20, "BUY", "unrelated"))
+    append_received(w, 3_050_000_000, trade(1900, "A", 0.5, 20, "SELL", "unrelated"))
+    append_received(w, 3_060_000_000, trade(2000, "A", 0.5, 25, "SELL", "own"))
+    if finalize == "reset":
+        w.append("", tw=(MS + 3200) * 1_000_000, meta={"ctl": "disconnect"})
+    elif finalize == "grace_exhausted":
+        append_received(w, 4_000_000_001, trade(2000, "A", 0.5, 25, "SELL", "expired"))
+    w.close()
+    orders = [orow("o", "BUY", 0.5, 40, 1000, 2000, "cancelled:exact_decrease", 15, [("own", 2000, 15)])]
+    write_dir(matches, [] if candidate else orders, [qrow(0.5, 1000, 2000, size=40)] if candidate else [])
+    doc, (r,) = run(tape, matches, T0, T0 + 5)
+    assert doc["counts"]["mirror_dup_prints"] == 1
+    assert r["pessimistic"]["by_source"] == {"trade": 15}  # 20 + 25 - 30 ahead
+    assert r["optimistic"]["by_source"] == {"trade": 40}
+    assert r["late_same_side_prints"] == 2
+    if candidate:
+        assert doc["never_filled_quotes_estimate"]["pessimistic"]["n"] == 1
+    else:
+        assert r["fills_delivered"] == 1
+
+
+def test_placement_record_and_earlier_execution_are_ineligible(tmp_path):
+    tape, matches = tmp_path / "tape", tmp_path / "om"
+    w = SegmentWriter(tape, "clob_btc_5m")
+    append_received(w, 0, book(0, "A"))
+    append_received(w, 1_000_000_000, pc(1000, "A", 0.5, 40, "BUY"),
+                    trade(1000, "A", 0.5, 11, "SELL", "placement_record"))
+    # Separate records may have identical receipt and venue timestamps.
+    append_received(w, 1_000_000_000, trade(999, "A", 0.5, 13, "SELL", "pre_placement"))
+    append_received(w, 1_000_000_000, trade(1000, "A", 0.5, 7, "SELL", "next_record"))
+    w.close()
+    end = orow("o", "BUY", 0.5, 40, 1000, 2000, "cancelled:exact_decrease", 7, [("next_record", 1000, 7)])
+    write_dir(matches, [end])
+    _, (r,) = run(tape, matches, T0, T0 + 3)
+    assert r["pessimistic"]["filled"] == r["optimistic"]["filled"] == 7
+    assert r["fills_delivered"] == 1
+
+
+@pytest.mark.parametrize("book_first", [False, True])
+def test_first_post_end_event_freezes_queue_in_record_order(tmp_path, book_first):
+    tape, matches = tmp_path / "tape", tmp_path / "om"
+    w = SegmentWriter(tape, "clob_btc_5m")
+    append_received(w, 0, book(0, "A"))
+    append_received(w, 1_000_000_000, pc(1000, "A", 0.5, 40, "BUY"))
+    cross = pc(1900, "A", 0.5, 20, "SELL")
+    beyond_end = trade(2100, "A", 0.3, 5, "BUY", "unrelated")
+    append_received(w, 2_500_000_000, *((cross, beyond_end) if book_first else (beyond_end, cross)))
+    w.close()
+    write_dir(matches, [orow("o", "BUY", 0.5, 40, 1000, 2000, "cancelled:exact_decrease", 0, [])])
+    _, (r,) = run(tape, matches, T0, T0 + 3)
+    for mode in ("pessimistic", "optimistic"):
+        assert r[mode]["by_source"] == ({"book_cross": 20} if book_first else {})
+
+
+@pytest.mark.parametrize("crossing", ["unchanged_book", "unchanged_price_change", "mixed_assets"])
+def test_unchanged_post_end_book_starts_receipt_grace(tmp_path, crossing):
+    tape, matches = tmp_path / "tape", tmp_path / "om"
+    w = SegmentWriter(tape, "clob_btc_5m")
+    append_received(w, 0, book(0, "A"), book(0, "B"))
+    append_received(w, 1_000_000_000, pc(1000, "A", 0.5, 40, "BUY"))
+    event = book(2100, "A", bids=[(0.5, 40)])
+    if crossing != "unchanged_book":
+        event = pc(2100, "A", 0.5, 40, "BUY")
+        if crossing == "mixed_assets":
+            _, other = pc(2100, "B", 0.4, 5, "BUY")
+            event[1]["price_changes"].extend(other["price_changes"])
+    append_received(w, 2_100_000_000, event)
+    append_received(w, 3_400_000_000, trade(2000, "A", 0.5, 40, "SELL", "own"))
+    w.close()
+    write_dir(matches, [orow("o", "BUY", 0.5, 40, 1000, 2000, "filled:chain", 40, [("own", 2000, 40)])])
+    _, (r,) = run(tape, matches, T0, T0 + 4)
+    assert r["fills_seen"] == r["fills_routed"] == 1
+    assert r["fills_delivered"] == r["optimistic"]["filled"] == 0
+    assert r["expiry_observed_tw_ns"] == MS * 1_000_000 + 2_100_000_000
+
+
+def test_exchange_clock_ahead_of_receipt_and_first_fill_inversion(tmp_path):
+    tape, matches = tmp_path / "tape", tmp_path / "om"
+    w = SegmentWriter(tape, "clob_btc_5m")
+    append_received(w, 0, book(0, "A", bids=[(0.5, 20)]))
+    append_received(w, 1_000_000_000, pc(1000, "A", 0.5, 60, "BUY"))
+    append_received(w, 1_050_000_000, pc(1800, "A", 0.5, 5, "SELL"))
+    append_received(w, 1_100_000_000, trade(1801, "A", 0.5, 8, "SELL", "after_cross"))
+    append_received(w, 1_150_000_000, trade(1799, "A", 0.5, 25, "SELL", "before_cross"))
+    w.close()
+    write_dir(matches, [orow("o", "BUY", 0.5, 40, 1000, 2000, "cancelled:exact_decrease", 13,
+                             [("after_cross", 1801, 8), ("before_cross", 1799, 5)])])
+    _, (r,) = run(tape, matches, T0, T0 + 3)
+    assert sorted(r["pessimistic"]["fills"]) == [
+        [MS + 1799, 5, "trade"], [MS + 1800, 5, "book_cross"], [MS + 1801, 8, "trade"],
+    ]
+    assert r["pessimistic"]["first_fill_ms"] == r["optimistic"]["first_fill_ms"] == MS + 1799
+
+
+@pytest.mark.parametrize("trade_ms", [1799, 1800, 1801])
+def test_late_print_uses_venue_stamp_against_last_book_cross(tmp_path, trade_ms):
+    tape, matches = tmp_path / "tape", tmp_path / "om"
+    w = SegmentWriter(tape, "clob_btc_5m")
+    append_received(w, 0, book(0, "A", bids=[(0.5, 20)]))
+    append_received(w, 1_000_000_000, pc(1000, "A", 0.5, 60, "BUY"))
+    append_received(w, 2_000_000_000, pc(1800, "A", 0.5, 5, "SELL"))
+    append_received(w, 3_000_000_000, pc(2100, "A", 0.1, 5, "BUY"))
+    append_received(w, 3_050_000_000, trade(trade_ms, "A", 0.5, 15, "SELL", "own"))
+    w.close()
+    write_dir(matches, [orow("o", "BUY", 0.5, 40, 1000, 2000, "cancelled:exact_decrease", 15,
+                             [("own", trade_ms, 15)])])
+    _, (r,) = run(tape, matches, T0, T0 + 4)
+    assert r["fills_delivered"] == 1
+    # The crossing observation filled 5 in either mode. At or before its stamp,
+    # the late print still meets the old 20-share pessimistic queue.
+    assert r["pessimistic"]["filled"] == (5 if trade_ms <= 1800 else 20)
+    assert r["optimistic"]["filled"] == 20
+
+
+@pytest.mark.parametrize("reset", [False, True])
+def test_delayed_print_must_arrive_before_sample_end_and_reset(tmp_path, reset):
+    tape, matches = tmp_path / "tape", tmp_path / "om"
+    w = SegmentWriter(tape, "clob_btc_5m")
+    append_received(w, 0, book(0, "A"))
+    append_received(w, 1_000_000_000, pc(1000, "A", 0.5, 40, "BUY"))
+    append_received(w, 2_500_000_000, pc(2100, "A", 0.1, 10, "BUY"))
+    if reset:
+        w.append("", tw=(MS + 2700) * 1_000_000, meta={"ctl": "disconnect"})
+    append_received(w, 3_000_000_000, trade(2000, "A", 0.5, 40, "SELL", "own"))
+    w.close()
+    write_dir(matches, [orow("o", "BUY", 0.5, 40, 1000, 2000, "filled:chain", 40, [("own", 2000, 40)])])
+    _, (r,) = run(tape, matches, T0, T0 + (4 if reset else 3))
+    assert r["fills_seen"] == r["fills_routed"] == int(reset)
+    assert r["fills_delivered"] == r["optimistic"]["filled"] == 0
+
+
 def test_old_ordermatch_rows_are_refused(tmp_path):
     write_tape(tmp_path / "tape", FRAMES)
     write_dir(tmp_path / "om", [{k: v for k, v in ORDERS[0].items() if k != "fills_at"}])
     with pytest.raises(SystemExit, match="re-run doppel-ordermatch"):
         run(tmp_path / "tape", tmp_path / "om", T0, T0 + 3600)
+
+
+def test_ambiguous_placement_keeps_bracket_violation_visible(tmp_path):
+    frames = [
+        book(0, "A", bids=[(0.5, 100)]),
+        pc(1000, "A", 0.5, 150, "BUY"),
+        trade(1400, "A", 0.5, 130, "SELL", "other"),
+        pc(1401, "A", 0.5, 20, "BUY"),
+        pc(1600, "A", 0.5, 70, "BUY"),
+        trade(2400, "A", 0.5, 10, "SELL", "own"),
+        pc(2401, "A", 0.5, 60, "BUY"),
+        pc(2600, "A", 0.5, 110, "BUY"),  # same size too late to be this order
+        pc(3800, "A", 0.5, 70, "BUY"),
+    ]
+    tape_root = tmp_path / "tape"
+    write_tape(tape_root, frames)
+    p = ordermatch.Params()
+    tape = ordermatch.build_tape(tape_root, ["clob_btc_5m"], T0, T0 + 3600, {"A"}, [], p)
+    order = ordermatch.Order("o1", "wallet", "A", "BUY", 0.5, 50.0, MS + 900, {"own": (10.0, T0 + 3)})
+    matches = ordermatch.match_placements([order], tape, p)
+    row = ordermatch.classify(order, *matches["o1"], tape, set(), p)
+    assert row["placement_candidates"] == 2
+    match_dir = tmp_path / "om"
+    write_dir(match_dir, [row])
+    doc, (out,) = run(tape_root, match_dir, T0, T0 + 3600)
+    assert out["placement_candidates"] == 2 and out["pessimistic"]["filled"] == 40
+    b = doc["bracket_violations"]
+    assert b["pessimistic_overfilled"] == 1
+    assert b["by_placement_evidence"]["multiple_candidates"] == {
+        "orders": 1, "pessimistic_overfilled": 1, "optimistic_underfilled": 0}
 
 
 def test_cli_after_ordermatch_end_to_end(tmp_path, capsys):
@@ -280,3 +487,80 @@ def test_cli_after_ordermatch_end_to_end(tmp_path, capsys):
     assert row["optimistic"]["fills"] == [[MS + 2000, 50.0, "trade"]]  # same total, all of it early
     text = capsys.readouterr().out
     assert "LIMIT: conditional on a real fill" in text and "adapter gate: 2/2" in text
+
+
+@pytest.mark.parametrize("delayed", [False, True])
+def test_mirrored_sweep_delivers_to_the_better_maker_level(tmp_path, delayed):
+    """Apex regression for a 97-cent bid inside a 4-cent BUY aggregate on its mate."""
+    tx = "0x" + "12" * 32
+    order_id = "34" * 32
+    condition = "56" * 32
+    market = "0x" + condition
+    tape = tmp_path / "tape"
+    w = SegmentWriter(tape, "clob_btc_5m")
+    append_received(w, 0, book(0, "101", bids=[(0.97, 342)], market=market))
+    append_received(w, 0, book(0, "102", asks=[(0.03, 342)], market=market))
+    append_received(w, 1_000_000_000, pc(1000, "101", 0.97, 442, "BUY", market))
+    if delayed:
+        append_received(w, 1_800_000_000, pc(1800, "101", 0.50, 10, "BUY", market))
+    receipt_ns = 1_900_000_000 if delayed else 1_700_000_000
+    append_received(w, receipt_ns, trade(1700, "102", 0.04, 1005.14, "BUY", tx, market))
+    w.close()
+    matched = tmp_path / "matched"
+    write_dir(matched, [orow(order_id, "BUY", 0.97, 100, 1000, 1700, "filled:chain",
+                             100, [(tx, 1700, 100)], "101")])
+    _, (baseline,) = run(tape, matched, T0, T0 + 2)
+    assert (baseline["fills_seen"], baseline["fills_routed"], baseline["fills_delivered"]) == (1, 0, 0)
+    # Per maker level in the 97-cent bid's view: 419.45 at 97 cents, 585.69 at 96.
+    common = {"tx": tx, "condition_id": condition, "n_makers": 3, "maker": "0x" + "78" * 20}
+    rows = [
+        ("taker", "102", "BUY", 0.04, 2500, 36_011_100, "01" * 32),
+        ("maker", "101", "BUY", 0.97, 100, 97_000_000, order_id),
+        ("maker", "102", "SELL", 0.03, 319.45, 319_450_000, "02" * 32),
+        ("maker", "102", "SELL", 0.04, 585.69, 585_690_000, "03" * 32),
+    ]
+    orders = tmp_path / "orders.jsonl"
+    with orders.open("wb") as file:
+        for role, token, side, limit, qty, filled, oid in rows:
+            cash, shares = round(limit * qty * 1e6), round(qty * 1e6)
+            maker_amount, taker_amount = (cash, shares) if side == "BUY" else (shares, cash)
+            file.write(orjson.dumps(common | {"role": role, "token_id": token, "side": side, "limit": limit,
+                                   "size": qty, "fill_amount": filled, "order_id": oid, "maker_amount": maker_amount,
+                                   "taker_amount": taker_amount, "verified": oid == order_id}) + b"\n")
+    _, (resolved,) = run(tape, matched, T0, T0 + 2, orders=orders)
+    assert (resolved["fills_seen"], resolved["fills_routed"], resolved["fills_delivered"]) == (1, 1, 1)
+    assert (resolved["fills_raw_routed"], resolved["fills_allocated_routed"]) == (0, 1)
+    assert resolved["fills_delivered_during_grace"] == int(delayed)
+    assert resolved["pessimistic"]["fills"] == [[MS + 1700, 77.45, "trade"], [MS + 1700, 22.55, "trade"]]
+
+
+def test_partial_and_repeated_public_frames_cannot_spend_a_call_twice(tmp_path):
+    frames = [book(0, "A", market="f1"), book(0, "B", market="f1"),
+              pc(900, "A", .5, 100, "BUY", "f1"),
+              trade(1100, "A", .5, 10, "SELL", "tx", "f1"),
+              trade(1200, "A", .5, 30, "SELL", "tx", "f1"),
+              trade(1300, "B", .5, 30, "BUY", "tx", "f1"),
+              trade(1400, "A", .5, 30, "SELL", "tx", "f1")]
+    write_tape(tmp_path / "tape", frames)
+    write_dir(tmp_path / "om", [orow("x", "BUY", .5, 100, 900, 1800, "cancelled:exact_decrease",
+                                     30, [("tx", 1200, 30)])])
+    tx = {"tx": "tx", "condition_id": "f1", "n_makers": 1, "verified": True, "token_id": "A"}
+    rows = [tx | dict(role="maker", order_id="x", side="BUY", maker_amount=50_000_000,
+                      taker_amount=100_000_000, fill_amount=15_000_000),
+            tx | dict(role="taker", order_id="other", side="SELL", maker_amount=30_000_000,
+                      taker_amount=15_000_000, fill_amount=30_000_000)]
+    source = tmp_path / "decoded.jsonl"
+    source.write_bytes(b"".join(orjson.dumps(r) + b"\n" for r in rows))
+    doc, (r,) = run(tmp_path / "tape", tmp_path / "om", T0, T0 + 2, orders=source)
+    assert r["pessimistic"]["fills"] == [[MS + 1200, 30, "trade"]]
+    assert r["fills_allocated_routed"] == 1 and r["unresolved_same_side_prints_while_live"] == 1
+    assert doc["counts"]["public_prints:quantity_mismatch"] == 1
+    assert doc["counts"]["mirror_dup_prints"] == doc["counts"]["repeat_allocated_prints"] == 1
+    assert doc["bracket_violations"]["by_price_evidence"]["unresolved"]["orders"] == 1
+
+
+def test_earlier_replay_end_excludes_later_known_cancel(tmp_path):
+    write_tape(tmp_path / "tape", FRAMES)
+    write_dir(tmp_path / "om", [ORDERS[0] | {"end_ms": MS + 3000}])
+    doc, (r,) = run(tmp_path / "tape", tmp_path / "om", T0, T0 + 3)
+    assert r["cut"] == "tape_end" and doc["counts"]["headline_orders"] == 0

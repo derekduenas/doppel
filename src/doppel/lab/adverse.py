@@ -4,7 +4,7 @@ says it is worth.
 For every public PM US BTC trade print (WS streams only; the aggressor is ``taker.side``):
   - taker SELL hits a bid at p   -> the maker BOUGHT YES at p: maker pnl = outcome - p; model edge = fair - p
   - taker BUY lifts an ask at p  -> the maker SOLD YES at p:   maker pnl = p - outcome; model edge = p - fair
-fair = fair-v1 from raw BRTI known BEFORE the print (decision second = floor(print receive time) - 1),
+fair = fair-v1 from raw BRTI available at the print's receipt, with the twin's BRTI delay,
 ptb / outcome from the published settlement series (A(S-1), A(E-1)).
 
 Bucketed by time to close and by model edge. ``adverse_c`` = realised maker pnl - model edge, per
@@ -27,8 +27,8 @@ import numpy as np
 import orjson
 
 from ..tape.segment import read_segment
-from .brti_import import load_raw
-from .fair import fair_up_raw, to_array
+from .brti_import import load_raw_rcv
+from .fair import fair_up_asof, to_arrays_rcv
 from .pmus_tape import WS_STREAMS
 from .refprice import load_series
 
@@ -68,9 +68,8 @@ def iter_prints(root: Path, hz: str = "5m", asset: str = "btc"):
 
 
 def study(root: Path, hz: str = "5m") -> dict:
-    raw = load_raw(root)
     ser = load_series(root, "crypto:btc")
-    t0, r = to_array(raw)
+    t0, r, rcv = to_arrays_rcv(load_raw_rcv(root))
     cells: dict = defaultdict(lambda: {"q": 0.0, "pnl": 0.0, "edge": 0.0, "n": 0})
     total = {"q": 0.0, "pnl": 0.0, "edge": 0.0, "n": 0}
     skipped = defaultdict(int)
@@ -79,11 +78,11 @@ def study(root: Path, hz: str = "5m") -> dict:
         if po is None or pc is None:
             skipped["unsettled"] += 1
             continue
-        d = int(p["recv"]) - 1
+        d = int(p["recv"])
         if not (p["start"] <= d < p["end"]):
             skipped["outside_window"] += 1
             continue
-        fv = fair_up_raw(r, t0, po, d, p["end"])
+        fv = fair_up_asof(r, rcv, t0, po, p["recv"], p["end"])   # BRTI received by the print only
         if fv is None:
             skipped["no_fair"] += 1
             continue

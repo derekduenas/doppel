@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import hashlib
 import os
+import tempfile
 import time
 import zlib
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -25,6 +26,33 @@ import orjson
 import zstandard
 
 FLUSH_INTERVAL_S = 1.0
+
+
+def sync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def atomic_write(path: Path, data: bytes, *, replace: bool = True) -> None:
+    """Publish complete bytes, including across concurrent readers and process restarts."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix="." + path.name, delete=False) as tmp:
+        partial = Path(tmp.name)
+        try:
+            tmp.write(data)
+            tmp.flush()
+            os.fchmod(tmp.fileno(), path.stat().st_mode & 0o777 if path.exists() else 0o644)
+            os.fsync(tmp.fileno())
+            if replace:
+                os.replace(partial, path)
+            else:
+                os.link(partial, path)
+            sync_directory(path.parent)
+        finally:
+            partial.unlink(missing_ok=True)
 
 
 def segment_path(root: Path, stream: str, wall_ns: int) -> Path:
@@ -47,6 +75,7 @@ class SegmentWriter:
     root: Path
     stream: str
     level: int = 6
+    initial_seq: InitVar[int] = 0
     _path: Path | None = None
     _fh: BinaryIO | None = None
     _buf: list[bytes] = field(default_factory=list)
@@ -56,10 +85,10 @@ class SegmentWriter:
     _cctx: Any = None
     _hash: Any = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, initial_seq: int) -> None:
         self.root = Path(self.root)
         self._cctx = zstandard.ZstdCompressor(level=self.level)
-        self._seq = self._resume_seq()
+        self._seq = max(initial_seq, self._resume_seq())
 
     # -- public -------------------------------------------------------------------------------
     def append(self, raw: str | bytes, tw: int | None = None, tm: int | None = None,
@@ -161,7 +190,7 @@ class SegmentWriter:
         return last
 
 
-def _frames(path: Path, read_size: int = 1 << 20):
+def _frames(path: Path, read_size: int = 1 << 20, *, strict: bool = False):
     """Decompressed zstd frames of a segment, one at a time, reading the file in ``read_size``
     chunks (memory is one frame, not the whole file). A truncated or corrupt tail ends it."""
     dctx = zstandard.ZstdDecompressor()
@@ -174,10 +203,14 @@ def _frames(path: Path, read_size: int = 1 << 20):
                 if not buf:
                     buf = fh.read(read_size)
                     if not buf:
+                        if strict and out:
+                            raise ValueError(f"truncated zstd frame in {path}")
                         return  # clean end, or a truncated tail frame from a crash
                 try:
                     out.append(obj.decompress(buf))
-                except zstandard.ZstdError:
+                except zstandard.ZstdError as exc:
+                    if strict:
+                        raise ValueError(f"invalid zstd frame in {path}") from exc
                     return
                 if obj.eof:
                     buf = obj.unused_data
@@ -186,10 +219,9 @@ def _frames(path: Path, read_size: int = 1 << 20):
             yield b"".join(out)
 
 
-def read_segment(path: Path, verify: bool = True):
-    """Yield records from a segment. Tolerates a truncated final frame. Raises on CRC mismatch
-    when ``verify`` is true."""
-    for chunk in _frames(Path(path)):
+def read_segment(path: Path, verify: bool = True, *, strict: bool = False):
+    """Yield records, optionally checking payload CRCs and requiring complete zstd frames."""
+    for chunk in _frames(Path(path), strict=strict):
         for line in chunk.splitlines():
             if not line:
                 continue

@@ -52,6 +52,26 @@ def test_truncated_tail_frame_is_tolerated(tmp_path):
     data = p.read_bytes()
     p.write_bytes(data[:-5])  # simulate crash mid-frame
     assert [r["raw"] for r in read_segment(p)] == ["one"]
+    with pytest.raises(ValueError, match="truncated zstd"):
+        list(read_segment(p, strict=True))
+    assert build_receipt(tmp_path, "20261125", 16)["streams"]["s"]["crc_ok"] is False
+
+
+def test_verify_empty_and_self_hashed_corrupt_segment(tmp_path):
+    from doppel.tape.cli import verify
+    import hashlib
+    assert verify(tmp_path) == 1
+    w = SegmentWriter(tmp_path, "s")
+    w.append("one", tw=T0)
+    w.close()
+    path = segment_path(tmp_path, "s", T0)
+    with path.open("ab") as handle:
+        handle.write(b"invalid frame")
+    man = path.parent.parent / "manifest.jsonl"
+    row = orjson.loads(man.read_bytes())
+    row["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    man.write_bytes(orjson.dumps(row) + b"\n")
+    assert verify(tmp_path) == 1
 
 
 def test_frames_stream_across_read_chunks(tmp_path):

@@ -28,8 +28,8 @@ import orjson
 
 from ..tape.segment import SegmentWriter, read_segment
 from ..tape.sources.base import SSL_CTX, UA
-from .brti_import import load_raw
-from .fair import fair_up_raw, to_array
+from .brti_import import load_raw_rcv
+from .fair import fair_up_asof, to_arrays_rcv
 from .refprice import load_series
 
 URL = "https://gateway.polymarket.us/v1/price-history"
@@ -87,9 +87,9 @@ def asof(rows: list[tuple[float, float, float]], t: float, max_age: float = 3):
 
 
 def evaluate(root: Path, margin: float = 0.0, taus=(60, 120, 180, 240, 270)) -> dict:
-    raw = load_raw(root)
+    raw = load_raw_rcv(root)
     ser = load_series(root, "crypto:btc")
-    t0, r = to_array(raw)
+    t0, r, rcv = to_arrays_rcv(raw)
     lo, hi = max(min(raw), min(ser)) + 400, min(max(raw), max(ser)) - 300
     starts = list(range((lo // 300 + 1) * 300, hi, 300))
     books = tape_books(root)
@@ -111,7 +111,7 @@ def evaluate(root: Path, margin: float = 0.0, taus=(60, 120, 180, 240, 270)) -> 
             ask_up, ask_dn = ask, 1.0 - bid  # buy Up at the ask; buy Down = sell Up at the bid
             if not (0 < ask_up < 1 and 0 < ask_dn < 1):
                 continue
-            fv = fair_up_raw(r, t0, po, st + tau, end)
+            fv = fair_up_asof(r, rcv, t0, po, st + tau, end)   # BRTI received by the decision only
             if fv is None:
                 continue
             a = acc[tau]

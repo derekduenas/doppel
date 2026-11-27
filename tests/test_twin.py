@@ -670,3 +670,19 @@ def test_commercial_uses_evaluated_windows_not_the_schedule():
     assert c["windows_per_day_scheduled"] == 288 and c["windows_per_day_evaluated"] == 10
     assert c["realised_net_usd_per_day_after_ops"] == -1.0
     assert c["net_usd_per_day_lower_bound_after_ops"] < 0 and c["clears_hurdle"] is False
+
+
+def test_commercial_counts_excluded_days_and_half_open_midnight_window():
+    g = _maker()
+    day = 1_800_000_000 // 86400 * 86400
+    rows = run_windows(g, _synthetic(2, "flat"))
+    for i, row in enumerate(rows):
+        start = day + 86400 - (2 - i) * 300
+        row.update(start=start, end=start + 300, net_c=150.0, net_usd=1.5)
+    rows.append({"start": day + 86400, "end": day + 86400 + 300, "eligible": False,
+                 "source": "none", "excluded": "no_ws_coverage"})
+    c = verdict(g, rows, n_boot=20, op_cost_usd_month=60.0)["commercial"]
+    assert c["days"] == 2 and c["windows_per_day_evaluated"] == 1
+    assert c["realised_net_usd_per_day_after_ops"] == -0.5
+    assert c["net_usd_per_day_lower_bound_after_ops"] == -0.5
+    assert not c["clears_hurdle"]

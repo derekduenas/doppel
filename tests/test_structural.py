@@ -242,6 +242,20 @@ def test_stale_and_non_persistent_become_skips():
     assert sk["not_persistent"]["runs"] == 2 and sk["not_persistent"]["seconds"] == 2   # s0-4 and s0+50
 
 
+def test_episode_values_the_first_confirmed_second():
+    low, high = ladder()
+    s = T - 100
+    bl, bh = Book(), Book()
+    flat(bl, s, s + 2, 0.38, 100, 0.40, 100)
+    bh.add(s, 0.85, 100, 0.87, 100)
+    bh.add(s + 1, 0.50, 3, 0.52, 3)
+    rows = list(scan_class([low, high], {("pmus", "pm5"): bl, ("pmus", "pm15"): bh},
+                           s, s + 1, fees=Fees(pmus_taker=0)))
+    o, = (r for r in rows if r["type"] == "opportunity")
+    assert (o["dollars"], o["size"]) == (0.30, 3)
+    assert (o["start"], o["qualified_at"]) == (s, s + 1)
+
+
 def test_skew_is_a_skip_and_one_sided_wing_is_usable():
     low, high = ladder()
     s0 = T - 200
@@ -267,12 +281,12 @@ def test_one_leg_failure_moves():
     o = [r for r in rows if r["type"] == "opportunity"][0]
     first_no, first_yes = o["leg2"]                             # legs: (pm15 no, pm5 yes)
     assert (first_no["first"], first_yes["first"]) == ("pmus:pm15", "pmus:pm5")
-    assert first_yes["move_1s_c"] == 2.0 and first_yes["move_5s_c"] is None   # missing is null, never zero
+    assert o["qualified_at"] == s0 + 1
+    assert first_yes["move_1s_c"] is None and first_yes["move_5s_c"] is None   # bid pulled after qualification
     assert first_no["move_1s_c"] == 0.0 and first_no["move_5s_c"] == 3.0
     s = summarize([{"type": "run", "run": "r"}] + rows)
     f = s["one_leg_failure"]
-    assert f["1s_best_order"]["missing"] == 0 and f["1s_worst_order"]["missing"] == 0
-    assert f["1s_worst_order"]["loss_if_leg2_chased_dollars"] == round(0.02 * o["size"], 2)
+    assert f["1s_best_order"]["missing"] == 0 and f["1s_worst_order"]["missing"] == 1
     assert f["5s_best_order"]["missing"] == 0                                 # one ordering has a quote
     assert f["5s_best_order"]["loss_if_leg2_chased_dollars"] == round(0.03 * o["size"], 2)
     assert f["5s_worst_order"]["missing"] == 1                                # the other does not

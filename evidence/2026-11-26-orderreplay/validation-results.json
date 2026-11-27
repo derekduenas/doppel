@@ -1,0 +1,412 @@
+{
+  "apex_root": "/var/backups/doppel-sealed-20261126/research/ordertape-pilot.TUedd4/audit-validation.4OcRq1",
+  "source": "The final/ source snapshot and its file hashes are retained in the scratch directory.",
+  "benchmark_context": "The first portion of the cold benchmark overlapped a preliminary same-interval run and the 2-minute validation on the shared recorder host. Preliminary full run superseded and stopped at 12:25.67 elapsed (shell exit 143). Each research process ran at nice 15 and idle I/O priority. Cold means an empty reconstruction output, warm filesystem caches and already-decoded cached transactions.",
+  "sha256": {
+    "final/evidence/2026-11-26-orderreplay/fresh-sample.json": "15d7c2810cc9493245dbd371ed04a4d1961606ef285af87414d66b8b0d31cbc7",
+    "final/evidence/2026-11-26-orderreplay/fresh_probe.py": "4d1cebec620adae21095fa958f58b03d3fb6007cbda19104fa32c5567481972b",
+    "final/source.sha256": "0bba675c97d05812bf9b5c8191b289637aa6841d5f62fea98dbe3700e6839716",
+    "final/fresh/selection.json": "f1586d91725c6b577e08aa8d4af317db21171a1b76284147a34861656f062dfd",
+    "final/fresh/ordermatch/orders.jsonl": "875b62353694c0fc8c09537649ed9176bf6dd0480257042e676a5f4c6f5dc630",
+    "final/fresh/orderreplay/orderreplay.json": "7a328718271d850e2035f1097acde1f8c58813965a0fb85f842bb80ed5c17ab9",
+    "final/fresh/orderreplay/orderreplay.jsonl": "b037cfa40ddd29c9503f87a6b11d5d826c4bd494457aa21b721e96b06a95ac04",
+    "fresh/store-coverage.json": "d7e637aa8f10090673caac9403dfa5b210c923478d674e87501dc3d182fcc16e",
+    "final/cold-output/manifest.json": "ef58e7238860913efb4ffd869c251ce546e388f32ff173659acff7550bc567bb",
+    "final/cold-output/report.json": "0a46fd8040bac3dd40bfe4a823082ef390f585b80d90f0c687066c573cff8c1b",
+    "final/full-13m/manifest.json": "2683cddce1b4612a2b8d3f9d185b796af071bcd5c749cbd5a05a60560854ee4d",
+    "final/full-13m/report.json": "0a46fd8040bac3dd40bfe4a823082ef390f585b80d90f0c687066c573cff8c1b",
+    "final/full-13m/ordermatch/ordermatch.json": "28a28f90c8430ec991abe87fd573b40b2df86b4345c3899bea68dde3a813392b",
+    "final/full-13m/orderreplay/orderreplay.json": "589ce2d9139e9ec2855d34ef6581b00c11f00633c91432a00013feb26532323f",
+    "final/full-13m/wallets/0x0cb038487586d1119b165466072e9baf666f3a90/orders.jsonl": "2aa75126d70de12d5817c7f253035010f762ad3a11690769b2a6eee716648c26",
+    "final/full-13m/wallets/0x0cb038487586d1119b165466072e9baf666f3a90/orderreplay.jsonl": "e1b6c13d60811c66c3d6cd4e72b4adcb7b8be6fc4cae73f30510a2a9d550a954",
+    "final/cold.time": "2aa6dfaca29349c6be5354917a0ae9ed71b2931711cdc3b88b443a2a70c0f242",
+    "final/resume.time": "d26cce15cc54fcd828c8af1ac7cdd6ccd436c24bee05ceac4079c51331d9e15f",
+    "final/fresh-match.time": "f12647c8eb3bfabdf8af9e3c7213d9d220a8fbb98e8112906fe7209a5112947f",
+    "final/fresh-replay.time": "c4b39875af91e13229896b86ad060e76bfd872b6257466f603cd47b1dff43dd1"
+  },
+  "frozen_sample": {
+    "spec": {
+      "selection": "First two minutes immediately following the prior 13-minute reconstruction. Frozen before reading the fresh results.",
+      "wallet": "0x0cb038487586d1119b165466072e9baf666f3a90",
+      "stream": "clob_btc_5m",
+      "warmup_from": 1795630380,
+      "sample_from": 1795630500,
+      "sample_to": 1795630620,
+      "size_tol_rel": 0.02,
+      "pipeline": {
+        "from": 1795629720,
+        "to": 1795630500,
+        "chunk_minutes": 15,
+        "wallet_batch": 1,
+        "mem_budget_mb": 1800,
+        "max_requests": 0
+      }
+    },
+    "selection": {
+      "spec_sha256": "15d7c2810cc9493245dbd371ed04a4d1961606ef285af87414d66b8b0d31cbc7",
+      "screened_wallet_orders_all_markets": 17,
+      "selected_wallet_btc5m_orders": 16,
+      "wallet_orders_without_token_slug": [],
+      "matched": 16,
+      "unmatched_ids": [],
+      "independently_identified_placements": 0,
+      "outcomes": {
+        "cancelled": 8,
+        "filled": 6,
+        "unknown": 2
+      }
+    },
+    "block_time_coverage": {
+      "wallet": "0x0cb038487586d1119b165466072e9baf666f3a90",
+      "block_time_interval": [
+        1795630500,
+        1795630620
+      ],
+      "source_fillstore_state_sha256": "4739c483f0a56daac7c5ab02f0848ca09847e67d017148795a86dce67c44c05c",
+      "verified_against_fillstore": {
+        "fills_in_range": 34,
+        "fills_expected": 34,
+        "fills_matched": 34,
+        "share": 1,
+        "coverage": 1
+      },
+      "orders": {
+        "path": "/var/backups/doppel-sealed-20261126/research/ordertape-pilot.TUedd4/audit-validation.4OcRq1/orders",
+        "sha256": "24b564670b35097af5458f2cff3462b254e4f523f68c3f3bad1e3c4b2d6493fa",
+        "parts": 15,
+        "rows": 26208
+      },
+      "source_chain_independently_complete": null
+    },
+    "replay": {
+      "counts": {
+        "orders": 16,
+        "public_prints:no_decoded_call": 1465,
+        "public_prints:allocated": 551,
+        "prints_at_quote_price:hit_side": 49,
+        "placement_not_found": 0,
+        "candidate_book_cross_fills": 0,
+        "orders_replayed": 16,
+        "headline_orders": 14,
+        "known_end_cut_by_reset": 0,
+        "cut_short": {},
+        "twin_book_cross_fills": 1
+      },
+      "adapter_gate": {
+        "fills": 32,
+        "located_by_print": 32,
+        "print_seen_in_replay": 32,
+        "routed_to_order_price_and_side": 32,
+        "raw_print_price_and_side": 29,
+        "allocated_price_and_side": 32,
+        "routed_share": 1,
+        "delivered_to_live_quote": 30,
+        "delivered_share": 0.9375
+      },
+      "bracket_violations": {
+        "pessimistic_overfilled": 0,
+        "optimistic_underfilled": 2,
+        "by_placement_evidence": {
+          "multiple_candidates": {
+            "orders": 3,
+            "pessimistic_overfilled": 0,
+            "optimistic_underfilled": 0
+          },
+          "one_candidate": {
+            "orders": 11,
+            "pessimistic_overfilled": 0,
+            "optimistic_underfilled": 2
+          }
+        },
+        "by_price_evidence": {
+          "fully_allocated": {
+            "orders": 2,
+            "pessimistic_overfilled": 0,
+            "optimistic_underfilled": 0
+          },
+          "unresolved": {
+            "orders": 12,
+            "pessimistic_overfilled": 0,
+            "optimistic_underfilled": 2
+          }
+        }
+      }
+    },
+    "optimistic_underfills": [
+      {
+        "id": "f6f81419dfdfb24c0031be2346c93863bdec6abe471b80bbf5c36a785968520e",
+        "actual_shares": 98,
+        "optimistic_shares": 0,
+        "fills_routed": 1,
+        "fills_delivered": 0
+      },
+      {
+        "id": "df7fe3700e3e226c804686bae513a0241cb85afd3f88ea90bb5ed7a8295d3b80",
+        "actual_shares": 97,
+        "optimistic_shares": 0,
+        "fills_routed": 1,
+        "fills_delivered": 0
+      }
+    ],
+    "final_match": {
+      "command": "nice -n 15 ionice -c 3 timeout 300 /opt/doppel/.venv/bin/python evidence/2026-11-26-orderreplay/fresh_probe.py match /var/backups/doppel-sealed-20261126 /var/backups/doppel-sealed-20261126/research/ordertape-pilot.TUedd4/audit-validation.4OcRq1/final",
+      "user_cpu_s": 31.58,
+      "system_cpu_s": 1.85,
+      "wall_hms": "1:05.18",
+      "max_rss_kib": 316072,
+      "exit_status": 0
+    },
+    "final_replay": {
+      "command": "nice -n 15 ionice -c 3 timeout 240 /opt/doppel/.venv/bin/python evidence/2026-11-26-orderreplay/fresh_probe.py replay /var/backups/doppel-sealed-20261126 /var/backups/doppel-sealed-20261126/research/ordertape-pilot.TUedd4/audit-validation.4OcRq1/final",
+      "user_cpu_s": 30.17,
+      "system_cpu_s": 1.32,
+      "wall_hms": "1:04.14",
+      "max_rss_kib": 136516,
+      "exit_status": 0
+    },
+    "preliminary_receipt_applies_to_final_orders": true,
+    "preliminary_rows_digest_matches_final": true
+  },
+  "full_pipeline": {
+    "cold": {
+      "range": {
+        "from": 1795629720,
+        "to": 1795630500,
+        "from_utc": "2026-11-25T18:02:00Z",
+        "to_utc": "2026-11-25T18:15:00Z"
+      },
+      "run_wall_s": 980.3,
+      "peak_rss_mib": 1054.8,
+      "status": "complete",
+      "stopped": null,
+      "wallet_fill_store_coverage": {
+        "fills_in_range": 192,
+        "fills_expected": 192,
+        "fills_matched": 192,
+        "share": 1,
+        "coverage": 1
+      },
+      "gates": {
+        "ordertape.verified_share": {
+          "value": 1,
+          "n": 192,
+          "status": "pass",
+          "threshold": 0.99
+        },
+        "ordertape.full_store_coverage": {
+          "value": 1,
+          "n": 192,
+          "status": "pass",
+          "threshold": 1
+        },
+        "ordermatch.match_rate": {
+          "value": 0.961,
+          "n": 76,
+          "status": "pass",
+          "threshold": 0.9
+        },
+        "ordermatch.placebo_rate": {
+          "value": 0.039,
+          "n": 76,
+          "status": "pass",
+          "threshold": 0.1
+        },
+        "orderreplay.routed_share": {
+          "value": 1,
+          "n": 160,
+          "status": "pass",
+          "threshold": 0.95
+        },
+        "orderreplay.delivered_share": {
+          "value": 0.9875,
+          "n": 160,
+          "status": "pass",
+          "threshold": 0.95
+        },
+        "orderreplay.placement_not_found_share": {
+          "value": 0,
+          "n": 86,
+          "status": "pass",
+          "threshold": 0.01
+        },
+        "orderreplay.fully_allocated_share": {
+          "value": 0.36923076923076925,
+          "n": 65,
+          "status": "fail",
+          "threshold": 1
+        },
+        "orderreplay.bracket_violation_share": {
+          "value": 0.0615,
+          "n": 65,
+          "status": "fail",
+          "threshold": 0.05
+        }
+      },
+      "untrusted": {
+        "ordertape": [],
+        "ordermatch": [],
+        "orderreplay": [
+          "orderreplay.fully_allocated_share:fail",
+          "orderreplay.bracket_violation_share:fail"
+        ],
+        "profile": []
+      },
+      "steps": {
+        "ordertape": {
+          "status": "ran",
+          "wall_s": 6.9
+        },
+        "ordermatch": {
+          "status": "ran",
+          "wall_s": 291.5,
+          "peak_rss_mb": 1054.8
+        },
+        "orderreplay": {
+          "status": "ran",
+          "wall_s": 673.8,
+          "peak_rss_mb": 1054.8
+        },
+        "profile": {
+          "status": "ran",
+          "wall_s": 0.5
+        }
+      },
+      "code_sha256": "08caa48e3957c8d3844142191659045482bdcfa105246da3538b6a8b3e1025da"
+    },
+    "resume": {
+      "run_wall_s": 3.4,
+      "peak_rss_mib": 190,
+      "code_sha256": "08caa48e3957c8d3844142191659045482bdcfa105246da3538b6a8b3e1025da",
+      "steps": {
+        "ordertape": "skipped",
+        "ordermatch": "skipped",
+        "orderreplay": "skipped",
+        "profile": "skipped"
+      },
+      "status": "complete",
+      "stopped": null
+    },
+    "cold_process": {
+      "command": "nice -n 15 ionice -c 3 timeout 1200 /opt/doppel/.venv/bin/python -m doppel.lab.reconstruct --data /var/backups/doppel-sealed-20261126/tape --lab /var/backups/doppel-sealed-20261126/lab --store /mnt/volume_nyc1_1793485122853/doppel/lab/fills --cohort /var/backups/doppel-sealed-20261126/lab/cohorts/cohort-v1.json --wallets 0x0cb038487586d1119b165466072e9baf666f3a90 --from 1795629720 --to 1795630500 --out /var/backups/doppel-sealed-20261126/research/ordertape-pilot.TUedd4/audit-validation.4OcRq1/final/full-13m --orders /var/backups/doppel-sealed-20261126/research/ordertape-pilot.TUedd4/audit-validation.4OcRq1/final/orders --wallet-batch 1 --chunk-minutes 15 --size-tol-rel 0.02 --mem-budget-mb 1800 --max-requests 0",
+      "user_cpu_s": 767.07,
+      "system_cpu_s": 23.54,
+      "wall_hms": "16:22.90",
+      "max_rss_kib": 1080136,
+      "exit_status": 0
+    },
+    "resume_process": {
+      "command": "nice -n 15 ionice -c 3 timeout 240 /opt/doppel/.venv/bin/python -m doppel.lab.reconstruct --data /var/backups/doppel-sealed-20261126/tape --lab /var/backups/doppel-sealed-20261126/lab --store /mnt/volume_nyc1_1793485122853/doppel/lab/fills --cohort /var/backups/doppel-sealed-20261126/lab/cohorts/cohort-v1.json --wallets 0x0cb038487586d1119b165466072e9baf666f3a90 --from 1795629720 --to 1795630500 --out /var/backups/doppel-sealed-20261126/research/ordertape-pilot.TUedd4/audit-validation.4OcRq1/final/full-13m --orders /var/backups/doppel-sealed-20261126/research/ordertape-pilot.TUedd4/audit-validation.4OcRq1/final/orders --wallet-batch 1 --chunk-minutes 15 --size-tol-rel 0.02 --mem-budget-mb 1800 --max-requests 0",
+      "user_cpu_s": 4.01,
+      "system_cpu_s": 0.56,
+      "wall_hms": "0:04.64",
+      "max_rss_kib": 194536,
+      "exit_status": 0
+    },
+    "transactions": {
+      "selected": 190,
+      "requests": 0
+    },
+    "committed_orders": {
+      "path": "/var/backups/doppel-sealed-20261126/research/ordertape-pilot.TUedd4/audit-validation.4OcRq1/final/orders",
+      "sha256": "24b564670b35097af5458f2cff3462b254e4f523f68c3f3bad1e3c4b2d6493fa",
+      "parts": 15,
+      "rows": 26208
+    },
+    "match": {
+      "maker_orders": 90,
+      "observable": 76,
+      "matched": 73,
+      "matched_all": 87,
+      "match_rate": 0.961,
+      "placebo_matched": 3,
+      "placebo_rate": 0.039,
+      "outcomes": {
+        "unknown:level_below": 20,
+        "cancelled:exact_decrease": 33,
+        "filled:chain": 32,
+        "unknown:censored": 2
+      }
+    },
+    "wallet_replay": {
+      "counts": {
+        "orders": 87,
+        "orders_wrong_match_skipped": 1,
+        "placement_not_found": 0,
+        "orders_replayed": 86,
+        "headline_orders": 65,
+        "known_end_cut_by_reset": 0,
+        "cut_short": {
+          "reset": 2
+        },
+        "twin_book_cross_fills": 20
+      },
+      "adapter_gate": {
+        "fills": 160,
+        "located_by_print": 160,
+        "print_seen_in_replay": 160,
+        "routed_to_order_price_and_side": 160,
+        "raw_print_price_and_side": 152,
+        "allocated_price_and_side": 160,
+        "routed_share": 1,
+        "delivered_to_live_quote": 158,
+        "delivered_share": 0.9875
+      },
+      "bracket_violations": {
+        "pessimistic_overfilled": 4,
+        "optimistic_underfilled": 0,
+        "by_placement_evidence": {
+          "multiple_candidates": {
+            "orders": 17,
+            "pessimistic_overfilled": 3,
+            "optimistic_underfilled": 0
+          },
+          "one_candidate": {
+            "orders": 48,
+            "pessimistic_overfilled": 1,
+            "optimistic_underfilled": 0
+          }
+        },
+        "by_price_evidence": {
+          "fully_allocated": {
+            "orders": 24,
+            "pessimistic_overfilled": 0,
+            "optimistic_underfilled": 0
+          },
+          "unresolved": {
+            "orders": 41,
+            "pessimistic_overfilled": 4,
+            "optimistic_underfilled": 0
+          }
+        }
+      },
+      "conditional_on_real_fill": {
+        "pessimistic": {
+          "orders": 65,
+          "markets": 4,
+          "real": 3818.533,
+          "simulated": 2697.73,
+          "ratio": 0.7065
+        },
+        "optimistic": {
+          "orders": 65,
+          "markets": 4,
+          "real": 3818.533,
+          "simulated": 4646.18,
+          "ratio": 1.2167
+        }
+      },
+      "end_unknown_orders": {
+        "pessimistic": 21,
+        "optimistic": 21
+      }
+    },
+    "independently_identified_placements": 0,
+    "cold_and_resume_wallet_output_hashes_match": true
+  },
+  "post_run_recorders": {
+    "doppel-tape": "active",
+    "doppel-taped-shadow": "active"
+  },
+  "interpretation": "The fresh interval was frozen before scoring and lies outside the previous 13-minute replay. The encompassing 65-minute wallet-hour had earlier aggregate studies. Independently identified order-ID-bearing placements were unavailable. Known-store coverage is separate from independent on-chain completeness. Timing and calibration gates remain open.",
+  "source_file_checksums": "final/source.sha256"
+}

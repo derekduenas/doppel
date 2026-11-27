@@ -100,6 +100,7 @@ import math
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+from random import Random
 from types import SimpleNamespace
 from typing import Any
 
@@ -397,13 +398,13 @@ def sample_quotes(path: Path | None, wallet: str, tok: dict[str, dict], cap: int
     info |= {"total": n, "strata": len(counts)}
     keep: dict[str, set[int] | None] = {s: None for s in counts}  # None = all of the stratum
     if n > cap:
-        rng = np.random.default_rng(SEED)
+        rng = Random(SEED)
         names = sorted(counts)
         share = np.array([cap * counts[s] / n for s in names])
         quota = np.floor(share).astype(int)
         for i in np.argsort(-(share - quota), kind="stable")[:cap - int(quota.sum())]:
             quota[i] += 1
-        keep = {s: set(rng.choice(counts[s], int(q), replace=False).tolist()) for s, q in zip(names, quota)}
+        keep = {s: set(rng.sample(range(counts[s]), int(q))) for s, q in zip(names, quota)}
     seen: Counter = Counter()
     out = []
     for r in _jsonl(path):
@@ -1491,7 +1492,7 @@ def run(root: Path, om_dir: Path | None, orders_path: Path | None, wallet: str, 
     if reconstruct_manifest is not None:
         if om_dir is not None or orders_path is not None:
             raise ValueError("use reconstruction manifest or standalone order inputs")
-        from .research_manifest import read_reconstruction  # pyright: ignore[reportMissingImports]  (module lives on review/system-audit-20261126, not on main yet)
+        from .research_manifest import read_reconstruction
 
         source = read_reconstruction(reconstruct_manifest, wallet, t_from, t_to)
         orders_path, matched_orders, match_summary = source.orders, source.matched_orders, source.summary

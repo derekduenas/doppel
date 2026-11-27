@@ -1,0 +1,24 @@
+[Unit]
+Description=DOPPEL reconstruction: cohort order tape -> book match -> twin replay -> ledgers (last 6 closed hours)
+# NOT INSTALLED. Before installing (lead only): set the --cohort path, check the fill store is being
+# compacted (doppel-reconstruct does not compact it), and size --max-txs-per-wallet / --max-requests
+# to the RPC budget: one request per tx, 9.91 tx/s measured on Apex 2026-11-26, shared with any
+# other doppel-ordertape job.
+# --last-hours keeps <lab>/reconstruct/_pending.json: a range that did not finish (order tape
+# incomplete, memory stop, crash) is retried before a new one; --max-requests is per firing.
+# Exit codes: 1 = order tape incomplete (retried next firing), 2 = stopped on --mem-budget-mb,
+# 3 = another run holds the lock. All show the unit as failed on purpose.
+# Memory: the 8 GB host also runs the recorders. --mem-budget-mb stops the run cleanly below
+# MemoryHigh; MemoryMax and MemorySwapMax=0 are the hard stop if a single unit overshoots.
+
+[Service]
+Type=oneshot
+User=doppel
+WorkingDirectory=/tmp
+ExecStart=/opt/doppel/.venv/bin/doppel-reconstruct --data /mnt/volume_nyc1_1793485122853/doppel/tape --lab /mnt/volume_nyc1_1793485122853/doppel/lab --cohort /mnt/volume_nyc1_1793485122853/doppel/lab/COHORT.json --last-hours 6 --max-txs-per-wallet 500 --max-requests 60000 --chunk-minutes 15 --wallet-batch 10 --mem-budget-mb 1800
+MemoryHigh=2G
+MemoryMax=3G
+MemorySwapMax=0
+CPUQuota=100%
+Nice=15
+IOSchedulingClass=idle
