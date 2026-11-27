@@ -182,6 +182,9 @@ def _parquet_rows(path: Path, t_from: int, t_to: int, active: dict[str, set[str]
             if c is None or not t_from * 1000 <= c < t_to * 1000:
                 stats["rows_out_of_range"] += 1
                 continue
+            if not managed:
+                r["verified"] = False  # Standalone parquet has no published ordertape flush.
+                stats["legacy_diagnostic_rows"] += 1
             keep.append(r)
     keep.sort(key=lambda r: (r["block_ts"], r["tx"]))
     return keep
@@ -434,8 +437,16 @@ def _evidence(o: Order, tape: LevelTape, p: Params, search: Search, located: dic
         return "snapshot_only"
     if not observable(o, tape, p, shift):
         return "coverage_incomplete"
-    if not tape.known_over(o.token, e.venue_ms, max(q.venue_ms for q in located.values() if q) + shift):
+    last_fill = max((q for q in located.values() if q), key=lambda q: (q.venue_ms, q.tw_ns))
+    last_ms = last_fill.venue_ms + shift
+    if not tape.known_over(o.token, e.venue_ms, last_ms):
         return "coverage_incomplete"
+    for next_index in range(index + 1, len(tape.events[key])):
+        change = tape.events[key][next_index]
+        if change.tw_ns >= last_fill.tw_ns + shift * 1_000_000:
+            break
+        if change.new_size == 0 and e.venue_ms <= change.venue_ms < last_ms:
+            return "level_empty_before_fill"
     return "unique_candidate"
 
 
@@ -475,6 +486,8 @@ def follow(tape: LevelTape, key: Key, i0: int, r: float, start_ms: int,
         if e.venue_ms < start_ms:
             continue
         if e.new_size == 0:
+            if not tape.known_over(key[0], start.venue_ms, e.venue_ms):
+                return {"outcome": "unknown", "reason": "censored", "end_ms": None}
             # There is no resting size left by this observation. A level total does not
             # identify the owner who withdrew it or the instant their own order ended.
             vol, n = tape.printed(key[0], key[1], e.venue_ms, p.print_win_ms)
@@ -688,7 +701,8 @@ def run(root: Path, orders_path: Path, t_from: int, t_to: int, wallets: list[str
     tape = build_tape(root, streams, t_from, t_to,
                       {t for w, ts in active.items() if not focus or w in chosen for t in ts},
                       sorted({s for f in fps.values() for s in f}), p)
-    tape.allocations = load_allocations(orders_path, {tx for o in orders for tx in o.fills})
+    if not orders_path.is_dir() or (orders_path / STATE_DIR).is_dir():
+        tape.allocations = load_allocations(orders_path, {tx for o in orders for tx in o.fills})
     prints = {o.order_id: _fill_prints(o, tape) for o in orders}
     search = _placements(orders, tape, p, 0, prints)
     shifted = _placements(orders, tape, p, p.placebo_ms, prints)

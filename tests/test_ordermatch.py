@@ -179,6 +179,45 @@ def test_strict_matcher_depth_clock_and_prints():
     assert b.clock_counts["unclocked_prints"] == 1
 
 
+def test_empty_level_invalidates_continuous_placement_for_both_arms():
+    o = order("o", "A", "BUY", 0.4, 10, 1000, fills={"tx": (3, T0 + 2)})
+    t = tape_of([book(0, "A"), pc(1100, ("A", 0.4, 10, "BUY")), pc(1200, ("A", 0.4, 0, "BUY")),
+                 trade(1400, "A", 0.4, 3, "tx", side="SELL"), pc(61100, ("A", 0.4, 10, "BUY")),
+                 pc(61200, ("A", 0.4, 0, "BUY")), pc(70000, ("A", 0.3, 2, "BUY"))])
+    assert evidence([o], t)["o"] == evidence([o], t, P.placebo_ms)["o"] == "level_empty_before_fill"
+
+
+def test_level_zero_in_overlapping_capture_span_cannot_bound_life():
+    from doppel.lab.ordermatch import follow
+
+    t = tape_of([book(0, "A"), pc(1050, ("A", 0.4, 10, "BUY")), pc(3000, ("A", 0.4, 0, "BUY"))])
+    t.spans["A"] = [[MS, MS + 4000], [MS + 2900, MS + 5000]]
+    assert follow(t, ("A", 0.4, "BUY"), 0, 10, MS + 2000, set(), P)["end_ms"] is None
+
+
+def test_unmanaged_legacy_parquet_remains_diagnostic(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from doppel.lab.tradeallocation import load_allocations
+
+    path = tmp_path / "legacy"
+    part = path / "day=2026-11-25/part-000001.parquet"
+    part.parent.mkdir(parents=True)
+    rows = orow(order("o", "A", "BUY", 0.4, 10, 1000, fills={"tx": (3, T0 + 2)}))
+    pq.write_table(pa.Table.from_pylist([r | {"verified": True} for r in rows]), part)
+    s = "clob_btc_5m"
+    w = SegmentWriter(tmp_path / "tape", s)
+    for ms, m in [book(0, "A"), pc(1100, ("A", 0.4, 10, "BUY")), trade(1300, "A", 0.4, 3, "tx", side="SELL"),
+                  pc(70000, ("A", 0.3, 2, "BUY"))]:
+        w.append(orjson.dumps(m).decode(), tw=(MS + ms) * 1_000_000)
+    w.close()
+    doc, matches, _ = run(tmp_path / "tape", path, T0, T0 + 80, [W], streams=[s])
+    assert doc["orders"]["legacy_diagnostic_rows"] == 1
+    assert doc["wallets"][W]["matched_all"] == 0 and matches[0]["placement_evidence"] == "unverified_order"
+    with pytest.raises(ValueError, match="no flush manifests"):
+        load_allocations(path)
+
+
 @pytest.mark.parametrize(("event", "expected"), [
     (pc(900, ("A", 0.4, 10, "BUY")), "chronology_conflict"),
     (pc(2001, ("A", 0.4, 10, "BUY")), "chronology_conflict"),
