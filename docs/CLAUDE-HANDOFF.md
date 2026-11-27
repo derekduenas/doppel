@@ -1,5 +1,9 @@
 # Claude Code handoff
 
+Layer 4 is available on `review/wallet-rivals-20261127` at `b08c784`. Open its
+`docs/CLAUDE-HANDOFF.md` in `/Users/derekduenas/doppel-wallet-rivals-20261127` for the
+completed comparison and the reserved Layer 5 exam.
+
 ## Wallet-by-wallet audit · Layer 3
 
 Resume on `review/wallet-dissection-20261127` in `/Users/derekduenas/doppel-wallet-dissection-20261127`. The two registered wallets have 33 located execution contexts across 35 signed maker orders. The candidate’s first 60-share Down buy has two anonymous posting hypotheses. The touch stayed at 7¢ / 8¢ while depth changed. The 22:35 UTC market had zero candidate fills and nine control fills, with independently visible books at 22 of 30 scheduled cutoffs. Both real rulefit runs abstained. Read the [Layer 3 report and reproduction instructions](WALLET-DISSECTION.md) before registering Layer 4 rivals and reserving a separately labelled holdout. Apex storage is below both reserves and recorder cutover failed the two RTDS checks.
