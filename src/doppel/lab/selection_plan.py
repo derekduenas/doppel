@@ -135,6 +135,16 @@ def _check_members(candidates, controls):
         raise ValueError("selection requires nonempty, disjoint candidates and controls")
 
 
+def _intake_ranking(notionals, seed):
+    """Discovery ranks include controls and use the original scan even when matching features are missing."""
+    if type(seed) is not int or any(type(v) not in (int, float) or not math.isfinite(v) or v < 0
+                                     for v in notionals.values()):
+        raise ValueError("invalid interleaved ranking evidence")
+    ranked = sorted(notionals, key=lambda w: (-notionals[w], w))
+    return {"design": "interleaved", "seed": seed,
+            "by_wallet": {w: {"rank": i, "notional_usd": notionals[w]} for i, w in enumerate(ranked, 1)}}
+
+
 def build_plan(scan_doc: dict, cohort: dict, *, scan_sha256: str, cohort_sha256: str, now_ns=None) -> dict:
     """Build from documents whose file digests were verified by the caller; freeze_plan does so on disk."""
     intake.validate_cohort(cohort)
@@ -156,8 +166,10 @@ def build_plan(scan_doc: dict, cohort: dict, *, scan_sha256: str, cohort_sha256:
     ):
         raise ValueError("selection scan differs from the cohort's pinned scan")
     rule = cohort["rule"]
+    design = rule.get("design", "lower-band")
+    band = None if design == "interleaved" else rule["control_band_ranks"]
     n, ranked_candidates, ranked_controls = intake.rank_members(
-        scan_doc, rule["n_candidates"], rule["n_controls"], rule["min_windows"], rule["control_band_ranks"], rule["seed"])
+        scan_doc, rule["n_candidates"], rule["n_controls"], rule["min_windows"], band, rule["seed"], design=design)
     if n != cohort["eligible"] or ranked_candidates != candidates or ranked_controls != controls:
         raise ValueError("scan does not reproduce the frozen cohort rankings and controls")
     features = {a: _features(wallets[a]) for a in candidates + controls}
@@ -172,6 +184,8 @@ def build_plan(scan_doc: dict, cohort: dict, *, scan_sha256: str, cohort_sha256:
             "candidates": list(candidates), "controls": list(controls),
             "matching_policy": MATCHING.copy(), "decision_rule": orjson.loads(orjson.dumps(DECISION)),
             "features": features, "matches": matches, "windows": windows}
+    if design == "interleaved":
+        body["intake_ranking"] = _intake_ranking({a: wallets[a]["usd"] for a in candidates + controls}, rule["seed"])
     return {**body, "sha256": digest(body)}
 
 
@@ -197,6 +211,22 @@ def validate_plan(plan: dict) -> None:
             or any(f is not None and (not isinstance(f, dict) or _features(f) is None) for f in features.values())
             or plan["matches"] != _match(candidates, controls, features)):
         raise ValueError("selection plan matching evidence is inconsistent")
+    if "intake_ranking" in plan:
+        ranking = plan["intake_ranking"]
+        members = ranking["by_wallet"]
+        if set(members) != set(features):
+            raise ValueError("interleaved discovery ranks do not cover the registered sample")
+        amounts = {w: row["notional_usd"] for w, row in members.items()}
+        if (ranking != _intake_ranking(amounts, ranking["seed"])
+                or any(features[w] is not None and features[w]["usd"] != amounts[w] for w in members)):
+            raise ValueError("interleaved discovery rank disagrees with recorded activity")
+        # All registered members are the consecutive top N+C eligible ranks. Recheck role
+        # allocation even when a missing price or category feature made a match impossible.
+        ordered_sample = {"wallets": {w: {"usd": v, "n_windows": 1} for w, v in amounts.items()}}
+        _, cands, ctrls = intake.rank_members(ordered_sample, len(candidates), len(controls), 1,
+                                               seed=ranking["seed"], design="interleaved")
+        if (cands, ctrls) != (candidates, controls):
+            raise ValueError("interleaved roles disagree with registered discovery ranks")
 
 
 def freeze_plan(scan_path: Path, cohort_path: Path, out: Path, *, expected_scan_sha256: str,

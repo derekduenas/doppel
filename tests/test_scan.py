@@ -49,6 +49,39 @@ def test_cohort_is_deterministic_and_profit_blind():
         rank_members(doc, n_cand=5, n_ctrl=100, ctrl_band=(7, 11))
 
 
+@pytest.mark.parametrize(("n_cand", "n_ctrl"), [(100, 50), (8, 3), (3, 8), (4, 4), (1, 2)])
+def test_interleaved_allocation_covers_adjacent_ranks_before_outcomes(n_cand, n_ctrl):
+    total = n_cand + n_ctrl
+    addresses = [f"0x{i:040x}" for i in range(total + 6)]
+    # All activity is tied, so wallet address (not input order or reported profit) sets rank.
+    wallets = {a: {"usd": 100, "n_windows": 5, "profit": i} for i, a in enumerate(reversed(addresses))}
+    args = dict(n_cand=n_cand, n_ctrl=n_ctrl, design="interleaved", seed=17)
+    eligible, candidates, controls = rank_members({"wallets": wallets}, **args)
+    assert eligible == len(wallets)
+    assert len(candidates) == n_cand and len(controls) == n_ctrl
+    assert not set(candidates) & set(controls)
+    assert set(candidates + controls) == set(addresses[:total])
+    assert candidates == sorted(candidates) and controls == sorted(controls)
+    groups = min(n_cand, n_ctrl)
+    minority = set(controls if n_ctrl <= n_cand else candidates)
+    for group in range(groups):
+        block = addresses[group * total // groups:(group + 1) * total // groups]
+        assert len(minority.intersection(block)) == 1
+    reversed_wallets = {a: dict(wallets[a], profit=-wallets[a]["profit"]) for a in addresses}
+    assert rank_members({"wallets": reversed_wallets}, **args) == (eligible, candidates, controls)
+
+
+def test_interleaved_refuses_unfilled_or_ambiguous_allocation():
+    ws = {f"0x{i:040x}": {"n_windows": 5, "usd": 100} for i in range(3)}
+    doc = {"wallets": ws}
+    with pytest.raises(ValueError, match="insufficient"):
+        rank_members(doc, 2, 2, design="interleaved")
+    with pytest.raises(ValueError, match="no lower control band"):
+        rank_members(doc, 2, 1, ctrl_band=(2, 3), design="interleaved")
+    with pytest.raises(ValueError, match="positive integers"):
+        rank_members(doc, 0, 3, design="interleaved")
+
+
 H = 1795622400
 WALLET = "0x" + "1" * 40
 
@@ -85,6 +118,9 @@ def test_freeze_observes_both_clocks_and_socket_multiplicity(tmp_path):
 
 
 def test_cli_preserves_immutable_freeze_including_racing_writers(tmp_path):
+    from doppel.lab.selection_plan import build_plan, digest, freeze_plan, validate_plan
+    from hashlib import sha256
+
     for stream in ("rtds_a", "rtds_b"):
         w = SegmentWriter(tmp_path, stream)
         for i in range(150):
@@ -117,3 +153,31 @@ def test_cli_preserves_immutable_freeze_including_racing_writers(tmp_path):
     assert legacy["sha256"] == cohort_digest({**legacy, "frozen_tw": legacy["frozen_tw"] - 100})
     with pytest.raises(ValueError, match="checksum"):
         validate_cohort({**legacy, "controls": list(reversed(legacy["controls"]))})
+    # The separate prospective policy goes through the same public freeze and replay path.
+    inter_scan, inter_cohort = tmp_path / "new-scan.json", tmp_path / "new-cohort.json"
+    assert main(["--data", str(tmp_path), "--out", str(inter_scan), "--freeze-cohort", str(inter_cohort),
+                 "--cohort-design", "interleaved"]) == 0
+    alternate = orjson.loads(inter_cohort.read_bytes())
+    assert alternate["rule"]["design"] == "interleaved" and "control_band_ranks" not in alternate["rule"]
+    plan = freeze_plan(inter_scan, inter_cohort, tmp_path / "new-plan.json",
+                       expected_scan_sha256=sha256(inter_scan.read_bytes()).hexdigest(),
+                       expected_cohort_sha256=sha256(inter_cohort.read_bytes()).hexdigest())
+    assert plan["controls"] == alternate["controls"] and plan["candidates"] == alternate["candidates"]
+    for i in range(150):
+        assert plan["intake_ranking"]["by_wallet"][f"0x{i:040x}"]["rank"] == 150 - i
+    altered = orjson.loads(orjson.dumps(plan))
+    altered["intake_ranking"]["by_wallet"][plan["candidates"][0]]["rank"] = 149
+    altered["sha256"] = digest({k: v for k, v in altered.items() if k != "sha256"})
+    with pytest.raises(ValueError, match="discovery rank"):
+        validate_plan(altered)
+
+    # Discovery rank remains available when the wallet's pre-freeze scan lacks a matching feature.
+    incomplete_scan = orjson.loads(inter_scan.read_bytes())
+    first_candidate = plan["candidates"][0]
+    del incomplete_scan["wallets"][first_candidate]["px_p50"]
+    new_cohort = select_cohort(incomplete_scan, design="interleaved")
+    with_missing = build_plan(incomplete_scan, new_cohort, scan_sha256="a" * 64, cohort_sha256="b" * 64)
+    validate_plan(with_missing)
+    assert with_missing["features"][first_candidate] is None
+    assert with_missing["intake_ranking"] == plan["intake_ranking"]
+    assert cohort_path.read_bytes() == original

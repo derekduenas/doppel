@@ -73,7 +73,9 @@ def evaluate(plan: dict, wallet: str, reports: Path | None, tokens_path: Path | 
         return result | {"reason": "outside_frozen_candidate_list", "controls": [],
                          "cohort_role": "control" if wallet in plan["controls"] else "outside"}
     result["cohort_role"] = "candidate"
-    result["candidate_rank"] = plan["candidates"].index(wallet) + 1
+    ranking = plan.get("intake_ranking")
+    result["candidate_rank"] = (ranking["by_wallet"][wallet]["rank"] if ranking
+                                else plan["candidates"].index(wallet) + 1)
     result["matching"] = match
     if match["status"] != "matched":
         return result | {"reason": "no_matched_control", "controls": []}

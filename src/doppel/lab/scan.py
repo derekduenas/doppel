@@ -1,9 +1,9 @@
 """Wallet activity scan over the live RTDS identity tape, restricted to crypto up/down windows,
 plus a frozen, activity-selected study cohort.
 
-Selection never looks at profit, so choosing the cohort cannot leak outcomes. Candidates are the
-most active wallets by window notional. Controls are a seeded random sample of wallets in a lower
-activity band. The cohort file is written once with its selection rule, input span and sha256.
+Selection never looks at profit. The original design compares top-notional candidates with
+sampled lower-rank controls. The prospective interleaved option reserves controls among
+adjacent activity ranks. The cohort file is written once with its selection rule, input span and sha256.
 Later stages (P&L, skill) score the frozen cohort on what happens next.
 """
 
@@ -189,6 +189,8 @@ def validate_cohort(doc: dict) -> None:
     rule = doc.get("rule") or {}
     if not isinstance(rule, dict):
         raise ValueError("invalid cohort selection rule")
+    if rule.get("design") == "interleaved" and ("schema_version" not in doc or "control_band_ranks" in rule):
+        raise ValueError("interleaved cohorts require version 2 and have no lower control band")
     groups = []
     for key, count in (("candidates", "n_candidates"), ("controls", "n_controls")):
         members = doc.get(key)
@@ -210,14 +212,34 @@ def validate_cohort(doc: dict) -> None:
             raise ValueError("invalid observation cutoff or scan digest")
 
 
-def rank_members(scan_doc: dict, n_cand=100, n_ctrl=50, min_windows=5, ctrl_band=(101, 1000),
-                 seed=20261125) -> tuple[int, list[str], list[str]]:
-    if (not isinstance(ctrl_band, (tuple, list)) or len(ctrl_band) != 2
-            or any(type(v) is not int for v in (*ctrl_band, n_cand, n_ctrl, min_windows))
-            or not 0 < n_cand < ctrl_band[0] <= ctrl_band[1] or n_ctrl < 1 or min_windows < 1):
-        raise ValueError("candidate/control bands must be positive and disjoint")
+def rank_members(scan_doc: dict, n_cand=100, n_ctrl=50, min_windows=5, ctrl_band=None,
+                 seed=20261125, *, design="lower-band") -> tuple[int, list[str], list[str]]:
+    if any(type(n) is not int or n < 1 for n in (n_cand, n_ctrl, min_windows)):
+        raise ValueError("cohort sizes and minimum windows must be positive integers")
+    if design not in ("lower-band", "interleaved"):
+        raise ValueError("unknown cohort design")
     ws = [(a, v) for a, v in scan_doc["wallets"].items() if v["n_windows"] >= min_windows]
     ws.sort(key=lambda kv: (-kv[1]["usd"], kv[0]))
+    if design == "interleaved":
+        if ctrl_band is not None or type(seed) is not int:
+            raise ValueError("interleaved selection takes an integer seed and no lower control band")
+        total = n_cand + n_ctrl
+        if len(ws) < total:
+            raise ValueError("insufficient eligible wallets for interleaved allocation")
+        # Spread one minority-role member across each block of adjacent ranks. Integer
+        # boundaries use every rank once and differ in size by at most one.
+        top = [a for a, _ in ws[:total]]
+        groups = min(n_cand, n_ctrl)
+        rng = random.Random(seed)
+        minority = {top[rng.randrange(g * total // groups, (g + 1) * total // groups)]
+                    for g in range(groups)}
+        controls = minority if n_ctrl <= n_cand else set(top) - minority
+        return len(ws), [a for a in top if a not in controls], sorted(controls)
+    if ctrl_band is None:
+        ctrl_band = (101, 1000)
+    if (not isinstance(ctrl_band, (tuple, list)) or len(ctrl_band) != 2
+            or any(type(v) is not int for v in ctrl_band) or not n_cand < ctrl_band[0] <= ctrl_band[1]):
+        raise ValueError("candidate/control bands must be positive and disjoint")
     cands = [a for a, _ in ws[:n_cand]]
     band = [a for a, _ in ws[ctrl_band[0] - 1:ctrl_band[1]]]
     if len(cands) < n_cand or len(band) < n_ctrl:
@@ -226,14 +248,18 @@ def rank_members(scan_doc: dict, n_cand=100, n_ctrl=50, min_windows=5, ctrl_band
     return len(ws), cands, ctrls
 
 
-def select_cohort(scan_doc: dict, n_cand=100, n_ctrl=50, min_windows=5, ctrl_band=(101, 1000),
-                  seed=20261125) -> dict:
+def select_cohort(scan_doc: dict, n_cand=100, n_ctrl=50, min_windows=5, ctrl_band=None,
+                  seed=20261125, *, design="lower-band") -> dict:
     if not scan_doc.get("segments") or not scan_doc.get("as_of_tw"):
         raise ValueError("freezing requires a scan of verified, closed RTDS segments")
-    eligible, cands, ctrls = rank_members(scan_doc, n_cand, n_ctrl, min_windows, ctrl_band, seed)
+    eligible, cands, ctrls = rank_members(scan_doc, n_cand, n_ctrl, min_windows, ctrl_band, seed, design=design)
     rule = {"metric": "crypto-window notional (price*size) on RTDS union, profit-blind",
-            "min_windows": min_windows, "n_candidates": n_cand, "control_band_ranks": ctrl_band,
+            "min_windows": min_windows, "n_candidates": n_cand,
             "n_controls": n_ctrl, "seed": seed}
+    if design == "interleaved":
+        rule["design"] = design
+    else:
+        rule["control_band_ranks"] = ctrl_band if ctrl_band is not None else (101, 1000)
     body = {"schema_version": 2, "rule": rule, "span": scan_doc["span"], "eligible": eligible,
             "candidates": cands, "controls": ctrls, "scan_sha256": scan_digest(scan_doc),
             "as_of_tw": scan_doc["as_of_tw"], "frozen_tw": time.time_ns()}
@@ -247,9 +273,13 @@ def main(argv=None) -> int:
     ap.add_argument("--data", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--freeze-cohort", type=Path, help="write cohort file (refuses to overwrite)")
+    ap.add_argument("--cohort-design", choices=("lower-band", "interleaved"), default="lower-band",
+                    help="control allocation used by --freeze-cohort (default: lower-band)")
     ap.add_argument("--from", dest="since", type=int, default=0, help="inclusive UTC Unix seconds")
     ap.add_argument("--to", dest="until", type=int, help="exclusive UTC Unix seconds, both event and receive clocks")
     a = ap.parse_args(argv)
+    if a.cohort_design == "interleaved" and not a.freeze_cohort:
+        ap.error("--cohort-design interleaved requires --freeze-cohort")
     if a.freeze_cohort and (a.freeze_cohort.resolve() == a.out.resolve() or
             a.freeze_cohort.exists() and a.out.exists() and a.freeze_cohort.samefile(a.out)):
         ap.error("scan and cohort outputs must be distinct")
@@ -263,7 +293,7 @@ def main(argv=None) -> int:
             if isinstance(existing, dict) and ("frozen_tw" in existing or existing.get("segments")):
                 raise ValueError(f"refusing to replace a frozen cohort or sealed scan receipt: {a.out}")
         doc = scan(a.data, since=a.since, until=a.until, sealed=bool(a.freeze_cohort))
-        cohort = select_cohort(doc) if a.freeze_cohort else None
+        cohort = select_cohort(doc, design=a.cohort_design) if a.freeze_cohort else None
         # A successful freeze always references a durable, uniquely named scan receipt.
         atomic_write(a.out, orjson.dumps(doc, option=orjson.OPT_INDENT_2), replace=replace_scan)
         if a.freeze_cohort and cohort:
