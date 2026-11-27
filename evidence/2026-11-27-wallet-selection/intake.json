@@ -1,0 +1,133 @@
+{
+  "schema": "wallet-intake-audit/1",
+  "checked_utc": "2026-11-27T03:16:01Z",
+  "scan": {
+    "apex_path": "/mnt/volume_nyc1_1793485122853/doppel/lab/scan/scan-v1-24h.json",
+    "file_sha256": "d13368be7ba0b379ab01a26eb46b91211e2d5b6a05dc1daad7a18284f3b44a89",
+    "span": [
+      1795629654,
+      1795716492
+    ],
+    "span_utc": [
+      "2026-11-25T18:00:54Z",
+      "2026-11-26T18:08:12Z"
+    ],
+    "built_tw": 1795716497897584091,
+    "observed_wallets": 9329,
+    "eligible_wallets": 5959
+  },
+  "cohort": {
+    "apex_path": "/mnt/volume_nyc1_1793485122853/doppel/lab/cohorts/cohort-v1.json",
+    "file_sha256": "1775c0998506abf721e27ed3cb0043b5816b2dde587462034e55a4622a396b54",
+    "archived_apex_path": "/var/backups/doppel-sealed-20261126/lab/cohorts/cohort-v1.json",
+    "archived_file_matches": true,
+    "historical_body_sha256": "e4d60fec45d333f298bebf335d8490b060705f54448c8417b9add59116c8700b",
+    "frozen_tw": 1795716498610642583,
+    "frozen_utc": "2026-11-26T18:08:18.610642583Z",
+    "rule": {
+      "metric": "crypto-window notional (price*size) on RTDS union, profit-blind",
+      "min_windows": 5,
+      "n_candidates": 100,
+      "control_band_ranks": [
+        101,
+        1000
+      ],
+      "n_controls": 50,
+      "seed": 20261125
+    },
+    "candidates": 100,
+    "controls": 50,
+    "membership_recomputed_from_scan": true,
+    "rank_tiebreak": "descending rounded USD then ascending address",
+    "legacy_hash_omits": [
+      "frozen_tw",
+      "sha256"
+    ]
+  },
+  "pilot": {
+    "wallet": "0x0cb038487586d1119b165466072e9baf666f3a90",
+    "role": "candidate",
+    "rank": 2,
+    "observed_scan_fields": {
+      "fills": 14413,
+      "taker_fills": 1194,
+      "maker_fills": 13219,
+      "usd": 239151.72,
+      "taker_share": 0.2984,
+      "n_windows": 304,
+      "assets": {
+        "btc": 13824,
+        "eth": 589
+      },
+      "horizons": {
+        "5m": 12385,
+        "15m": 2028
+      },
+      "px_p50": 0.48,
+      "first": 1795629657,
+      "last": 1795716474,
+      "extreme_px_share": 0.1647
+    },
+    "frozen_control_ranges": {
+      "usd": [
+        1854.94,
+        27492.14
+      ],
+      "n_windows": [
+        5,
+        383
+      ],
+      "px_p50": [
+        0.13,
+        0.99
+      ],
+      "taker_share": [
+        0.0,
+        1.0
+      ],
+      "fills": [
+        14,
+        5929
+      ],
+      "extreme_px_share": [
+        0.0,
+        1.0
+      ]
+    },
+    "pilot_notional_over_highest_control": 8.6989,
+    "controls_with_same_set_of_assets": 12
+  },
+  "activity_pagination": {
+    "apex_path": "/var/backups/doppel-sealed-20261126/research/pagination-proof.ZN8b5q/proof/pagination.jsonl",
+    "file_sha256": "dad73e8e145797eeff2fb971dd82abc7ff4a2e0dc7a4b1fbbbbc852b9cd078c0",
+    "interval": [
+      1795632727,
+      1795719127
+    ],
+    "interval_utc": [
+      "2026-11-25T18:52:07Z",
+      "2026-11-26T18:52:07Z"
+    ],
+    "pilot_pages": 16,
+    "pilot_rows": 15982,
+    "pilot_complete": true,
+    "covered_time_after_freeze_ns": 2628389357417
+  },
+  "historical_census": {
+    "apex_path": "/mnt/volume_nyc1_1793485122853/doppel/lab/census/census-4c965e11b56c-20261126T0513Z.json",
+    "file_sha256": "ba30f03af808244c1ea046c9cf80883f1bdcc526b3144f91b02dea8f12d915af",
+    "cohort_hashes_seen": [
+      "4c965e11b56ca03646d7b9baa514d16198a9979adfc61dff56dcd17a8422b447"
+    ],
+    "reports_examined": 3,
+    "cohort_sha256": "4c965e11b56ca03646d7b9baa514d16198a9979adfc61dff56dcd17a8422b447",
+    "pilot_g0": "NOT_COMPARABLE:unresolved_exposure",
+    "pilot_cohort_role": "cand",
+    "v1_census_seen": false
+  },
+  "decision": {
+    "wallet_intake": "candidate membership reproduced from saved RTDS scan",
+    "g1": "unproven",
+    "reason": "The complete wallet history crosses the freeze and ends less than 44 minutes afterward. The available census reports are for v0. Four qualifying forward windows and a matched-control comparison are outstanding."
+  }
+}

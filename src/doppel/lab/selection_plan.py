@@ -3,13 +3,15 @@
 import argparse
 import hashlib
 import math
+import os
 import re
+import tempfile
 import time
 from pathlib import Path
 
 import orjson
 
-from ..tape.segment import atomic_write
+from ..tape.segment import atomic_write, sync_directory
 from . import scan as intake
 
 
@@ -19,10 +21,12 @@ ASSETS = ("btc", "eth", "sol", "xrp")
 HORIZONS = ("5m", "15m")
 SCHEMA = "wallet-selection-plan-v1"
 MATCHING = {"max_controls": 3, "max_activity_ratio": 2, "max_price_difference": 0.10,
+            "max_extreme_price_share_difference": 0.25,
             "max_asset_total_variation": 0.25, "max_horizon_total_variation": 0.25}
-CALIPERS = ("notional", "market_windows", "median_price", "asset_mix", "horizon_mix")
+CALIPERS = ("notional", "market_windows", "median_price", "extreme_price_share", "asset_mix", "horizon_mix")
 DECISION = {
     "unit": "wallet", "markets": {"assets": list(ASSETS), "horizons": list(HORIZONS)},
+    "category_support": "separate asset and horizon marginals from the discovery scan",
     "benchmark": "equal-weight mean of frozen controls", "pnl": "after-fee trading P&L in USD",
     "periods": 4, "required_complete_periods": 4, "required_winning_periods": 3,
     "winning_period": "wallet net > 0 and wallet net > control mean",
@@ -64,12 +68,12 @@ def _windows(frozen_ns):
 
 def _features(row):
     """Only fields measurable during the selection scan may enter the comparison."""
-    features = {k: row.get(k) for k in ("usd", "n_windows", "px_p50", "fills", "assets", "horizons")}
-    for key in ("usd", "px_p50"):
+    features = {k: row.get(k) for k in ("usd", "n_windows", "px_p50", "extreme_px_share", "fills", "assets", "horizons")}
+    for key in ("usd", "px_p50", "extreme_px_share"):
         value = features[key]
         if type(value) not in (int, float) or not math.isfinite(value):
             return None
-    if features["usd"] <= 0 or not 0 <= features["px_p50"] <= 1:
+    if features["usd"] <= 0 or not all(0 <= features[k] <= 1 for k in ("px_p50", "extreme_px_share")):
         return None
     n, wins = features["fills"], features["n_windows"]
     if type(n) is not int or type(wins) is not int or not 0 < wins <= n:
@@ -95,6 +99,7 @@ def _distances(a, b):
     return [
         activity("usd"), activity("n_windows"),
         abs(a["px_p50"] - b["px_p50"]) / MATCHING["max_price_difference"],
+        abs(a["extreme_px_share"] - b["extreme_px_share"]) / MATCHING["max_extreme_price_share_difference"],
         total_variation("assets", ASSETS, MATCHING["max_asset_total_variation"]),
         total_variation("horizons", HORIZONS, MATCHING["max_horizon_total_variation"]),
     ]
@@ -203,9 +208,21 @@ def freeze_plan(scan_path: Path, cohort_path: Path, out: Path, *, expected_scan_
     plan = build_plan(orjson.loads(scan_bytes), orjson.loads(cohort_bytes),
                       scan_sha256=expected_scan_sha256, cohort_sha256=expected_cohort_sha256)
     validate_plan(plan)
-    if time.time_ns() >= plan["windows"][0]["start"] * 1_000_000_000:
-        raise ValueError("the first scoring window has opened; refreeze for the next window")
-    atomic_write(out, orjson.dumps(plan, option=orjson.OPT_INDENT_2) + b"\n", replace=False)
+    deadline = plan["windows"][0]["start"] * 1_000_000_000
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".selection-", dir=out.parent) as private:
+        staged = Path(private) / "plan.json"
+        atomic_write(staged, orjson.dumps(plan, option=orjson.OPT_INDENT_2) + b"\n", replace=False)
+        if not plan["frozen_tw"] <= time.time_ns() < deadline:
+            raise ValueError("the publication clock is outside the registration interval; refreeze")
+        os.link(staged, out)
+        # The link refuses overwrite. If it straddled the cutoff, discard only our new link.
+        if not plan["frozen_tw"] <= time.time_ns() < deadline:
+            if staged.samefile(out):
+                out.unlink()
+                sync_directory(out.parent)
+            raise ValueError("plan publication crossed the registration cutoff; refreeze")
+        sync_directory(out.parent)
     return plan
 
 

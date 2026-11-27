@@ -339,6 +339,7 @@ def reconstruct(wallet: str, fills: list[dict], legs: list[dict], filled: list[d
             if lg["asset"] != "cash":
                 shares[lg["asset"]] += lg["delta"]
         rec = receipts.get(tx)
+        ctf: list[dict] = []
         if not shares:
             kind = "cash"
         elif rec is None:
@@ -346,9 +347,10 @@ def reconstruct(wallet: str, fills: list[dict], legs: list[dict], filled: list[d
         else:
             if rec.get("from"):
                 senders[rec["from"].lower()] += 1
-            ev = {e["kind"] for e in ctf_events(rec)}
+            ctf = ctf_events(rec)
+            ev = {e["kind"] for e in ctf}
             kind = next((k for k in ("redeem", "merge", "split") if k in ev), "transfer")
-            for e in ctf_events(rec):  # learn outcome pairs from the batch legs
+            for e in ctf:  # learn outcome pairs from the batch legs
                 for lg in ls:
                     if lg["batch"] and len(lg["batch"]) == 2 and e["kind"] == kind:
                         for idx, tok in enumerate(lg["batch"]):
@@ -357,6 +359,9 @@ def reconstruct(wallet: str, fills: list[dict], legs: list[dict], filled: list[d
         events.append({"block": ls[0]["block"], "tx": tx, "kind": kind, "src": "chain",
                        "shares": dict(shares), "fee": 0, "role": None, "price": None,
                        "cash": sum(lg["delta"] for lg in ls if lg["asset"] == "cash")})
+        if kind in ("split", "merge", "redeem"):
+            events[-1]["ctf"] = ctf
+            events[-1]["share_counterparties"] = sorted({lg["cp"] for lg in ls if lg["asset"] != "cash"})
     events.sort(key=lambda e: (e["block"], e["tx"]))
 
     tokens = sorted(({t for e in events for t in e["shares"]} | {lg["asset"] for lg in legs}
@@ -469,6 +474,10 @@ def reconstruct(wallet: str, fills: list[dict], legs: list[dict], filled: list[d
                          "path": [[b, k, to_f(d), to_f(p)] for b, k, d, p in s["path"]]}
     return {"wallet": wallet, "window_blocks": [b0, b1], "goldsky_fills": len(fills),
             "chain_legs": len(legs), "tx_kinds": dict(kinds), "tokens": out_tokens,
+            # Keep cash attached to its original legs. Splits, merges and redemptions can
+            # touch both outcomes; assigning the same cash to each token would double count.
+            "condition_cash": [{k: e[k] for k in ("block", "tx", "kind", "shares", "cash", "fee",
+                                                   "ctf", "share_counterparties") if k in e} for e in events],
             "cash": {"open": to_f(open_["cash"]), "by_kind": {k: to_f(v) for k, v in cash_by_kind.items()},
                      "fees": to_f(fees)},
             "fill_check": {"tx_asset_mismatches": len(mism), "examples": [list(k) for k in mism[:20]],

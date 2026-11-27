@@ -18,7 +18,7 @@ CAND = address(1)
 def setup_scan():
     # The second control ties with the first; address order determines their frozen rank.
     wallets = {
-        address(i): {"fills": 50, "n_windows": 10, "usd": usd, "px_p50": .52,
+        address(i): {"fills": 50, "n_windows": 10, "usd": usd, "px_p50": .52, "extreme_px_share": .12,
                      "assets": {"btc": 40, "sol": 10}, "horizons": {"5m": 50}}
         for i, usd in enumerate([0, 1000, 740, 740, 650, 600, 100], 0) if i
     }
@@ -139,3 +139,53 @@ def test_extreme_activity_and_missing_candidate_features_cannot_qualify():
     assert match["controls_passing_each_limit"]["median_price"] == 5
     del scan["wallets"][CAND]["px_p50"]
     assert build(scan, cohort)["matches"][CAND]["reason"] == "candidate missing matching features"
+
+
+def test_observed_pilot_cannot_match_at_the_largest_frozen_control_notional():
+    from pathlib import Path
+
+    receipt = Path(__file__).resolve().parents[1] / "evidence/2026-11-27-wallet-selection/intake.json"
+    pilot = orjson.loads(receipt.read_bytes())["pilot"]
+    original = sp._features(pilot["observed_scan_fields"])
+    # Even a best-case control with identical prices and category mix must fail on activity.
+    best_case = original | {"usd": pilot["frozen_control_ranges"]["usd"][1]}
+    control = address(2)
+    matches = sp._match([pilot["wallet"]], [control], {pilot["wallet"]: original, control: best_case})
+    result = matches[pilot["wallet"]]
+    assert result["status"] == "unmatched"
+    assert result["controls_passing_each_limit"]["notional"] == 0
+    assert result["controls_passing_each_limit"]["median_price"] == 1
+
+
+@pytest.mark.parametrize("cross_at_link", [False, True])
+def test_first_window_opening_during_registration_refuses_publication(tmp_path, monkeypatch, cross_at_link):
+    from doppel.lab.selection import main
+
+    scan, cohort = setup_scan()
+    s, c, out = (tmp_path / n for n in ("scan.json", "cohort.json", "plan.json"))
+    s.write_bytes(orjson.dumps(scan))
+    c.write_bytes(orjson.dumps(cohort))
+    argv = ["freeze", "--scan", str(s), "--cohort", str(c), "--out", str(out),
+            "--scan-sha256", hashlib.sha256(s.read_bytes()).hexdigest(),
+            "--cohort-sha256", hashlib.sha256(c.read_bytes()).hexdigest()]
+    with pytest.raises(SystemExit) as e:
+        main(argv + ["--as-of", str(FREEZE)])
+    assert e.value.code == 2 and not out.exists()
+    before = FREEZE + 1000
+    boundary = sp._windows(before)[0]["start"] * 10**9
+    timeline = iter([before, boundary - 1, boundary] if cross_at_link else [before, boundary])
+    monkeypatch.setattr(sp.time, "time_ns", lambda: next(timeline))
+    with pytest.raises(SystemExit) as e:
+        main(argv)
+    assert e.value.code == 2 and not out.exists()
+    assert sorted(tmp_path.iterdir()) == [c, s]
+
+
+def test_equal_medians_with_opposite_price_tails_have_no_common_support():
+    scan, cohort = setup_scan()
+    for a in cohort["controls"]:
+        scan["wallets"][a]["extreme_px_share"] = .8
+    row = build(scan, cohort)["matches"][CAND]
+    assert row["controls_passing_each_limit"]["median_price"] == 5
+    assert row["controls_passing_each_limit"]["extreme_price_share"] == 0
+    assert row["status"] == "unmatched"
