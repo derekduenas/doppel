@@ -68,14 +68,15 @@ Hence:
 Amounts are integers in micro-units (1 share = 1 USDC = 10⁶). Goldsky floats are rounded once per row.
 
 - **Fill cash.** V2 convention (`Trading.sol`): a BUY pays `usdc + fee`; a SELL receives `usdc − fee`.
-- **Opening inventory.** Balances at `b0 − 1`. Positions start there, not at zero, so inventory from before the window is no longer "left-censored".
+- **Opening inventory.** Balances at `b0 − 1` for every touched token and all its known condition partners. Positions start there, not at zero, so inventory from before the window is no longer "left-censored".
 - **`residual`.** Per token and for cash (pUSD + USDC.e together, since wrapping moves value between them): `(end − start balance) − reconstructed`.
 - **`log_residual`.** Uses all chain legs instead of the reconstruction. Zero proves the log scan explains the balances.
 - **Tolerance.** One micro-unit per Goldsky row touching the asset.
 - **`reconciled`.** Requires all of the following:
   - Goldsky complete: complete pagination records for the wallet cover `[from, to]`.
   - Chain scan complete.
-  - Both balance reads succeeded.
+  - Both balance reads succeeded for the full requested token batch.
+  - Every fill-transaction asset total matches its chain transfer legs and every source fill matches one chain OrderFilled event. Equal balances across the whole interval can conceal offsetting transaction errors.
   - Every residual within tolerance.
   - No unclassified tx.
   - No `OrderFilled` transaction missing from Goldsky.

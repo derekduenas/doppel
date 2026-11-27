@@ -230,6 +230,8 @@ class Chain:
 
 def scan(chain: Chain, wallet: str, b0: int, b1: int, chunk: int) -> dict:
     """Transfer and OrderFilled logs of ``wallet`` over [b0, b1]; stops at the first failure."""
+    if chunk < 1 or b0 < 1 or b1 < b0:
+        raise ValueError("use a positive chunk and a nonempty block interval with an opening block")
     wt = topic(wallet)
     queries = [(CTF, [[T_SINGLE, T_BATCH], None, wt]), (CTF, [[T_SINGLE, T_BATCH], None, None, wt]),
                (list(CASH), [T_ERC20, wt]), (list(CASH), [T_ERC20, None, wt]),
@@ -259,9 +261,15 @@ def balances(chain: Chain, wallet: str, tokens: list[str], block: int) -> dict[s
         data = (SEL_BALANCE_OF_BATCH + _enc(64, 96 + 32 * n, n) + _enc(*[int(wallet, 16)] * n)
                 + _enc(n, *[int(t) for t in tokens]))
         vals = _words(chain.call(CTF, data, block))
-        out = dict(zip(tokens, _array(vals, vals[0])))
-    out["cash"] = sum(_words(chain.call(c, SEL_BALANCE_OF + _enc(int(wallet, 16)), block))[0]
-                      for c in CASH)
+        if len(vals) != n + 2 or vals[:2] != [32, n]:
+            raise RpcError("invalid_balance_batch")
+        out = dict(zip(tokens, vals[2:], strict=True))
+    out["cash"] = 0
+    for contract in CASH:
+        value = _words(chain.call(contract, SEL_BALANCE_OF + _enc(int(wallet, 16)), block))
+        if len(value) != 1:
+            raise RpcError("invalid_cash_balance")
+        out["cash"] += value[0]
     return out
 
 
@@ -272,6 +280,8 @@ def _micro(x) -> int:
 
 def goldsky_complete(pages: dict, wallet: str, t0: int, t1: int) -> bool:
     """True when complete pagination records for ``wallet`` cover [t0, t1]."""
+    if t1 <= t0:
+        return False
     ivs = sorted((s, e) for (a, s, e), r in pages.items() if a == wallet and r["complete"])
     cov = t0
     for s, e in ivs:
@@ -347,7 +357,8 @@ def reconstruct(wallet: str, fills: list[dict], legs: list[dict], filled: list[d
                        "cash": sum(lg["delta"] for lg in ls if lg["asset"] == "cash")})
     events.sort(key=lambda e: (e["block"], e["tx"]))
 
-    tokens = sorted({t for e in events for t in e["shares"]} | {lg["asset"] for lg in legs} - {"cash"})
+    tokens = sorted(({t for e in events for t in e["shares"]} | {lg["asset"] for lg in legs}
+                     | set(start or {}) | set(end or {})) - {"cash"})
     open_ = {t: (start or {}).get(t, 0) for t in tokens} | {"cash": (start or {}).get("cash", 0)}
 
     # per-token path and totals
@@ -380,18 +391,22 @@ def reconstruct(wallet: str, fills: list[dict], legs: list[dict], filled: list[d
         for lg in by_tx.get(tx, []):
             ch_tx[(tx, lg["asset"])] += lg["delta"]
     mism = sorted(k for k in set(gs_tx) | set(ch_tx) if gs_tx.get(k, 0) != ch_tx.get(k, 0))
-    gs_orders = {(f["transaction_hash"].lower(), (f.get("order_id") or "").lower().removeprefix("0x")): f
-                 for f in fills}
-    of = {"chain": len(filled), "matched": 0, "amount_mismatch": 0, "chain_only": 0}
-    for o in filled:
-        g = gs_orders.get((o["tx"], o["order_id"]))
-        if g is None:
-            of["chain_only"] += 1
-        elif (_micro(g["amount_shares"]), _micro(g["amount_usdc"]), _micro(g.get("fee")),
-              g["side"], g["token_id"]) == (o["shares"], o["usdc"], o["fee"], o["side"], o["token"]):
-            of["matched"] += 1
-        else:
-            of["amount_mismatch"] += 1
+    # Match a multiset: within one transaction an order can appear on more than one log.
+    gs_orders = Counter((f["transaction_hash"].lower(), (f.get("order_id") or "").lower().removeprefix("0x"),
+                         f["side"], f["token_id"], _micro(f["amount_shares"]), _micro(f["amount_usdc"]),
+                         _micro(f.get("fee"))) for f in fills)
+    ch_orders = Counter((o["tx"], o["order_id"], o["side"], o["token"], o["shares"], o["usdc"], o["fee"])
+                        for o in filled)
+    matched = (gs_orders & ch_orders).total()
+    gs_left = Counter()
+    ch_left = Counter()
+    for key, n in (gs_orders - ch_orders).items():
+        gs_left[key[:2]] += n
+    for key, n in (ch_orders - gs_orders).items():
+        ch_left[key[:2]] += n
+    amount_mismatch = (gs_left & ch_left).total()
+    of = {"chain": len(filled), "matched": matched, "amount_mismatch": amount_mismatch,
+          "chain_only": ch_left.total() - amount_mismatch, "goldsky_only": gs_left.total() - amount_mismatch}
     gs_fill_txs = {f["transaction_hash"].lower() for f in fills}
     chain_fill_txs = {o["tx"] for o in filled}
     missing_in_goldsky = sorted(chain_fill_txs - gs_fill_txs)
@@ -415,6 +430,10 @@ def reconstruct(wallet: str, fills: list[dict], legs: list[dict], filled: list[d
                   "residual": obs - built, "log_residual": obs - chain_sum.get(a, 0)}
         recon[a] = r
     causes: list[str] = []
+    if mism:
+        causes.append("fill_transaction_legs_disagree")
+    if matched != len(fills) or matched != len(filled):
+        causes.append("fill_orders_disagree")
     if start is None or end is None:
         causes.append("balances_unavailable")
     else:
@@ -567,6 +586,8 @@ def absorb_wallet(chain: Chain, wallet: str, fills: list[dict], window: tuple[in
                   times: tuple[int, int], chunk: int, pages: dict, pairs: dict,
                   orders: Path | None = None) -> dict:
     b0, b1 = window
+    if times[1] <= times[0]:
+        raise ValueError("use a nonempty time interval")
     fills = [f for f in fills if b0 <= int(f["block_number"]) <= b1]
     sc = scan(chain, wallet, b0, b1, chunk)
     legs = [lg for log in sc["logs"] for lg in legs_of(log, wallet)]
@@ -581,7 +602,10 @@ def absorb_wallet(chain: Chain, wallet: str, fills: list[dict], window: tuple[in
         except (BudgetExhausted, EndpointsDown, RpcError) as e:
             receipts[tx] = None
             err = err or type(e).__name__
-    tokens = sorted({lg["asset"] for lg in legs if lg["asset"] != "cash"} | {f["token_id"] for f in fills})
+    touched = {lg["asset"] for lg in legs if lg["asset"] != "cash"} | {f["token_id"] for f in fills}
+    # A buy can complete a position opened before this window, even if its opposite token never moves.
+    markets = {pairs[t][0] for t in touched if t in pairs}
+    tokens = sorted(touched | {t for t, (condition, _) in pairs.items() if condition in markets})
     start = end = None
     bts: dict[int, int] = {}
     try:
@@ -646,6 +670,12 @@ def main(argv: list[str] | None = None, transport: Callable = http_transport) ->
     a = ap.parse_args(argv)
     if (a.t_from is None) == (a.from_block is None) or (a.t_to is None) == (a.to_block is None):
         ap.error("give --from or --from-block, and --to or --to-block")
+    if a.chunk_blocks < 1 or a.rate <= 0 or (a.max_requests is not None and a.max_requests < 0):
+        ap.error("use positive chunk-blocks and rate and a nonnegative request budget")
+    if a.t_from is not None and a.t_to is not None and a.t_to <= a.t_from:
+        ap.error("the end time must follow the start")
+    if a.from_block is not None and (a.from_block < 1 or a.to_block is not None and a.to_block < a.from_block):
+        ap.error("invalid block interval")
     wallets = [w.lower() for w in a.wallets]
     a.out.mkdir(parents=True, exist_ok=True)
     pool = Pool(a.rpc, transport, rate=a.rate, max_requests=a.max_requests)
@@ -654,8 +684,11 @@ def main(argv: list[str] | None = None, transport: Callable = http_transport) ->
         head = int(chain.get("eth_blockNumber", []), 16) if a.from_block is None or a.to_block is None else 0
         b0 = a.from_block if a.from_block is not None else chain.block_at(a.t_from, head)
         b1 = a.to_block if a.to_block is not None else chain.block_at(a.t_to, head) - 1
+        if b0 < 1 or b1 < b0:
+            ap.error("empty block interval or unavailable opening block")
+        # When --to-block is inclusive, require pagination coverage of its final UTC second.
         times = (a.t_from if a.t_from is not None else chain.block_ts(b0),
-                 a.t_to if a.t_to is not None else chain.block_ts(b1))
+                 a.t_to if a.t_to is not None else chain.block_ts(b1) + 1)
     except (BudgetExhausted, EndpointsDown, RpcError) as e:
         print(f"cannot resolve the window to blocks: {e}", file=sys.stderr)
         return 2

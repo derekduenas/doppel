@@ -163,7 +163,7 @@ def test_complete_set_buy_pair_is_completing_not_directional(chain):
     assert (m["directional"], m["completing"]) == (10, 10)  # the YES buy closed the set
     assert m["one_sided_at_end"] == 0 and m["longest_one_sided_s"] == 20  # blocks 20 -> 30, 2 s each
     assert r["pairing"]["completing_share_of_buys"] == 0.5
-    assert r["fill_check"]["order_filled"] == {"chain": 2, "matched": 2, "amount_mismatch": 0, "chain_only": 0}
+    assert r["fill_check"]["order_filled"] == {"chain": 2, "matched": 2, "amount_mismatch": 0, "chain_only": 0, "goldsky_only": 0}
 
 
 def test_split_then_sell_both_learns_the_pair_from_the_adapter_batch(chain):
@@ -233,7 +233,7 @@ def test_fee_convention_mismatch_is_named(chain):
     f = chain.fill("0x60", 20, "BUY", YES, 10, 0.5, fee=30_000)
     f["fee"] = 0.0  # Goldsky without the fee
     r = _run(chain, [f])
-    assert r["causes"] == ["cash_residual_equals_fees"]
+    assert set(r["causes"]) == {"fill_transaction_legs_disagree", "fill_orders_disagree", "cash_residual_equals_fees"}
     assert r["reconciliation"]["cash"]["residual"] == -0.03
     assert r["fill_check"]["order_filled"]["amount_mismatch"] == 1
 
@@ -293,3 +293,33 @@ def test_cli_end_to_end_with_fill_store(chain, tmp_path):
     assert doc["pairing"]["completing_share_of_buys"] == 0.5
     table = (out / "cohort.tsv").read_text().splitlines()
     assert table[0].startswith("wallet\tstatus") and table[1].split("\t")[:2] == [W, "reconciled"]
+
+def test_compensating_bad_fills_block_reconciliation(chain):
+    first = chain.fill("0x01", 20, "BUY", YES, 10, 0.4)
+    second = chain.fill("0x02", 21, "BUY", YES, 10, 0.6)
+    first["amount_usdc"], second["amount_usdc"] = second["amount_usdc"], first["amount_usdc"]
+    result = _run(chain, [first, second])
+    assert result["reconciliation"]["cash"]["residual"] == 0
+    assert result["status"] == "not_reconciled"
+    assert {"fill_transaction_legs_disagree", "fill_orders_disagree"} <= set(result["causes"])
+    assert result["fill_check"]["order_filled"]["amount_mismatch"] == 2
+
+
+def test_opening_complement_reconstructed_without_in_range_transfer(chain):
+    chain.open[(ab.CTF, W, NO)] = 10 * U
+    result = _run(chain, [chain.fill("0x01", 20, "BUY", YES, 10, 0.4)],
+                  pairs={YES: (COND, 0), NO: (COND, 1)})
+    assert result["status"] == "reconciled"
+    assert result["tokens"][NO]["open"] == result["tokens"][NO]["close"] == 10
+    assert result["pairing"]["completing_share_of_buys"] == 1
+
+
+def test_one_sided_order_evidence_and_duplicate_order_hashes(chain):
+    first = chain.fill("0x01", 20, "BUY", YES, 5, 0.4, oid="1" * 64)
+    second = chain.fill("0x01", 20, "BUY", YES, 10, 0.4, oid="1" * 64)
+    assert _run(chain, [first, second])["status"] == "reconciled"
+    second["order_id"] = "0x" + "2" * 64
+    result = _run(chain, [first, second])
+    assert result["causes"] == ["fill_orders_disagree"]
+    assert result["fill_check"]["order_filled"]["chain_only"] == 1
+    assert result["fill_check"]["order_filled"]["goldsky_only"] == 1
