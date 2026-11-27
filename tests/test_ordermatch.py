@@ -154,10 +154,13 @@ def test_distinct_times_in_same_tx_do_not_locate_a_fill():
                 pc(5000, ("A", 0.3, 1, "BUY"))]
     assert evidence([o], tape_of(messages))["o"] == "fill_time_unknown"
     exact = trade(1550, "A", 0.4, 3, "tx", side="SELL")
-    assert evidence([o], tape_of(messages + [exact]))["o"] == "unique_candidate"
-    assert evidence([o], tape_of(messages + [exact, trade(1551, "A", 0.4, 3, "tx", side="SELL")]))["o"] == "fill_time_unknown"
-    o.fills = {"tx": (3, T0 + 130)}
     assert evidence([o], tape_of(messages + [exact]))["o"] == "fill_time_unknown"
+    clean = messages[:2] + [exact, messages[-1]]
+    assert evidence([o], tape_of(clean))["o"] == "unique_candidate"
+    assert evidence([o], tape_of(clean + [trade(1551, "A", 0.4, 3, "tx", side="SELL")]))["o"] == "fill_time_unknown"
+    assert evidence([o], tape_of(clean + [trade(150_000, "A", 0.4, 3, "tx", side="SELL")]))["o"] == "fill_time_unknown"
+    o.fills = {"tx": (3, T0 + 130)}
+    assert evidence([o], tape_of(clean))["o"] == "fill_time_unknown"
 
 
 def test_strict_matcher_depth_clock_and_prints():

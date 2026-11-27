@@ -327,7 +327,8 @@ def _fill_prints(o: Order, tape: LevelTape) -> dict[str, Print | None]:
     for tx, (shares, block_ts) in o.fills.items():
         allocation = tape.allocations.get(tx)
         compatible = []
-        for q in tape.prints_tx.get(tx, ()):
+        records = tape.prints_tx.get(tx, ())
+        for q in records:
             if block_ts is None or abs(q.venue_ms - block_ts * 1000) > PRINT_BLOCK_TOL_MS:
                 continue
             if isinstance(allocation, Allocation):
@@ -340,9 +341,10 @@ def _fill_prints(o: Order, tape: LevelTape) -> dict[str, Print | None]:
                          and abs(q.size - shares) <= 2e-6)
             if valid:
                 compatible.append(q)
-        # Several records of the same physical trade can appear on mirrored tokens.
+        # All reports of the transaction must agree. One favorable print cannot
+        # locate an execution when another copy contradicts its terms or clock.
         out[tx] = (min(compatible, key=lambda q: q.tw_ns)
-                   if len({q.venue_ms for q in compatible}) == 1 else None)
+                   if len(compatible) == len(records) and len({q.venue_ms for q in compatible}) == 1 else None)
     return out
 
 
