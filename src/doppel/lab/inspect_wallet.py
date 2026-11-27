@@ -213,7 +213,9 @@ def inspect(owners, book):
                     counter.update({event_key(row, e) for e in result[1]})
             real, placebo = arms
             row["continuous_coverage"] = real is not None
-            row["paired_coverage"] = real is not None and placebo is not None and real[0].span_id == placebo[0].span_id
+            row["paired_coverage"] = real is not None and placebo is not None
+            row["unbroken_between_arms"] = (real is not None and placebo is not None
+                                           and real[0].span_id == placebo[0].span_id)
             if row["paired_coverage"]:
                 for result, counts in zip(arms, paired_claims):
                     counts.update({event_key(row, e) for e in result[1]})
@@ -252,6 +254,7 @@ def summary(rows):
             "anchor_status": dict(Counter(r["anchor_status"] for r in rows)),
             "with_actual_coverage": sum(r["continuous_coverage"] for r in rows),
             "paired_orders": len(paired), "paired_conditions": len({r["market"] for r in paired}),
+            "paired_unbroken_between_arms": sum(r["unbroken_between_arms"] for r in paired),
             "paired_compatible": {arm: sum(r[arm]["size_compatible_adds"] > 0 for r in paired)
                                   for arm in ("actual", "placebo")},
             "paired_sole_uncontested": {arm: sum(r[arm]["paired_sole_uncontested_add"] for r in paired)
