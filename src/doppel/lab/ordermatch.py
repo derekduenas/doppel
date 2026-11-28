@@ -939,14 +939,9 @@ class _SlicedTape(LevelTape):
         self.vmax: list[dict[str, int]] = [{} for _ in range(n_slices)]
 
     def printed(self, asset: str, price: float, ms: int, win: int) -> tuple[float, int]:
-        vol, n = 0, 0
-        for k in self.sides(asset, price):
-            vs, ss = self.level_prints.get(k, ((), ()))
-            for v, s in zip(vs, ss):
-                if abs(v - ms) <= win:
-                    vol += s
-                    n += 1
-        return vol, n
+        sizes = [s for k in self.sides(asset, price) for v, s in zip(*self.level_prints.get(k, ((), ())))
+                 if abs(v - ms) <= win]
+        return sum(sizes), len(sizes)  # sum() as LevelTape.printed: 3.12 sums floats compensated
 
 
 def _slicer(t_from: int, slice_s: int) -> Callable[[int], int]:

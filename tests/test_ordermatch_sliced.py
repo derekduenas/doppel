@@ -176,7 +176,7 @@ def test_reference_run_is_not_trivial(world):
     assert len(w["fingerprint"]["candidate_outcomes"]) >= 2
 
 
-@pytest.mark.parametrize("slice_s", [60, 600, 10_000])
+@pytest.mark.parametrize("slice_s", [60, 97, 600, 10_000])
 def test_sliced_equals_whole_span(world, slice_s):
     root, op, seconds, (doc, rows, quotes) = world
     got = run_sliced(root / "tape", op, T0, T0 + seconds, list(WALLETS), min_orders=1, slice_s=slice_s)
@@ -211,6 +211,19 @@ def test_several_streams_fall_back_to_whole_span(world, monkeypatch):
     monkeypatch.setattr(ordermatch, "run", lambda *a, **k: calls.append(a) or (doc, [], []))
     run_sliced(root / "tape", op, T0, T0 + seconds, list(WALLETS), streams=[STREAM, "clob_other"], slice_s=60)
     assert len(calls) == 1
+
+
+def test_compact_prints_sum_like_the_print_list():
+    full, compact = ordermatch.LevelTape(), ordermatch._SlicedTape(1)
+    full.mate = compact.mate = {"A1": "A2", "A2": "A1"}
+    for i, (asset, price, size) in enumerate([("A1", 0.4, 0.1), ("A2", 0.6, 0.2), ("A1", 0.4, 0.3),
+                                              ("A1", 0.4, 1e16), ("A2", 0.6, 1.0), ("A1", 0.4, -1e16)]):
+        full.add_print(ordermatch.Print(MS + i, 0, asset, price, size, "BUY", "", "m1"))
+        vs, ss = compact.level_prints.setdefault((asset, price), (ordermatch.array("q"), ordermatch.array("d")))
+        vs.append(MS + i)
+        ss.append(size)
+    for ms, win in ((MS, 10), (MS + 2, 0), (MS + 1, 1)):
+        assert compact.printed("A1", 0.4, ms, win) == full.printed("A1", 0.4, ms, win)
 
 
 def _peak(fn) -> int:
