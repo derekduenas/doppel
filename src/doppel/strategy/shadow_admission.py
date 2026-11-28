@@ -16,8 +16,6 @@ import stat
 import tempfile
 import time
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 import numpy as np
 import orjson
 
@@ -106,6 +104,9 @@ def _json(raw):
 
 
 def _approval(bundle, trust, genome):
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
     code = "REJECT_UNTRUSTED_APPROVAL"
     try:
         raw = _read(bundle / "approval.json", 65536)
