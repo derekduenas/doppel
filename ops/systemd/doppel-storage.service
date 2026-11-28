@@ -6,7 +6,7 @@ After=network-online.target
 Type=oneshot
 Nice=19
 IOSchedulingClass=idle
-MemoryMax=600M
+MemoryMax=1200M
 OOMScoreAdjust=800
 ExecStart=/usr/bin/python3 /opt/doppel-storage/storage.py copy
 ExecStart=/bin/sh -c 'tmp=$$(mktemp /var/tmp/doppel-storage-audit.XXXXXX) || exit 1; /usr/bin/python3 /opt/doppel-storage/storage.py audit --json > "$$tmp"; rc=$$?; mv -T "$$tmp" /var/tmp/doppel-storage-audit.json || exit 1; exit "$$rc"'
