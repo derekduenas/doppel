@@ -1,0 +1,44 @@
+[Unit]
+Description=DOPPEL BRTI recorder (published BRTI + receive stamps, absorbed from PERELMAN; read-only)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+# NOT installed by ops/deploy.sh. Install and cutover steps: docs/BRTI-ABSORB.md.
+# The output directory must exist and belong to doppel before the first start:
+#   install -d -o doppel -g doppel -m 0750 /mnt/volume_nyc1_1793485122853/doppel/brti-stream
+
+[Service]
+Type=simple
+User=doppel
+Group=doppel
+WorkingDirectory=/opt/doppel
+Environment=PYTHONUNBUFFERED=1
+# Same read-only Kalshi profile as perelman-recorder and doppel-tape, readable only by this service.
+LoadCredential=kalshi-profile.json:/etc/edge-engine/riskd/kalshi-production-readonly.json
+# Shadow phase 1 (docs/BRTI-ABSORB.md) uses a drop-in that adds --without replica,rti,kalshi,hl,bn.
+# hl (Hyperliquid) and bn (Binance) are OFF in DOPPEL's copy until the owner decides on US access;
+# turning them on is removing "hl,bn" from --without on this line (no code change).
+ExecStart=/opt/doppel/.venv/bin/doppel-brti-record --out /mnt/volume_nyc1_1793485122853/doppel/brti-stream --without hl,bn
+Restart=always
+RestartSec=10
+UMask=0027
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/mnt/volume_nyc1_1793485122853/doppel/brti-stream
+InaccessiblePaths=-/etc/edge-engine -/etc/edge-pilot -/root
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+MemoryMax=1G
+CPUQuota=150%
+
+[Install]
+WantedBy=multi-user.target
