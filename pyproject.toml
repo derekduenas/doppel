@@ -64,6 +64,7 @@ doppel-leadlag = "doppel.lab.leadlag:main"
 doppel-markout = "doppel.lab.markout:main"
 doppel-skilldecay = "doppel.lab.skilldecay:main"
 doppel-mechanisms = "doppel.lab.mechanisms:main"
+doppel-invert = "doppel.lab.inversion:main"
 
 [dependency-groups]
 dev = [
