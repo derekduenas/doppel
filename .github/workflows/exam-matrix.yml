@@ -1,0 +1,131 @@
+name: Exam matrix
+
+# Layer 5 answer-key exam (evidence/prereg/2026-11-28-layer5-exam.md), one subject per job.
+# Pinned code 9eac081, the six sealed clob_btc_5m segments from release exam-input-20261126, the frozen
+# exam-params.json. Each subject is seeded independently, so a one-subject run equals its part of the
+# sequential run. Subject e takes its rate from subject a of the same seed (answerkey.py:1384); its job
+# passes exactly that value, max(a.train_visible_maker_orders, 1) / (split - from), as rate_per_s.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CODE_REF: 9eac081367fb837495e828e537df98a7f9d07052
+  PYTHON_VERSION: "3.12.13"
+  UV_VERSION: "0.11.2"
+  OPENBLAS_NUM_THREADS: "1"
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  PARAMS: evidence/2026-11-27-answerkey-inputs/exam-params.json
+  PARAMS_SHA256: e6a7faf1
+  TOKENS: evidence/2026-11-27-answerkey-inputs/tokens.jsonl
+
+jobs:
+  maker_a:
+    name: seed ${{ matrix.seed }} / ${{ matrix.subject }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [271031, 271067, 271091]
+        subject: [a]
+    steps: &steps
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.CODE_REF }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install locked dependencies
+        run: uv sync --locked --python "$PYTHON_VERSION"
+      - name: Fetch and verify the sealed exam tape
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dl tape/clob_btc_5m/20261126
+          gh release download exam-input-20261126 -R "$GITHUB_REPOSITORY" -D dl
+          for h in 06 07 08 09 10 11; do mv "dl/clob_btc_5m-20261126-$h.dtape.zst" "tape/clob_btc_5m/20261126/$h.dtape.zst"; done
+          sha256sum -c - <<'SUMS'
+          6f32f771011ac3c96dfda1ca615bf7d660ccae9d28077fbbd99bc3cc4048a398  tape/clob_btc_5m/20261126/06.dtape.zst
+          44207aafd4579a90489abbcd0e1c4421ad17fbeddbc886f7f0006d411331a749  tape/clob_btc_5m/20261126/07.dtape.zst
+          bdd5184849ec69d3fded6717f5acff8876c69011770786bd0bce35676605e671  tape/clob_btc_5m/20261126/08.dtape.zst
+          439be5cb5e82304fa2bd5827120752e814cc3845b305b4a711be5fb6da6f7f1b  tape/clob_btc_5m/20261126/09.dtape.zst
+          d039678d81326687943d22ffce1fc57af00264dc3d9989279b148c913e8bdd18  tape/clob_btc_5m/20261126/10.dtape.zst
+          4c7b7a6bc2df62e9da4ce8c1c9427570a429d0d1d73cc210c4990d479c365a1c  tape/clob_btc_5m/20261126/11.dtape.zst
+          SUMS
+          sha256sum "$PARAMS" | cut -c1-8 | grep -qx "$PARAMS_SHA256"
+      - name: Download subject a of this seed
+        if: matrix.subject == 'e'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: exam-${{ matrix.seed }}-a
+          path: a-run
+      - name: Pass subject a's rate to subject e exactly as the sequential run does
+        if: matrix.subject == 'e'
+        run: |
+          uv run --no-sync python - <<'PY'
+          import json
+          card = json.load(open("a-run/out/scorecard.json"))
+          lo, split, hi = card["range"]
+          n = card["strategies"]["a"]["train_visible_maker_orders"]
+          params = json.load(open("${{ env.PARAMS }}"))
+          params["e"]["rate_per_s"] = max(n, 1) / (split - lo)
+          json.dump(params, open("params-e.json", "w"))
+          print("a.train_visible_maker_orders", n, "rate_per_s", repr(params["e"]["rate_per_s"]))
+          PY
+      - name: Run the subject
+        run: |
+          P="$PARAMS"; [ "${{ matrix.subject }}" = e ] && P=params-e.json
+          set +e
+          uv run --no-sync python -m doppel.lab.answerkey --data tape --tokens "$TOKENS" \
+            --stream clob_btc_5m --from 2026-11-26T06:00:00Z --split 2026-11-26T09:00:00Z --to 2026-11-26T12:00:00Z \
+            --strategies "${{ matrix.subject }}" --seed "${{ matrix.seed }}" --policy-params "$P" --slice-s 600 \
+            --out out 2>&1 | tee run.log
+          rc=${PIPESTATUS[0]}
+          echo "exit=$rc" >> run.log
+          exit "$rc"
+      - name: Hash the outputs
+        if: always()
+        run: find out -type f -print0 2>/dev/null | sort -z | xargs -0 -r sha256sum > out-sha256.txt || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: exam-${{ matrix.seed }}-${{ matrix.subject }}
+          path: |
+            out
+            run.log
+            out-sha256.txt
+            params-e.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  others:
+    name: seed ${{ matrix.seed }} / ${{ matrix.subject }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [271031, 271067, 271091]
+        subject: [b, c, d, f]
+    steps: *steps
+
+  random_taker:
+    name: seed ${{ matrix.seed }} / ${{ matrix.subject }}
+    needs: maker_a
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [271031, 271067, 271091]
+        subject: [e]
+    steps: *steps
