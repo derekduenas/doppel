@@ -10,7 +10,7 @@ from ..strategy.sequential import (
     ALPHA, BLOCK, LAMBDA_CAP, LOG_E_MAX_JSON, METHOD, PRIOR_VAR, loss_bound_c,
 )
 from ..tape.universe import HORIZONS
-from ..twin.tape import NS, WindowTape
+from ..twin.tape import NS, WindowTape, _is_inferred
 from .inputs import LiveWindow
 
 
@@ -45,6 +45,25 @@ def _markouts(w: LiveWindow, book_complete: bool) -> dict:
             "n_paper_fills": len(fills), "by_horizon_c": marks}
 
 
+def _maker_trade_complete(w: LiveWindow) -> bool:
+    """Match the public prints to venue volume counters bracketing the whole market."""
+    vb = sorted(w.vbooks, key=lambda b: b.tw)
+    start, end = w.start * NS, w.end * NS
+    lo = next((i for i in range(len(vb) - 1, -1, -1) if vb[i].tw <= start), None)
+    hi = next((i for i, b in enumerate(vb) if b.tw >= end), None)
+    if (lo is None or hi is None or w.wt.stats.get("trade_gap_events")
+            or start - vb[lo].tw > 3 * NS or vb[hi].tw - end > 3 * NS
+            or any(vb[lo].tw <= t <= vb[hi].tw for t in w.wt.gaps)):
+        return False
+    counters = [b.shares_traded for b in vb[lo:hi + 1]]
+    values = [v for v in counters if v is not None and math.isfinite(v) and v >= 0]
+    if len(values) != len(counters) or any(a > b for a, b in zip(values, values[1:])):
+        return False
+    trades = [t for t in w.wt.trades if vb[lo].tw < t.tw <= vb[hi].tw]
+    return (not any(_is_inferred(t) or not math.isfinite(t.qty) or t.qty <= 0 for t in trades)
+            and abs(math.fsum(t.qty for t in trades) - (values[-1] - values[0])) <= 1e-4)
+
+
 @dataclass
 class ShadowEpochs:
     """Bounded positive-direction aGRAPA state for one contiguous market series."""
@@ -69,8 +88,6 @@ class ShadowEpochs:
         age = int(max_book_age_s * NS) if math.isfinite(max_book_age_s) else 0
         if len(g.universe.horizons) != 1 or len(g.universe.assets) != 1:
             reason = "overlapping_market_universe"
-        elif g.mode != "taker":
-            reason = "maker_trade_coverage_unmeasured"
         elif age <= 0 or not math.isfinite(bound) or bound <= 0:
             reason = "measurement_bound_unavailable"
         else:
@@ -78,8 +95,10 @@ class ShadowEpochs:
         return cls(first_start, span, age, bound, reason)
 
     def settle(self, w: LiveWindow, result: dict | None, *, inactive: bool) -> dict:
+        trade_complete = w.sim.g.mode != "maker" or _maker_trade_complete(w)
         complete = (result is not None and self.max_age_ns > 0 and not w.late
-                    and not w.sim.stale_book_s and not inactive and _book_complete(w.wt, self.max_age_ns))
+                    and not w.sim.stale_book_s and not inactive and trade_complete
+                    and _book_complete(w.wt, self.max_age_ns))
         value = result["net_c"] if result is not None else None
         marks = _markouts(w, complete)
         if self.blocked is None:
@@ -87,6 +106,8 @@ class ShadowEpochs:
                 reason = "shadow_inactive"
             elif result is None:
                 reason = "unsettled_market"
+            elif not trade_complete:
+                reason = "maker_trade_coverage_unmeasured"
             elif not complete:
                 reason = "incomplete_book_observation"
             elif value is None or not math.isfinite(value):

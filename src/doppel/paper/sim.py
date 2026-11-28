@@ -25,12 +25,13 @@ from __future__ import annotations
 import hashlib
 import heapq
 import math
+from dataclasses import replace
 from typing import Callable, Iterable
 
 import orjson
 
 from ..strategy.genome import Genome
-from ..twin.engine import P_DECIDE, SimConfig, TakerOrder, WindowSim, exclusion, window_head
+from ..twin.engine import MIN_QTY, P_DECIDE, SimConfig, TakerOrder, WindowSim, exclusion, floor2, window_head
 from ..twin.features import Features, WindowRef
 from ..twin.tape import NS, WindowTape
 
@@ -77,6 +78,7 @@ class PaperSim(WindowSim):
         self._intents = 0
         self._cur_oid: str | None = None
         self.stale_book_s = 0
+        self.order_scale = 1.0
 
     def rec(self, k: str, t: int, **kw) -> None:
         self.emit({"k": k, "slug": self.slug, "t": t, **kw})
@@ -99,6 +101,8 @@ class PaperSim(WindowSim):
         pend = {s: [v, None if q is None else [q.price, q.size, q.decided_ns]] for s, (v, q) in self.pending.items()}
         st = [round(self.inv, 6), round(self.cash, 6), round(self.fees, 6), round(self.notional, 6), live, pend,
               self.entries, self.last_attempt, self.inflight, self.flatten_inflight, self.flattening, self.stood_down]
+        if self.order_scale != 1:
+            st.append(self.order_scale)
         return hashlib.sha256(orjson.dumps(st, option=orjson.OPT_SORT_KEYS)).hexdigest()[:16]
 
     # ------------------------------------------------------------------ decisions
@@ -157,6 +161,9 @@ class PaperSim(WindowSim):
 
     def _schedule_quote(self, side: str, q, t: int) -> None:
         working = self._working(side)
+        if q is not None and self.order_scale != 1:
+            size = floor2(q.size * self.order_scale)
+            q = replace(q, size=size, remaining=size) if size >= MIN_QTY else None
         kind = "cancel" if q is None else ("amend" if working is not None else "post")
         super()._schedule_quote(side, q, t)
         ver = self.ver[side]
@@ -170,6 +177,8 @@ class PaperSim(WindowSim):
                  ref_c=None if q.ref_c != q.ref_c else q.ref_c, why="quote")
 
     def _push(self, t: int, prio: int, kind: str, payload) -> None:
+        if kind == "ioc" and payload.rule >= 0 and self.order_scale != 1:
+            payload = replace(payload, qty=floor2(payload.qty * self.order_scale))
         super()._push(t, prio, kind, payload)
         if kind == "ioc":
             o: TakerOrder = payload
@@ -230,6 +239,16 @@ class PaperSim(WindowSim):
                  inv=round(self.inv, 6), cash=round(self.cash, 6), fees=round(self.fees, 6))
 
     # ------------------------------------------------------------------ risk
+    def throttle(self, t: int) -> None:
+        if self.order_scale == 0.5:
+            return
+        self.order_scale = 0.5
+        for side in ("bid", "ask"):
+            if self._working(side) is not None:
+                self._why = "decay_throttle"
+                self._schedule_quote(side, None, t)
+                self._why = None
+
     def halt(self, t: int, why: str) -> None:
         """Stop deciding and pull every working quote (cancels land one latency later). An IOC already
         in flight cannot be recalled and still lands."""

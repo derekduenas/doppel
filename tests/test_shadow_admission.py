@@ -398,6 +398,36 @@ def test_promotion_cli_to_signed_maker_bundle_to_admission(tmp_path):
     assert not (output / "layer5b.json").exists()
 
 
+def test_watchdog_admission_requires_a_valid_bound_probability_before_receipt(tmp_path):
+    b = Bundle(tmp_path)
+    receipt_dir = tmp_path / "active"
+    receipt_path = receipt_dir / b.genome.id / "admission_receipt.json"
+
+    def live():
+        return admit_shadow(b.genome, b.bundle, b.trust, receipt_dir,
+                            simulation_sha256=simulation_digest(b.cfg), require_probability=True)
+
+    with pytest.raises(AdmissionRejected, match="signed candidate probability"):
+        live()
+    assert not receipt_path.exists()
+    model = {"schema": "doppel.shadow-probability/v1", "genome_id": b.genome.id, "offset_s": 30,
+             "fit_end_ns": (b.start - 1) * 10**9, "fit_sha256": label("held development fit"),
+             "intercept": 0, "weights": {"realized_y": 1}}
+    b.approval["files"]["probability.json"] = write(b.bundle / "probability.json", model)
+    b.sign()
+    with pytest.raises(AdmissionRejected, match="invalid candidate probability"):
+        live()
+    assert not receipt_path.exists()
+    model["weights"] = {"spread_c": 1}
+    digest = write(b.bundle / "probability.json", model)
+    b.approval["files"]["probability.json"] = digest
+    b.sign()
+    actual = live()
+    assert actual["probability_sha256"] == digest
+    assert actual["replay_start_ns"] == b.start * 10**9
+    assert receipt_path.is_file()
+
+
 @pytest.mark.parametrize("section,field", [
     ("dsr", "dsr"), ("pbo", "pbo"), ("fdr", "bh_q"), ("hac", "t"),
     ("hac", "p_one_sided"), ("bootstrap", "p_one_sided"),

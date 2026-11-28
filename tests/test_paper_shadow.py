@@ -60,3 +60,27 @@ def test_shadow_expiry_and_revocation(monkeypatch):
     assert session.stop_reason(NOW + 1) == "shadow_admission_expired"
     monkeypatch.setattr(shadow, "_owner_file", lambda _: b"revoked")
     assert session.stop_reason(NOW) == "shadow_approval_changed"
+
+
+def test_moving_genome_journal_cannot_clear_persistent_demotion(tmp_path, monkeypatch):
+    import json
+
+    genome = maker()
+    journal_root = tmp_path / "run"
+    journal = journal_root / genome.id
+    journal.mkdir(parents=True)
+    demotions = journal_root / ".shadow-demotions"
+    demotions.mkdir()
+    marker = demotions / f"{genome.id}.json"
+    session = shadow.ShadowSession("a" * 64, NOW + runtime.NS, "b" * 64, demotion_path=marker)
+    session.record_demotion({"genome_id": genome.id, "state": "KILL_DEMOTE_SHADOW"}, NOW)
+    journal.rename(tmp_path / "journal-archived")
+    config = {"schema": "doppel-shadow-operator/1", "public_key_hex": "5a" * 32, "plan_sha256": "a" * 64,
+              "active_genomes": [], "data_root": str(tmp_path), "journal_root": str(journal_root),
+              "reference_root": None}
+    monkeypatch.setattr(shadow, "_owner_file", lambda p: json.dumps(config).encode()
+                        if p == shadow.APPROVAL else b"e" * 40)
+    monkeypatch.setattr(shadow, "admit_shadow", lambda *_, **__: pytest.fail("demotion must precede admission"))
+    with pytest.raises(AdmissionRejected, match="REJECT_SHADOW_DEMOTED"):
+        shadow.authorize(genome, tmp_path / "bundle", tmp_path, journal, None, runtime.SimConfig())
+    assert json.loads(marker.read_bytes())["observed_ns"] == NOW

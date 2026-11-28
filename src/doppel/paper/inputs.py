@@ -264,16 +264,19 @@ def route_ws(stream: str, rec: dict, windows: dict[str, LiveWindow], cursor: int
         return
     kind, slug, obj, extra = ev
     if kind == "ctl":
-        if extra in STREAM_GAP_CTL:
+        if extra in (*STREAM_GAP_CTL, "backpressure_drop", "receive_time_reversal"):
             for w in windows.values():
                 if w.book_stream == stream:
                     w.on_gap(rec["tw"], cursor)
         elif extra in GROUP_GAP_CTL and isinstance(obj, dict):
             gr = rid_group(obj.get("rid"))
-            if gr is not None and gr[0] == "md":
+            if gr is not None:
                 for w in windows.values():
                     if w.book_stream == stream and w.horizon == gr[1] and w.start == gr[2]:
-                        w.on_gap(rec["tw"], cursor)
+                        if gr[0] == "md":
+                            w.on_gap(rec["tw"], cursor)
+                        elif gr[0] == "tr" and w.lo <= rec["tw"] < w.hi:
+                            w.wt.stats["trade_gap_events"] = w.wt.stats.get("trade_gap_events", 0) + 1
         return
     w = windows.get(slug or "")
     if w is None:

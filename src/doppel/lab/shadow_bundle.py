@@ -16,6 +16,7 @@ from ..strategy.shadow_admission import (
     _decode_evidence, _read, _sha, _verify_approval_metadata, _verified_evidence,
 )
 from ..strategy.shadow_archetypes import archetype
+from ..strategy.shadow_probability import MAX_BYTES as MAX_MODEL_BYTES
 from ..twin.cli import code_sha256
 
 COMPUTED_GATES = ("dsr", "pbo", "fdr", "hac", "bootstrap", "promo_edge")
@@ -125,7 +126,8 @@ def build_shadow_bundle(promotion_dir: Path, replay_artifact: Path, trial_ledger
         source = gate_results.parent / name
         if source.exists():
             paths[name] = source
-    files = {name: _read(path) for name, path in paths.items()}
+    files = {name: _read(path, MAX_MODEL_BYTES) if name == "probability.json" else _read(path)
+             for name, path in paths.items()}
     evidence = {name: _decode_evidence(name, raw) for name, raw in files.items()}
     gates = _fill_gates(genome, _decode_evidence("gates.json", _read(gate_results)), files, evidence)
     evidence["gates.json"], files["gates.json"] = gates, _canon(gates)

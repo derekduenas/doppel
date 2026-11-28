@@ -93,15 +93,32 @@ def test_admitted_monitor_commits_canonical_paper_marks_and_resumes(tmp_path, mo
         return
     monitor = row["shadow_monitor"]
     assert monitor["decay_watchdog"]["status"] == "UNMEASURED"
-    assert monitor["e_value"]["reason"] == ("maker_trade_coverage_unmeasured" if mode == "maker"
-                                            else "awaiting_complete_block")
-    if mode == "maker":
-        return
+    assert monitor["e_value"]["reason"] == "awaiting_complete_block"
     assert monitor["e_value"]["n_windows"] == 1
     assert monitor["epoch_net_c"] == round(row["net_usd"] * 100, 4)
+    if mode == "maker":
+        return  # this fixture has complete native volume and fills
     if mode == "taker":
         assert monitor["paper_markouts"] == {"status": "MEASURED", "n_paper_fills": 1,
                                              "by_horizon_c": {"2": -10.0, "10": -10.0}}
     else:
         assert monitor["paper_markouts"] == {"status": "UNMEASURED", "n_paper_fills": 1,
                                              "by_horizon_c": {"2": None, "10": None}}
+
+
+def test_maker_volume_brackets_use_receive_time_not_venue_time():
+    from types import SimpleNamespace
+
+    from doppel.paper.epoch import _maker_trade_complete
+    from doppel.twin.tape import Trade
+
+    def snapshot(s, traded):
+        return Book(s * NS, ((.4, 10.),), ((.6, 10.),), shares_traded=traded)
+
+    books = [snapshot(299, 0.), snapshot(600, 10.)]
+    wt = WindowTape("x", "btc", "5m", 300, 600, "ws", trades=[
+        Trade(300 * NS, 298 * NS, .5, 10., "buy", "native")])
+    w = SimpleNamespace(wt=wt, vbooks=books, start=300, end=600)
+    assert _maker_trade_complete(w)
+    wt.trades[0] = replace(wt.trades[0], tw=601 * NS, t_exch=599 * NS)
+    assert not _maker_trade_complete(w)

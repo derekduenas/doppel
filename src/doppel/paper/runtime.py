@@ -62,14 +62,16 @@ from ..twin.tape import NS, PRE_S
 from ..tape.universe import HORIZONS
 from .epoch import ShadowEpochs
 from .inputs import LiveWindow, RefLive, route_ws
-from .journal import Journal, iter_records, strip
+from .journal import Journal, JournalError, iter_records, strip
+from .probability_log import ProbabilityLog
 from .shadow import ShadowSession, authorize
 from .tail import PerelmanTail, StreamTail, TapeError
+from .watchdog import KILL, WARN, ShadowWatchdog
 
 REF_STREAMS = ("ref_brti_live", "ref_prices")
 PERELMAN = "perelman"
 UNSETTLED_AFTER_S = 3600
-CKPT_VERSION = 2
+CKPT_VERSION = 4
 NOT_REPLAYED = ("cycle", "recovery", "resume", "run")
 SRC = Path(__file__).resolve().parent
 
@@ -184,6 +186,7 @@ class State:
     late_records: int = 0
     hub: Hub = field(default_factory=Hub)
     shadow_epochs: ShadowEpochs | None = None
+    shadow_watchdog: ShadowWatchdog | None = None
 
 
 class PaperRuntime:
@@ -194,6 +197,7 @@ class PaperRuntime:
             raise ValueError("genome not runnable on paper: " + "; ".join(errs))
         self.g, self.data, self.cfg, self.settings, self.clock = g, Path(data), cfg, settings, clock
         self.journal = Journal(journal_dir)
+        self.probabilities = ProbabilityLog(self.journal.dir)
         self.streams = tuple(f"pmus_ws_{h}" for h in g.universe.horizons) + REF_STREAMS
         self.max_loss = settings.max_loss_usd if settings.max_loss_usd is not None else g.risk.max_loss_per_day
         self.kill_files = tuple(Path(p) for p in settings.kill_files) or (Path(journal_dir) / "KILL",)
@@ -201,6 +205,7 @@ class PaperRuntime:
         self._shadow: ShadowSession | None = None
         self.st: State | None = None
         self._batch: list[dict] = []
+        self._write_failed = False
         self._capture: list[dict] | None = None   # replay: regenerated records go here
         self._limits: dict[str, dict[str, int]] = {}  # replay: offsets the committed cycles reached
 
@@ -214,6 +219,8 @@ class PaperRuntime:
         if self._shadow_bundle is not None:
             if not math.isfinite(self.max_loss) or not 0 < self.max_loss <= self.g.risk.max_loss_per_day:
                 raise ValueError("shadow max loss must stay within the sealed risk limit")
+            if not math.isfinite(self.settings.grace_s) or self.settings.grace_s < 0:
+                raise ValueError("shadow grace must be nonnegative")
             if from_s is not None and abs(from_s - self.clock() // NS) > 1:
                 raise ValueError("shadow must start at the current clock or resume its approved journal")
             self._shadow = authorize(self.g, self._shadow_bundle, self.data, self.journal.dir,
@@ -232,6 +239,8 @@ class PaperRuntime:
         L = min(HORIZONS[h] for h in self.g.universe.horizons)
         first = -(-from_s // L) * L
         st = self._fresh_state(first)
+        if st.shadow_watchdog is not None:
+            self.probabilities.recover(())
         st.hub.rt = self
         self.st = st
         self.journal.append([{"k": "run", "t": from_s * NS, "wall": self.clock(), "genome": to_dict(self.g),
@@ -248,14 +257,18 @@ class PaperRuntime:
         tails = {s: StreamTail(self.data, s, first_start * NS - back) for s in self.streams}
         per = PerelmanTail(Path(self.settings.perelman_src)) if self.settings.perelman_src else None
         nxt = {h: -(-first_start // HORIZONS[h]) * HORIZONS[h] for h in self.g.universe.horizons}
+        model = self._shadow.probability if self._shadow is not None else None
         return State(cursor=first_start * NS - back - 1, first_start=first_start, next_start=nxt, tails=tails,
                      perelman=per, last_commit_w=first_start * NS - back, last_ckpt_w=first_start * NS - back,
                      shadow_epochs=ShadowEpochs.start(self.g, first_start, self.settings.max_book_age_s)
-                     if self._shadow is not None else None)
+                     if self._shadow is not None else None,
+                     shadow_watchdog=ShadowWatchdog(model, self.g.id) if model is not None else None)
 
     # ================================================================== one cycle
     def cycle(self, marker: dict | None = None, late_keys: set | None = None) -> int:
         """Run one cycle; in replay, reproduce the committed ``marker``. Returns W."""
+        if self._write_failed:
+            raise JournalError("restart from the last committed cycle after the write failure")
         st = self.st
         assert st is not None
         replay = marker is not None
@@ -295,7 +308,7 @@ class PaperRuntime:
         if W > c0:
             self._ingest(W, None)
             self._ensure_windows(W)
-            self._advance(W)
+            self._advance(W, now)
             st.cursor = W
             self._max_loss_check(W)
             self._settle(W)
@@ -403,6 +416,8 @@ class PaperRuntime:
                            can_open=functools.partial(st.hub.can_open, key),
                            stand_down_fn=functools.partial(st.hub.stand_down, key), max_book_age_ns=age)
             st.windows[w.slug] = w
+            if st.shadow_watchdog is not None and st.shadow_watchdog.state == WARN:
+                w.sim.order_scale = 0.5
             self._emit({"k": "open", "slug": w.slug, "t": (start - PRE_S) * NS, "start": start, "end": w.end,
                         "horizon": h, "asset": a})
         if new:
@@ -468,7 +483,7 @@ class PaperRuntime:
         for w in sorted(st.windows.values(), key=lambda w: w.key):
             w.sim.halt(t, why)
 
-    def _advance(self, W: int) -> None:
+    def _advance(self, W: int, now: int | None = None) -> None:
         """Every window's events up to W in ONE time order (ties: engine priority, then window order),
         so what one window sees of another never depends on how the tape was chunked into cycles."""
         st = self.st
@@ -482,7 +497,15 @@ class PaperRuntime:
                     best = ((h[0][0], h[0][1]), w)
             if best is None:
                 return
-            best[1].sim.step()
+            w = best[1]
+            t, _, _, kind, _ = w.sim._heap[0]
+            monitor = st.shadow_watchdog
+            if monitor is not None and kind == "decide" and t == (w.start + monitor.model.offset_s) * NS:
+                if now is None:
+                    raise RecoveryError("a committed forecast cannot appear in an uncommitted catch-up interval")
+                row = monitor.forecast(w, t, now, active=st.halted is None)
+                self._emit({"k": "shadow_probability", "t": t, "row": row})
+            w.sim.step()
 
     def _max_loss_check(self, W: int) -> None:
         """Stop when today's (UTC) settled P&L plus every open window's worst case reaches the limit."""
@@ -520,6 +543,28 @@ class PaperRuntime:
                 continue
             if st.shadow_epochs is not None:
                 body["shadow_monitor"] = st.shadow_epochs.settle(w, res, inactive=st.halted is not None)
+            if st.shadow_watchdog is not None:
+                assert st.shadow_epochs is not None
+                row, changes = st.shadow_watchdog.settle(w, ts, res, st.shadow_epochs.snapshot()["e_n"],
+                                                       active=st.halted is None)
+                self._emit({"k": "shadow_probability", "t": ts, "row": row})
+                body["shadow_monitor"]["decay_watchdog"] = st.shadow_watchdog.snapshot()
+                for change in changes:
+                    self._emit({"k": "shadow_watchdog", "t": W, "row": {
+                        "stage": "watchdog", "ts_ns": W, "genome_id": self.g.id, **change}})
+                    if change["state"] == WARN:
+                        for current in st.windows.values():
+                            if current.end * NS > W:
+                                current.sim.throttle(W)
+                    elif change["state"] == KILL:
+                        self._halt(W, KILL)
+                        if self._capture is None:
+                            assert self._shadow is not None
+                            try:
+                                self._shadow.record_demotion({"genome_id": self.g.id, **change}, self.clock())
+                            except (OSError, ValueError) as exc:
+                                self._write_failed = True
+                                raise JournalError("failed to persist Shadow demotion") from exc
             self._emit({"k": "settle", "slug": w.slug, "t": ts, "start": w.start, "end": w.end,
                         "horizon": w.horizon, "asset": w.asset, "late": w.late,
                         "opening_source": w.feats.source, "opening_switches": w.feats.switches,
@@ -551,7 +596,22 @@ class PaperRuntime:
             st.last_ckpt_w = W
             marker["ck"] = self._checkpoint(self.journal.n + len(self._batch))
         self._batch.append(marker)
-        self.journal.append(self._batch, t_ns=W)
+        boundaries = [r["row"]["window_end_ns"] for r in self._batch if r["k"] == "shadow_probability"
+                      and r["row"]["stage"] == "forecast" and r["row"]["status"] == "SEALED"]
+
+        def check_before_close() -> int:
+            persisted = self.clock()
+            if persisted >= min(boundaries):
+                raise JournalError("forecast reached disk too late to certify a pre-resolution seal")
+            return persisted
+
+        try:
+            self.journal.append(self._batch, t_ns=W, forecast_wall=check_before_close if boundaries else None)
+            if st.shadow_watchdog is not None:
+                self.probabilities.append(self._batch)
+        except (OSError, JournalError):
+            self._write_failed = True
+            raise
         self._batch = []
 
     def _fatal(self, c0: int, now: int, exc: Exception) -> None:
@@ -658,6 +718,8 @@ class PaperRuntime:
                                   "problems": problems},
                                  {"k": "recovery", "t": st.cursor, "wall": self.clock(), "refused": True}], t_ns=None)
             raise RecoveryError("; ".join(problems))
+        if st.shadow_watchdog is not None:
+            self.probabilities.recover(iter_records(self.journal.dir))
         self.journal.append([{"k": "resume", "t": st.cursor, "wall": self.clock(), "from_checkpoint": base_n,
                               "replayed_records": replayed, "open_windows": sorted(st.windows)}], t_ns=None)
 

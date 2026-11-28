@@ -27,6 +27,7 @@ from ..twin.verdict import block_bootstrap_p
 from .genome import Genome
 from .registry import Registry, protocol_matches
 from .shadow_archetypes import archetype, maker_evidence, requires_offshore
+from .shadow_probability import MAX_BYTES as MAX_MODEL_BYTES, parse_probability
 
 EVIDENCE_FILES = ("plan.json", "trials.json", "replay.json", "gates.json", "promotion.json")
 OFFSHORE_ROLES = ("binance", "hyperliquid")
@@ -158,7 +159,7 @@ def _verify_approval_metadata(approval, trust, genome, *, require_current=True):
 
 def _artifact(bundle, approval, name, code):
     try:
-        raw = _read(bundle / name)
+        raw = _read(bundle / name, MAX_MODEL_BYTES if name == "probability.json" else MAX_ARTIFACT_BYTES)
         _require(_sha(raw) == approval["files"][name], code, f"{name} differs from the signed evidence")
         return _decode_evidence(name, raw)
     except AdmissionRejected:
@@ -520,10 +521,11 @@ def _verified_evidence(genome, trust, approved, evidence, simulation_sha256):
         stats = _statistics(candidate, values)
         _check_promotion(evidence["promotion.json"], approved, windows, stats)
         if "probability.json" in evidence:
-            model = evidence["probability.json"]
-            _require(model.get("schema") == "doppel.shadow-probability/v1" and model.get("genome_id") == genome.id
-                     and _int(model.get("fit_end_ns"), 1) and model["fit_end_ns"] < reg["eval_window"]["start_s"] * 10**9,
-                     "REJECT_UNMEASURED_GATE", "probability calibration is missing or overlaps the registered replay")
+            try:
+                parse_probability(evidence["probability.json"], approved["files"]["probability.json"],
+                                  genome, before_ns=reg["eval_window"]["start_s"] * 10**9)
+            except (ValueError, KeyError, OverflowError) as exc:
+                raise AdmissionRejected("REJECT_UNMEASURED_GATE", f"invalid candidate probability: {exc}") from exc
     except AdmissionRejected:
         raise
     except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError, OverflowError) as exc:
@@ -549,9 +551,11 @@ def _statistics_match(stated, stats):
 
 
 def admit_shadow(genome: Genome, bundle: Path, trust: AdmissionTrust, receipt_dir: Path, *,
-                 simulation_sha256: str) -> dict:
+                 simulation_sha256: str, require_probability: bool = False) -> dict:
     """Validate all proofs and issue an immutable receipt."""
     approved, approval_hash = _approval(bundle, trust, genome)
+    _require(not require_probability or "probability.json" in approved["files"],
+             "REJECT_UNMEASURED_GATE", "live Shadow requires a signed candidate probability model")
     evidence = {name: _artifact(bundle, approved, name, REJECT_FOR.get(name, "REJECT_UNMEASURED_GATE"))
                 for name in approved["files"]}
     start_ns, scenarios, measured, stats = _verified_evidence(genome, trust, approved, evidence, simulation_sha256)
