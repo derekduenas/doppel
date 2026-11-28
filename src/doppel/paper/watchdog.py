@@ -5,7 +5,9 @@ from __future__ import annotations
 import bisect
 import hashlib
 import math
+from collections import deque
 from dataclasses import dataclass, field
+from statistics import stdev
 
 import orjson
 
@@ -24,6 +26,12 @@ HORIZONS_NS = {"markout_500ms": NS // 2, "markout_2s": 2 * NS,
                "markout_10s": 10 * NS, "markout_60s": 60 * NS}
 OBSERVABLE = ("delta_log_loss", "markout_2s", "markout_10s")
 PROMO_FEE = 0.02085
+MARKETS_PER_BLOCK = 100
+BASELINE_BLOCKS = 20
+CONFIRM_BLOCKS = 20
+BASELINE_SE = 2.86
+DECLINE_SE = 3.5
+SIGMA_FLOORS = {"delta_log_loss": 0.01, "markout_2s": 0.10, "markout_10s": 0.10}
 
 
 def _row(body: dict) -> dict:
@@ -83,13 +91,59 @@ def _delta_ll(row: dict) -> float | None:
 
 
 @dataclass
+class DecayBlocks:
+    """Screen full block means and confirm a material decline from a sealed live baseline."""
+
+    sigma_floor: float
+    baseline: list[float] = field(default_factory=list)
+    recent: deque[float] = field(default_factory=lambda: deque(maxlen=CONFIRM_BLOCKS))
+    sensor: dict | None = None
+    mean: float | None = None
+    sigma: float | None = None
+    completed: int = 0
+
+    @property
+    def armed(self) -> bool:
+        return (self.mean is not None and self.sigma is not None
+                and self.mean - BASELINE_SE * self.sigma / math.sqrt(BASELINE_BLOCKS) > self.sigma_floor)
+
+    def observe(self, value: float | None) -> tuple[bool, bool]:
+        if value is None:
+            self.recent.clear()
+            self.sensor = None
+            return False, False
+        self.completed += 1
+        if self.sigma is None:
+            self.baseline.append(value)
+            if len(self.baseline) == BASELINE_BLOCKS:
+                self.mean = math.fsum(self.baseline) / BASELINE_BLOCKS
+                self.sigma = max(self.sigma_floor, stdev(self.baseline))
+            return False, False
+        if not self.armed:
+            return False, False
+        self.sensor = watchdog_update(self.sensor, value, sigma=self.sigma)
+        self.recent.append(value)
+        g = self.sensor["g"]
+        if g <= LAM / 2 or len(self.recent) < CONFIRM_BLOCKS or self.mean is None or self.mean <= 0:
+            return False, False
+        recent_mean = math.fsum(self.recent) / CONFIRM_BLOCKS
+        se = math.hypot(self.sigma / math.sqrt(BASELINE_BLOCKS),
+                        max(self.sigma_floor, stdev(self.recent)) / math.sqrt(CONFIRM_BLOCKS))
+        confirmed = recent_mean <= self.mean / 2 and self.mean - recent_mean >= DECLINE_SE * se
+        return confirmed, confirmed and g > LAM
+
+
+@dataclass
 class ShadowWatchdog:
     model: ShadowProbability
     genome_id: str
     state: str = HEALTHY
     pending: dict[str, dict] = field(default_factory=dict)
     ready: dict[str, dict] = field(default_factory=dict)
-    detectors: dict[str, dict] = field(default_factory=dict)
+    detectors: dict[str, DecayBlocks] = field(default_factory=lambda: {
+        name: DecayBlocks(SIGMA_FLOORS[name]) for name in OBSERVABLE})
+    block_rows: int = 0
+    block_values: dict[str, list[float]] = field(default_factory=lambda: {name: [] for name in OBSERVABLE})
 
     def forecast(self, w: LiveWindow, t: int, now: int, *, active: bool) -> dict:
         if w.slug in self.pending or t != (w.start + self.model.offset_s) * NS:
@@ -139,25 +193,38 @@ class ShadowWatchdog:
 
     def consume(self, row: dict) -> list[dict]:
         """Consume the reconciliation record in the same form published to JSONL."""
-        if not row["monitor_eligible"] or self.state == KILL:
+        if self.state == KILL:
             return []
-        values = {"delta_log_loss": _delta_ll(row), "markout_2s": row["markout_2s"],
-                  "markout_10s": row["markout_10s"]}
-        for name, value in values.items():
-            if value is not None:
-                self.detectors[name] = watchdog_update(self.detectors.get(name), value)
-        warns = [k for k in OBSERVABLE if self.detectors.get(k, {}).get("g", 0) > LAM / 2]
-        kills = [k for k in OBSERVABLE if self.detectors.get(k, {}).get("status") == "DECAY"]
+        if row["monitor_eligible"]:
+            values = {"delta_log_loss": _delta_ll(row), "markout_2s": row["markout_2s"],
+                      "markout_10s": row["markout_10s"]}
+            for name, value in values.items():
+                if value is not None and math.isfinite(value):
+                    self.block_values[name].append(value)
+        self.block_rows += 1
+        if self.block_rows < MARKETS_PER_BLOCK:
+            return []
+        means = {name: math.fsum(xs) / MARKETS_PER_BLOCK if len(xs) == MARKETS_PER_BLOCK else None
+                 for name, xs in self.block_values.items()}
+        self.block_rows = 0
+        self.block_values = {name: [] for name in OBSERVABLE}
+        decisions = {name: self.detectors[name].observe(value) for name, value in means.items()}
+        warns = [name for name, (warn, _) in decisions.items() if warn]
+        kills = [name for name, (_, kill) in decisions.items() if kill]
         events = []
         for phase, reasons in ((WARN, warns), (KILL, kills)):
             if reasons and (phase == KILL or self.state == HEALTHY):
                 self.state = phase
                 events.append({"state": phase, "window_id": row["window_id"], "metrics": reasons,
-                               "delta_log_loss": values["delta_log_loss"]})
+                               "delta_log_loss": means["delta_log_loss"], "markets_per_block": MARKETS_PER_BLOCK})
         return events
 
     def snapshot(self) -> dict:
         return {"status": self.state,
-                "log_loss_measured": self.detectors.get("delta_log_loss", {}).get("sigma") is not None,
-                "metrics": {name: {key: value for key, value in stat.items() if key != "warm"}
-                            for name, stat in self.detectors.items()}}
+                "markets_per_block": MARKETS_PER_BLOCK, "markets_in_block": self.block_rows,
+                "log_loss_measured": self.detectors["delta_log_loss"].sigma is not None,
+                "metrics": {name: {"complete_blocks": metric.completed, "baseline_mean": metric.mean,
+                                   "armed": metric.armed,
+                                   "sigma": metric.sigma, "confirmation_blocks": len(metric.recent),
+                                   "g": (metric.sensor or {}).get("g")}
+                            for name, metric in self.detectors.items()}}

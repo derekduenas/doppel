@@ -11,6 +11,13 @@ The draft reviews are [V4.1](https://github.com/derekduenas/doppel/pull/3) and [
 
 Use a fresh, independently pinned plan and approval window for each attempt. Have the issuer reconcile the trial inventory and inspect the actual source artifacts and predeclared stress plan behind the digests before attaching a signature. A green fixture run and a formatted bundle do not supply those research observations.
 
+The review fixes align promotion and admission on exact trial statistics,
+bind taker gate values to the measurement artifact, and restrict local seed
+signing to root-owned files. The watchdog now acts on 100-market blocks with
+a fixed baseline and explicit decline confirmation. The old single-market
+17-window result is superseded. Read the probability contract for the
+checkpoint cutover and persistent demotion directory.
+
 ## Track B evidence for the final user report
 
 Opus owns all live jobs, deployment, Apex feeds and R2 operations. The code PRs use synthetic fixtures. Retain these actual receipts separately.

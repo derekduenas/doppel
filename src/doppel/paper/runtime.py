@@ -71,7 +71,7 @@ from .watchdog import KILL, WARN, ShadowWatchdog
 REF_STREAMS = ("ref_brti_live", "ref_prices")
 PERELMAN = "perelman"
 UNSETTLED_AFTER_S = 3600
-CKPT_VERSION = 3
+CKPT_VERSION = 4
 NOT_REPLAYED = ("cycle", "recovery", "resume", "run")
 SRC = Path(__file__).resolve().parent
 
@@ -558,6 +558,13 @@ class PaperRuntime:
                                 current.sim.throttle(W)
                     elif change["state"] == KILL:
                         self._halt(W, KILL)
+                        if self._capture is None:
+                            assert self._shadow is not None
+                            try:
+                                self._shadow.record_demotion({"genome_id": self.g.id, **change}, self.clock())
+                            except (OSError, ValueError) as exc:
+                                self._write_failed = True
+                                raise JournalError("failed to persist Shadow demotion") from exc
             self._emit({"k": "settle", "slug": w.slug, "t": ts, "start": w.start, "end": w.end,
                         "horizon": w.horizon, "asset": w.asset, "late": w.late,
                         "opening_source": w.feats.source, "opening_switches": w.feats.switches,

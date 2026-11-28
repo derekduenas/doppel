@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import math
+
+import numpy as np
 from dataclasses import replace
 
 import orjson
@@ -13,7 +15,7 @@ from doppel.paper.inputs import LiveWindow, RefLive
 from doppel.paper.journal import Journal, JournalError, iter_records
 from doppel.paper.probability_log import ProbabilityLog
 from doppel.paper.shadow import ShadowSession
-from doppel.paper.watchdog import HEALTHY, KILL, WARN, ShadowWatchdog, paper_marks
+from doppel.paper.watchdog import MARKETS_PER_BLOCK, HEALTHY, KILL, WARN, DecayBlocks, ShadowWatchdog, paper_marks
 from doppel.strategy.genome import Condition, Risk
 from doppel.strategy.shadow_probability import ShadowProbability, load_probability
 from doppel.tape.universe import pmus_slug
@@ -104,7 +106,7 @@ def _rows(path):
     return [orjson.loads(line) for line in path.read_bytes().splitlines()]
 
 
-def test_sixty_window_shadow_stream_seals_then_demotes_and_resumes(tmp_path, monkeypatch):
+def test_sixty_market_shadow_stream_seals_resumes_and_stays_in_warmup(tmp_path, monkeypatch):
     g = _taker(when=(Condition("mid_up_c", ">", 100),), risk=Risk(max_loss_per_day=200))
     session = ShadowSession("1" * 64, (S + 61 * 300) * NS, "2" * 64, model())
     monkeypatch.setattr(runtime, "authorize", lambda *_: session)
@@ -134,7 +136,7 @@ def test_sixty_window_shadow_stream_seals_then_demotes_and_resumes(tmp_path, mon
     assert stream.read_bytes() == exact
     drive(resumed, tape, clock, clock.t, (S + 60 * 300 + 10) * NS, 25 * NS)
     tape.close()
-    assert resumed.finished
+    assert not resumed.finished
     scores = _rows(stream)
     forecasts = {row["window_id"]: row for row in scores if row["stage"] == "forecast"}
     settlements = [row for row in scores if row["stage"] == "settlement"]
@@ -145,18 +147,118 @@ def test_sixty_window_shadow_stream_seals_then_demotes_and_resumes(tmp_path, mon
         assert pred["record_sha256"] == row["forecast_sha256"]
         assert pred["ts_ns"] < pred["window_end_ns"] <= row["ts_ns"]
         assert row["realized_y"] == 1 and row["p_hat"] == pred["p_hat"]
-    phases = [row for row in scores if row["stage"] == "watchdog"]
-    assert [row["state"] for row in phases] == [WARN, KILL]
+    assert len(settlements) == 60
+    assert not any(row["stage"] == "watchdog" for row in scores)
     settled_journal = [r for r in iter_records(folder) if r["k"] == "settle"]
-    assert all(r["shadow_monitor"]["decay_watchdog"]["status"] == HEALTHY for r in settled_journal[:30])
-    event_market = phases[-1]["window_id"]
-    kill_index = next(i + 1 for i, row in enumerate(settlements) if row["window_id"] == event_market)
-    warn_index = next(i + 1 for i, row in enumerate(settlements) if row["window_id"] == phases[0]["window_id"])
-    assert (warn_index, kill_index) == (39, 47)
-    assert next(r for r in iter_records(folder) if r.get("event") == "halt_all")["why"] == KILL
-    stopped = runtime.PaperRuntime(*args, **kwargs)
-    stopped.start(None)
-    assert stopped.finished and _rows(stream) == scores
+    assert all(r["shadow_monitor"]["decay_watchdog"]["status"] == HEALTHY for r in settled_journal)
+    assert not settled_journal[-1]["shadow_monitor"]["decay_watchdog"]["log_loss_measured"]
+
+
+def test_paper_kill_persists_outside_journal_and_stops_runtime(tmp_path, monkeypatch):
+    g = _taker(when=(Condition("mid_up_c", ">", 100),), risk=Risk(max_loss_per_day=200))
+    demotion = tmp_path / ".shadow-demotions" / f"{g.id}.json"
+    demotion.parent.mkdir()
+    active = ShadowSession("1" * 64, (S + 600) * NS, "2" * 64, model(), demotion)
+    monkeypatch.setattr(runtime, "authorize", lambda *_: active)
+    monkeypatch.setattr(ShadowSession, "stop_reason", lambda *_: None)
+
+    def with_measurement_history(*args):
+        wd = ShadowWatchdog(*args)
+        metric = wd.detectors["delta_log_loss"]
+        for score in [.4] * 20 + [0.] * 19:
+            assert metric.observe(score)[1] is False
+        wd.block_rows = 99
+        wd.block_values["delta_log_loss"] = [0.] * 99
+        return wd
+
+    monkeypatch.setattr(runtime, "ShadowWatchdog", with_measurement_history)
+    tape = Tape(tmp_path / "tape", sorted(fixture_market(), key=lambda r: r[1]))
+    clock = Clock(S * NS)
+    tape.until(clock.t)
+    folder = tmp_path / g.id
+    rt = runtime.PaperRuntime(g, tape.root, folder, SimConfig(), SET, clock=clock,
+                              shadow_bundle=tmp_path / "bundle")
+    rt.start(S)
+    drive(rt, tape, clock, clock.t, (S + 615) * NS, 5 * NS)
+    tape.close()
+    rows = _rows(folder / "shadow_probs.jsonl")
+    assert [row["state"] for row in rows if row["stage"] == "watchdog"] == [WARN, KILL]
+    assert rt.finished
+    assert orjson.loads(demotion.read_bytes())["receipt_sha256"] == active.receipt_sha256
+
+
+@pytest.mark.parametrize("truth,mid", [(.55, .5), (.6, .5), (.7, .5), (.8, .6)])
+def test_noisy_steady_edge_has_zero_false_demotions_in_500_seeds(truth, mid):
+    n = MARKETS_PER_BLOCK
+    for seed in range(90500, 91000):
+        up = np.random.default_rng(seed).binomial(n, truth, 150)
+        means = (up * math.log(truth / mid) + (n - up) * math.log((1 - truth) / (1 - mid))) / n
+        sensor = DecayBlocks(.01)
+        assert not any(sensor.observe(float(score))[1] for score in means), (truth, mid, seed)
+
+
+def test_weak_baseline_false_kill_regression_stays_unarmed():
+    n, p, mid = MARKETS_PER_BLOCK, .55, .5
+    up = np.random.default_rng(55059).binomial(n, p, 150)
+    means = (up * math.log(p / mid) + (n - up) * math.log((1 - p) / (1 - mid))) / n
+    sensor = DecayBlocks(.01)
+    assert not any(sensor.observe(float(score))[1] for score in means)
+    assert not sensor.armed
+
+
+def _noisy_probability_blocks(seed, loss_block):
+    n = MARKETS_PER_BLOCK
+    r = np.random.default_rng(seed)
+    logits = r.normal(0, 1.5, 150 * n)
+    q = 1 / (1 + np.exp(-logits))
+    outcomes = r.random(len(q)) < q
+    mid = 1 / (1 + np.exp(-(logits + r.normal(0, .8, len(q)))))
+    p = q.copy()
+    if loss_block is not None:
+        index = loss_block * n
+        p[index:] = 1 / (1 + np.exp(-(logits[index:] + r.normal(0, .8, len(q) - index))))
+    return np.where(outcomes, np.log(p / mid), np.log((1 - p) / (1 - mid))).reshape(-1, n).mean(axis=1)
+
+
+@pytest.mark.parametrize("metric", ["delta_log_loss", "markout_2s", "markout_10s"])
+def test_noisy_steady_and_lost_edge_on_independent_block_sequences(metric):
+    loss = 60
+    hit = 0
+    for seed in range(92000, 92200):
+        if metric == "delta_log_loss":
+            steady = _noisy_probability_blocks(seed, None)
+            changed = _noisy_probability_blocks(seed + 1000, loss)
+            floor = .01
+        else:
+            salt = 2000 if metric == "markout_2s" else 3000
+            rng = np.random.default_rng(seed + salt)
+            steady = rng.normal(0, 2., (150, MARKETS_PER_BLOCK)).mean(axis=1) + .4
+            changed = rng.normal(0, 2., (150, MARKETS_PER_BLOCK)).mean(axis=1)
+            changed[:loss] += .4
+            floor = .10
+        sensor = DecayBlocks(floor)
+        assert not any(sensor.observe(float(score))[1] for score in steady), (metric, seed)
+        sensor = DecayBlocks(floor)
+        alarm = next((i for i, score in enumerate(changed) if sensor.observe(float(score))[1]), None)
+        assert alarm is None or alarm >= loss, (metric, seed, alarm)
+        hit += alarm is not None and alarm - loss + 1 <= 38
+    print(f"{metric}: 0/200 steady demotions, {hit}/200 demotions within 38 blocks of loss")
+    assert hit >= 180
+
+
+def test_detector_uses_complete_market_blocks_and_floors_constant_variance():
+    wd = ShadowWatchdog(model(), "fixture")
+    row = {"monitor_eligible": True, "p_hat": .8, "p_mkt_mid": .5, "realized_y": 1,
+           "markout_2s": .2, "markout_10s": .2, "window_id": "fixture"}
+    for _ in range(MARKETS_PER_BLOCK - 1):
+        assert wd.consume(row) == []
+    assert wd.detectors["delta_log_loss"].completed == 0
+    assert wd.consume(row | {"monitor_eligible": False}) == []
+    assert wd.detectors["delta_log_loss"].completed == 0
+    for _ in range(20 * MARKETS_PER_BLOCK):
+        assert wd.consume(row) == []
+    assert wd.detectors["delta_log_loss"].sigma == .01
+    assert wd.detectors["markout_2s"].sigma == .10
 
 
 def test_late_fsync_aborts_forecast_batch_and_projection_refuses_tampering(tmp_path):

@@ -59,7 +59,7 @@ def _maker_trade_complete(w: LiveWindow) -> bool:
     values = [v for v in counters if v is not None and math.isfinite(v) and v >= 0]
     if len(values) != len(counters) or any(a > b for a, b in zip(values, values[1:])):
         return False
-    trades = [t for t in w.wt.trades if vb[lo].tw < t.t_venue <= vb[hi].tw]
+    trades = [t for t in w.wt.trades if vb[lo].tw < t.tw <= vb[hi].tw]
     return (not any(_is_inferred(t) or not math.isfinite(t.qty) or t.qty <= 0 for t in trades)
             and abs(math.fsum(t.qty for t in trades) - (values[-1] - values[0])) <= 1e-4)
 

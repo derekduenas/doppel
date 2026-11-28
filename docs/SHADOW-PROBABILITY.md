@@ -46,21 +46,48 @@ null. On restart the projection is checked against the verified journal.
 A missing suffix, including a torn matching line, is appended. Divergent
 bytes refuse recovery.
 
-The watchdog scores `ΔLL = LL(market) − LL(candidate)` and independently
-monitors +2 s and +10 s markouts. Each metric uses the existing Page–Hinkley
-parameters and warmup of 10 measured windows. Missing samples stay missing.
-During warmup `HEALTHY` is the phase and `log_loss_measured` explicitly reports
-whether a log-loss baseline exists. A score above half the detector threshold
-emits `WARN_THROTTLE_50`. The runtime halves new paper entry and quote sizes,
-replaces working quote sizes through cancellation, and preserves exits.
-Once any detector crosses its alarm threshold, `KILL_DEMOTE_SHADOW` latches.
-The runtime cancels quotes, stops new simulated decisions, and continues
-reconciling existing windows. In-flight fills follow the paper simulator's
-ordinary latency rules. The projection includes both transition events.
+The watchdog scores `ΔLL = LL(market) − LL(candidate)` and monitors +2 s and
++10 s markouts separately. It groups consecutive settled markets into
+nonoverlapping blocks of 100 before feeding any detector. Each metric needs
+all 100 valid observations for its block. An incomplete block clears that
+metric's recent confirmation and Page–Hinkley count. The existing baseline
+survives gaps.
 
-The synthetic tape test drives the paper runtime across a scheduled 60-window
-scenario, checks the first 30 windows, and verifies latching after edge loss
-and restart reconciliation. That test exercises approval via a fixture
-session. The signed bundle producer and its trust anchor integration are
-reviewed in the companion admission PR. No deployment or actual wallet
-has been verified by these fixtures.
+The first 20 complete metric blocks establish its baseline. Standard
+deviations are floored at 0.01 in log-loss units and 0.10 cents per contract
+for markouts. A metric arms only if its baseline mean less 2.86 baseline
+standard errors exceeds its metric's resolution floor. Weak or unresolved
+baselines remain visible in the journal with `armed: false`.
+
+The Page–Hinkley screen uses δ=0.5 and λ=8. Action also requires the most
+recent 20 complete blocks to average no more than half the baseline and to
+fall at least 3.5 combined standard errors below it. Measured false-demotion
+rates apply to the held-out synthetic sequences. Shadow can collect E-values during warmup. A complete
+38-detector-block validation horizon represents 3,800 observed markets.
+
+A confirmed score above half the detector threshold emits
+`WARN_THROTTLE_50`. The runtime halves new entry and quote sizes, replaces
+working quote sizes through cancellation, and preserves exits. A confirmed
+score above the full threshold latches `KILL_DEMOTE_SHADOW`. The runtime
+cancels quotes, stops new simulated decisions and reconciles existing
+positions. In-flight fills follow the simulator's ordinary latency rules.
+
+## Deployment and recovery
+
+Before opening a new v4 session, provision the operator-approved journal
+root's `.shadow-demotions` directory so the paper service can read and write
+it. Keep it separate from each genome's journal. Persist the first
+`<genome_id>.json` demotion there before committing the watchdog event.
+Moving or replacing a genome journal keeps a demoted genome blocked. Any
+existing marker, including a torn file, is a durable veto until the operator
+reviews it. Keep this directory across releases and journal rotation.
+
+V4 paper source and checkpoint v4 carry new monitoring state. Preserve
+earlier journals, including their matching release and checkpoints, for
+audit. Start an approved v4 session on a fresh journal. Carry demotion vetoes forward when moving the
+operator-approved journal root.
+
+The 60-market runtime fixture verifies forecast durability and restart
+during warmup. Separate seeded noisy tests validate the actual 100-market
+blocks, and a runtime fixture verifies durable demotion and drain at a
+calibrated block boundary.
