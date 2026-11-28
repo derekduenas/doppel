@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+from collections import OrderedDict
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+from threading import Lock
 
 import numpy as np
 import pyarrow as pa
@@ -23,6 +26,39 @@ _HEADER = ("record_no", "message_no", "seq", "ts_ns")
 _MESSAGE = ("event_type", "venue_ms", "market_id", "asset_id", "bids", "asks", "changes",
             "trade_px", "trade_sz", "trade_side", "tx", "ctl", "fallback_raw")
 _SNAPSHOT = ("snapshot_prev_record_no", "snapshot_prev_message_no", "snapshot_delta")
+_PREPARED_LIMIT = 64 * 1024**2
+_PREPARED_LOCK = Lock()
+_PREPARED: OrderedDict[tuple, tuple[int, list[dict]]] = OrderedDict()
+
+
+@dataclass
+class _PreparedHour:
+    records: list[dict] | None = field(default_factory=list)
+    bytes: int = 0
+
+    def batch(self, batch: pa.RecordBatch, payload: pa.RecordBatch) -> None:
+        if self.records is not None:
+            # Snapshots keep Arrow buffers, while the projected Python objects
+            # also need space for dicts, strings and references.
+            self.bytes += batch.nbytes + 16 * payload.nbytes + 1024 * batch.num_rows
+            if self.bytes > _PREPARED_LIMIT:
+                self.records = None
+
+    def append(self, record: dict) -> None:
+        if self.records is not None:
+            self.records.append(record)
+
+
+def _retain(key: tuple, prepared: _PreparedHour) -> None:
+    if prepared.records is None:
+        return
+    with _PREPARED_LOCK:
+        _PREPARED.pop(key, None)
+        occupied = sum(size for size, _ in _PREPARED.values())
+        while _PREPARED and occupied + prepared.bytes > _PREPARED_LIMIT:
+            _, (removed, _) = _PREPARED.popitem(last=False)
+            occupied -= removed
+        _PREPARED[key] = prepared.bytes, prepared.records
 
 
 def _stamp(path: Path) -> tuple[int, int, int, int, int]:
@@ -84,7 +120,27 @@ class BookCache:
     def records(self, source: Path, stream: str, hour_ns: int, lo_ns: int, hi_ns: int) -> Iterator[dict]:
         """Yield record headers and decode messages on demand for the requested receive range."""
         path = self.path(source, stream)
-        source_stamp = _stamp(source)
+        source_stamp, cache_stamp = _stamp(source), _stamp(path)
+        key = (source, source_stamp, path, cache_stamp, stream, hour_ns, lo_ns, hi_ns)
+        with _PREPARED_LOCK:
+            cached = _PREPARED.get(key)
+            if cached is not None:
+                _PREPARED.move_to_end(key)
+        prepared = _PreparedHour()
+        if cached is not None:
+            for record in cached[1]:
+                yield record.copy()
+        else:
+            for record in self._read(source, source_stamp, path, stream, hour_ns, lo_ns, hi_ns, prepared):
+                prepared.append(record)
+                yield record.copy()
+        if _stamp(source) != source_stamp or _stamp(path) != cache_stamp:
+            raise ValueError(f"book cache or its sealed source changed during replay: {path}")
+        if cached is None:
+            _retain(key, prepared)
+
+    def _read(self, source: Path, source_stamp: tuple[int, int, int, int, int], path: Path, stream: str,
+              hour_ns: int, lo_ns: int, hi_ns: int, prepared: _PreparedHour) -> Iterator[dict]:
         with pq.ParquetFile(path) as f:
             schema = f.schema_arrow
             metadata = (f.metadata.metadata or {}) | (schema.metadata or {})
@@ -115,6 +171,7 @@ class BookCache:
                 payload = batch.select(payload_columns)
                 if len(selected) != batch.num_rows:
                     payload = payload.take(pa.array(selected, type=pa.int64()))
+                prepared.batch(batch, payload)
                 values = payload.to_pydict()
                 use = 0
                 events = values["event_type"]
@@ -167,5 +224,3 @@ class BookCache:
                 raise ValueError(f"book cache source record count differs: {path}")
             if current is not None:
                 yield current
-        if _stamp(source) != source_stamp:
-            raise ValueError(f"book cache source changed during replay: {source}")

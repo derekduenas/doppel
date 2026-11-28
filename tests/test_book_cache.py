@@ -138,6 +138,29 @@ def test_cache_refuses_whole_record_truncation(tmp_path):
         list(replay(root, STREAM, START, START + 8, IntlBook(), book_cache=cache))
 
 
+@pytest.mark.parametrize("memory_budget,reads_needed", [(64 * 1024**2, 1), (1, 2)])
+def test_repeated_scans_reuse_verified_hours_within_the_memory_budget(tmp_path, monkeypatch, memory_budget, reads_needed):
+    root, cache, _, path = build_fixture(tmp_path, patched=True)
+    monkeypatch.setattr(bc, "_PREPARED_LIMIT", memory_budget)
+    original = bc.BookCache._read
+    reads = []
+
+    def count(self, *args, **kwargs):
+        reads.append(1)
+        yield from original(self, *args, **kwargs)
+
+    monkeypatch.setattr(bc.BookCache, "_read", count)
+    prior = list(replay_messages(root, STREAM, START, START + 9, IntlBook(), book_cache=cache))
+    assert list(replay_messages(root, STREAM, START, START + 9, IntlBook(), book_cache=cache)) == prior
+    assert len(reads) == reads_needed
+    table = pq.ParquetFile(path).read()
+    replacement = path.with_name("changed.parquet")
+    pq.write_table(table.slice(0, table.num_rows - 1), replacement)
+    replacement.replace(path)
+    with pytest.raises(ValueError, match="source record count differs"):
+        list(replay_messages(root, STREAM, START, START + 9, IntlBook(), book_cache=cache))
+
+
 @pytest.mark.parametrize("offset,full", [(6, [6]), (7, [7])])
 @pytest.mark.parametrize("strict", [True, False])
 def test_snapshot_patch_preserves_full_depth_and_slice_boundary(tmp_path, monkeypatch, offset, full, strict):
