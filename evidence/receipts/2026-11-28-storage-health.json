@@ -1,0 +1,119 @@
+{
+ "schema": "doppel.storage-health/v1",
+ "audit_t": 1795831257,
+ "audit_sha256": "b8d0cbfc8d98a3741f5607aa8743c77b9696cb93478f1a19e96d33a26dcd53f1",
+ "deployed_commit": "d610b694ed38b2c536850cd4f426ee9d46b22b12",
+ "unclassified": [],
+ "classes": {
+  "tape": {
+   "eligible": 1087,
+   "verified_in_r2_by_size": 1068,
+   "overdue": 0
+  },
+  "tape-index": {
+   "eligible": 77,
+   "verified_in_r2_by_size": 58,
+   "overdue": 0
+  },
+  "tape-goldsky-activity": {
+   "eligible": 2,
+   "verified_in_r2_by_size": 2,
+   "overdue": 0
+  },
+  "tape-rust": {
+   "eligible": 232,
+   "verified_in_r2_by_size": 232,
+   "overdue": 0
+  },
+  "tape-rust-index": {
+   "eligible": 8,
+   "verified_in_r2_by_size": 8,
+   "overdue": 0
+  },
+  "tape-lead": {
+   "eligible": 0,
+   "verified_in_r2_by_size": 0,
+   "overdue": 0
+  },
+  "tape-lead-index": {
+   "eligible": 0,
+   "verified_in_r2_by_size": 0,
+   "overdue": 0
+  },
+  "lab": {
+   "eligible": 187,
+   "verified_in_r2_by_size": 187,
+   "overdue": 0
+  },
+  "goldsky": {
+   "eligible": 1,
+   "verified_in_r2_by_size": 1,
+   "overdue": 0
+  },
+  "paper": {
+   "eligible": 0,
+   "verified_in_r2_by_size": 0,
+   "overdue": 0
+  },
+  "brti-stream": {
+   "eligible": 0,
+   "verified_in_r2_by_size": 0,
+   "overdue": 0
+  },
+  "sealed-20261126": {
+   "eligible": 6542,
+   "verified_in_r2_by_size": 6542,
+   "overdue": 0
+  },
+  "tape-rust-moved-20261127": {
+   "eligible": 240,
+   "verified_in_r2_by_size": 240,
+   "overdue": 0
+  },
+  "perelman-offshore-hold-20261128": {
+   "eligible": 81,
+   "verified_in_r2_by_size": 81,
+   "overdue": 0
+  },
+  "sim-bundle": {
+   "eligible": 1,
+   "verified_in_r2_by_size": 1,
+   "overdue": 0
+  }
+ },
+ "sha256_readback_proofs_so_far": 77,
+ "offshore": {
+  "doppel-taped-lead": {
+   "active": "inactive",
+   "enabled": "not-found"
+  },
+  "recording": false,
+  "reason": "owner decision D3 undecided; lead feeds ship disabled"
+ },
+ "units": {
+  "doppel-tape": {
+   "active": "active",
+   "enabled": "enabled"
+  },
+  "perelman-recorder": {
+   "active": "active",
+   "enabled": "enabled"
+  },
+  "doppel-archive.timer": {
+   "active": "active",
+   "enabled": "enabled"
+  },
+  "doppel-storage.timer": {
+   "active": "active",
+   "enabled": "enabled"
+  },
+  "doppel-janitor.timer": {
+   "active": "active",
+   "enabled": "enabled"
+  },
+  "doppel-vsmarket.timer": {
+   "active": "active",
+   "enabled": "enabled"
+  }
+ }
+}
