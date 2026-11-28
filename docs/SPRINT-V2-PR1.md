@@ -25,6 +25,8 @@ python3 ops/tape_janitor.py "$DOPPEL_TAPE_ROOT" --remote "$DOPPEL_ARCHIVE_REMOTE
 
 Run one bounded archive cycle with the configured service credential. The content-addressed objects include the data bytes, source manifest history, and original receipt when present. Their keys embed the SHA‑256. Before deleting an expired file, retention verifies the local proof, current local generation, protection list, and the remote bytes. Missing or inconsistent copies stay local. Retention preserves files with unresolved binding receipts and leaves reference and paid-source streams in place. A dry run lists candidates and performs no remote requests. Use the original receipt and selected manifest generation when restoring a registered evaluation snapshot.
 
+The first Apex metadata-only dry run found 1,088 closed segments totaling 36,416,912,587 bytes, with zero inventory issues. It created no upload proofs and made no requests to object storage.
+
 ## Legacy offshore tape
 
 A private same-filesystem hold on Apex preserves 81 closed PERELMAN gzip hours, about 2.75 GB, from Nov 24 14:00 through Nov 27 22:00 UTC. The hold uses hard links so ordinary source pruning cannot discard those closed generations. The raw gzip files contain mixed streams. Stage them on the approved compute host with `ops/stage_perelman_offshore.py --source SOURCE --out STAGE --through YYYY-MM-DDTHH`. It emits only original Binance and Hyperliquid rows and their matching feed errors, plus the per-hour source and output SHA‑256 manifest. Use `archive_tape.py --historical-paths STAGE/upload-paths.txt` with a separate private prefix. Preserve the exact cutoff, inventory, and live archive receipt. Newer closed gzip hours need a follow-up inventory before Dec 1.

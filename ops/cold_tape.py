@@ -101,8 +101,8 @@ class ObjectStore:
         self.verified = set()
 
     def call(self, *args):
-        return ["rclone", *args, "--contimeout=10s", "--timeout=60s", "--retries=1", "--s3-no-check-bucket",
-                "--s3-upload-concurrency=1", "--b2-upload-concurrency=1"]
+        return ["rclone", *args, "--contimeout=10s", "--timeout=60s", "--retries=1", "--transfers=1",
+                "--s3-no-check-bucket", "--s3-upload-concurrency=1", "--b2-chunk-size=16Mi"]
 
     def object_size(self, key):
         proc = subprocess.run(self.call("lsjson", "--stat", f"{self.remote}/{key}"),
