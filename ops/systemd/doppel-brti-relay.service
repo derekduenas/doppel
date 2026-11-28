@@ -1,0 +1,47 @@
+# DOPPEL raw-BRTI relay. FILE ONLY: not installed (the lead installs it via ops/deploy.sh).
+# PERELMAN's stream directory is 0700/0600, owned by PERELMAN's DynamicUser; its permissions stay as
+# they are. This unit reads it with CAP_DAC_READ_SEARCH only, sees nothing else under
+# /var/lib/private, has no network, and writes only the relay output directory, which
+# doppel-paper@.service reads (read-only) as --perelman.
+[Unit]
+Description=DOPPEL raw BRTI relay (PERELMAN stream -> doppel-readable copy, read-only source)
+After=local-fs.target
+
+[Service]
+Type=simple
+User=doppel
+WorkingDirectory=/opt/doppel
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/doppel/.venv/bin/doppel-brti-relay \
+  --src /var/lib/private/perelman/stream \
+  --out /mnt/volume_nyc1_1793485122853/doppel/perelman-relay \
+  --interval 0.1
+Restart=always
+RestartSec=3
+AmbientCapabilities=CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+TemporaryFileSystem=/var/lib/private:ro
+BindReadOnlyPaths=/var/lib/private/perelman/stream
+InaccessiblePaths=-/root -/etc/doppel -/etc/edge-engine -/etc/credstore.encrypted -/etc/atlas
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/mnt/volume_nyc1_1793485122853/doppel/perelman-relay
+PrivateNetwork=yes
+RestrictAddressFamilies=none
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+MemoryMax=128M
+CPUQuota=20%
+Nice=5
+
+[Install]
+WantedBy=multi-user.target
