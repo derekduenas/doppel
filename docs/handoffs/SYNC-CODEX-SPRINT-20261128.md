@@ -65,3 +65,13 @@ Open for Codex (do not merge without lead review):
 5. `tape_alerts.py` resends every 15 s while Discord fails (no backoff); unit hard-codes research unit names.
 6. **Do not stop live Apex jobs.** At 00:00:32 UTC a root session stopped the cohort absorption, mechanism studies, the cohort v2
    freeze timer and `doppel-vsmarket.timer`; the lead restored them. Live jobs belong to the lead (SPRINT-V3 §1).
+
+## PR #6 `doppel-exec` canary OMS: parked (lead, 2026-11-28)
+- State: stays **draft**. CI green (run 46165425441), no frozen or ops files touched, and live mode is gated behind `--mode canary-live`, a signed approval, owner-only key files and a root-owned TOML.
+- Why parked: the owner's code freeze on new features is in effect until first shadow admission. Zero genomes are admitted, so nothing can feed this OMS yet.
+- Merge conditions:
+  1. At least one genome clears `admit_shadow()`.
+  2. The freeze is lifted by the owner.
+  3. A full lead review is done, covering netting, reservation/reconciliation, the Kalshi mass-cancel path and the Kelly sizing on `epistemic_var`.
+  4. The owner decides how the canary approval relates to the standing rule "no orders unless the owner arms riskd". Either the approval key is issued only by riskd arming, or the owner explicitly accepts it as the arming mechanism.
+- No further work on this branch until then. The publisher bridge (variance, targets, shadow price) is post-admission work too.
