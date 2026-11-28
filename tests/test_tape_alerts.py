@@ -16,6 +16,11 @@ ACTIVE = {"ActiveState": "active", "InvocationID": "one", "NRestarts": "0"}
 NOW = 1_800_000_000 * 10**9
 
 
+@pytest.fixture
+def healthy_host(monkeypatch):
+    monkeypatch.setattr(alerts, "runtime_issues", lambda _: {})
+
+
 def write_status(root, *, snapshot_age=0, source_age=0, uptime=120):
     (root / "status.json").write_text(json.dumps({
         "tw": NOW - snapshot_age * 10**9, "uptime_s": uptime,
@@ -40,7 +45,21 @@ def test_disk_alert_threshold_matches_df(monkeypatch, tmp_path):
     assert alerts.disk_issue(tmp_path) == f"{tmp_path} is 81.0% full"
 
 
-def test_restart_alert_with_reset_counters_and_retry(tmp_path, monkeypatch):
+def test_memory_watchdog_matches_operational_thresholds(tmp_path):
+    info = tmp_path / "meminfo"
+    pressure = tmp_path / UNIT / "memory.pressure"
+    pressure.parent.mkdir()
+    info.write_text("MemAvailable:       614400 kB\n")
+    pressure.write_text("some avg10=60.0 avg60=60.0 avg300=60.0 total=100\n"
+                        "full avg10=90.0 avg60=90.0 avg300=40.0 total=100\n")
+    assert alerts.runtime_issues((UNIT, "gone.service"), info, tmp_path) == {}
+    info.write_text("MemAvailable:       610304 kB\n")
+    pressure.write_text("full avg10=0.0 avg60=0.0 avg300=40.5 total=100\n")
+    issues = alerts.runtime_issues((UNIT,), info, tmp_path)
+    assert set(issues) == {"host/memory", f"{UNIT}/pressure"}
+
+
+def test_restart_alert_with_reset_counters_and_retry(tmp_path, monkeypatch, healthy_host):
     write_status(tmp_path)
     current = ACTIVE.copy()
     monkeypatch.setattr(alerts, "unit_status", lambda _: current.copy())
@@ -63,10 +82,19 @@ def test_restart_alert_with_reset_counters_and_retry(tmp_path, monkeypatch):
     assert sent == [f"{UNIT} restarted"]
 
 
-def test_dry_run_does_not_write_state_or_send(tmp_path, monkeypatch, capsys):
+def test_dry_run_does_not_write_state_or_send(tmp_path, monkeypatch, capsys, healthy_host):
     monkeypatch.setattr(alerts, "unit_status", lambda _: {"ActiveState": "inactive"})
     monkeypatch.setattr(alerts, "send_discord", lambda *_: pytest.fail("dry run may not send"))
     state = tmp_path / "state.json"
     alerts.poll([(UNIT, tmp_path)], [], state, None, dry_run=True)
     assert not state.exists()
     assert json.loads(capsys.readouterr().out) == {f"{UNIT}/inactive": f"{UNIT} is inactive"}
+
+
+def test_journal_only_is_default(tmp_path, monkeypatch, capsys, healthy_host):
+    monkeypatch.setattr(alerts, "unit_status", lambda _: {"ActiveState": "failed"})
+    monkeypatch.setattr(alerts, "send_discord", lambda *_: pytest.fail("no configured webhook"))
+    state = tmp_path / "state.json"
+    alerts.poll([(UNIT, tmp_path)], [], state, None)
+    alerts.poll([(UNIT, tmp_path)], [], state, None)
+    assert capsys.readouterr().out == f"{UNIT} is failed\n"

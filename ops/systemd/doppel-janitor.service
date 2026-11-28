@@ -1,23 +1,10 @@
 [Unit]
-Description=Prune expired DOPPEL tape with verified cold copies
-Wants=network-online.target
-After=network-online.target doppel-archive.service
+Description=DOPPEL tape janitor (free-space floor)
 
 [Service]
 Type=oneshot
 User=doppel
-EnvironmentFile=/etc/doppel-archive.env
-LoadCredential=rclone.conf:/etc/doppel/rclone.conf
-Environment=RCLONE_CONFIG=%d/rclone.conf
-StateDirectory=doppel-cold
-StateDirectoryMode=0700
-ExecStart=/bin/sh /opt/doppel/ops/doppel-cold-tape.sh prune
-Nice=15
-CPUWeight=10
-IOWeight=10
-IOSchedulingClass=idle
-MemoryMax=384M
-TimeoutStartSec=15min
-NoNewPrivileges=true
-ProtectSystem=full
-PrivateTmp=true
+# The Rust shadow tape is a duplicate: prune it first ("-": its "nothing deletable" must not skip the
+# main tape). Audit A4-F2: the shadow was never pruned and silently ate the main tape's retention.
+ExecStart=-/opt/doppel/ops/doppel-janitor.sh /mnt/volume_nyc1_1793485122853/doppel/tape-rust 12
+ExecStart=/opt/doppel/ops/doppel-janitor.sh /mnt/volume_nyc1_1793485122853/doppel/tape 12

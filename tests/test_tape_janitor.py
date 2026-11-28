@@ -134,13 +134,16 @@ def test_receipt_mismatch_is_preserved_with_proof_but_not_pruned(tmp_path):
     assert report["retained"] and path.exists()
 
 
-def test_existing_entry_point_has_no_unverified_fallback(tmp_path, monkeypatch):
+def test_cold_retention_has_no_fallback_and_local_policy_protects_registered_days(tmp_path, monkeypatch):
     root = tmp_path / "tape"
     path = write_segment(root, "clob_btc_5m", "20261001")
     monkeypatch.setattr(janitor.shutil, "disk_usage", lambda _: SimpleNamespace(free=0))
     assert janitor.prune(root, 12)["issues"]
-    ran = subprocess.run(["sh", str(OPS / "doppel-janitor.sh"), str(root), "1000000"], capture_output=True)
-    assert ran.returncode == 1 and "verified cold archive state is unavailable" in ran.stdout.decode()
     assert path.is_file()
+    (root / "janitor-protect.txt").write_text("20261001\n")
+    older = write_segment(root, "clob_btc_5m", "20260930")
+    ran = subprocess.run(["sh", str(OPS / "doppel-janitor.sh"), str(root), "1000000"], capture_output=True)
+    assert ran.returncode == 0
+    assert path.is_file() and not older.exists()
     with pytest.raises(ValueError, match="7 to 14"):
         janitor.prune(root, 12, retain_days=6)

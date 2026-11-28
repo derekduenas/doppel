@@ -18,6 +18,9 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 STALL_SECONDS = 60
 REPEAT_SECONDS = 900
 DISK_PERCENT = 80
+LOW_MEMORY_KIB = 600 * 1024
+PRESSURE_PERCENT = 40
+UNIT_NAME = re.compile(r"[A-Za-z0-9_.@][A-Za-z0-9_.@-]*\.service")
 
 
 def unit_status(unit):
@@ -72,6 +75,37 @@ def disk_issue(path):
     return f"{path} is {percent:.1f}% full" if percent > DISK_PERCENT else None
 
 
+def runtime_issues(units, meminfo=Path("/proc/meminfo"),
+                   cgroup=Path("/sys/fs/cgroup/system.slice")):
+    """Use the same Linux memory signals as the lead's research watchdog."""
+    issues = {}
+    try:
+        available = next(int(line.split()[1]) for line in meminfo.read_text().splitlines()
+                         if line.startswith("MemAvailable:"))
+        if available < LOW_MEMORY_KIB:
+            issues["host/memory"] = f"available host memory is {available / 1024:.0f} MiB"
+    except (OSError, StopIteration, ValueError, IndexError):
+        issues["host/memory"] = "available host memory is unknown"
+    for unit in units:
+        path = cgroup / unit / "memory.pressure"
+        try:
+            samples = path.read_text().splitlines()
+        except FileNotFoundError:
+            continue  # An inactive or collected systemd unit has no cgroup.
+        except OSError:
+            issues[f"{unit}/pressure"] = f"{unit} memory pressure is unreadable"
+            continue
+        try:
+            full = next(line.split()[1:] for line in samples if line.startswith("full "))
+            avg300 = float(dict(field.split("=", 1) for field in full)["avg300"])
+        except (StopIteration, KeyError, ValueError):
+            issues[f"{unit}/pressure"] = f"{unit} memory pressure is invalid"
+            continue
+        if avg300 > PRESSURE_PERCENT:
+            issues[f"{unit}/pressure"] = f"{unit} memory stall is {avg300:.1f}% over 300s"
+    return issues
+
+
 def send_discord(credential, messages):
     url = urlsplit(credential.read_text().strip())
     if (url.scheme, url.hostname, url.port, url.username, url.password) not in {
@@ -105,14 +139,14 @@ def write_state(path, state):
             Path(name).unlink(missing_ok=True)
 
 
-def poll(recorders, disks, state_path, credential, *, dry_run=False):
+def poll(recorders, disks, state_path, credential, *, research_units=(), dry_run=False):
     try:
         state = json.loads(state_path.read_bytes())
     except FileNotFoundError:
         state = {}
     now_ns = time.time_ns()
     now = now_ns // 10**9
-    issues, units = {}, {}
+    issues, units = runtime_issues(research_units), {}
     for unit, root in recorders:
         try:
             units[unit] = unit_status(unit)
@@ -137,7 +171,9 @@ def poll(recorders, disks, state_path, credential, *, dry_run=False):
         print(json.dumps(issues, sort_keys=True))
         return
     if messages:
-        send_discord(credential, messages)
+        print("\n".join(messages), flush=True)
+        if credential is not None:
+            send_discord(credential, messages)
     sent = {k: now if (k not in previous or now - previous[k] >= REPEAT_SECONDS) else previous[k]
             for k in issues}
     write_state(state_path, {"units": units, "sent": sent})
@@ -149,18 +185,24 @@ def main(argv=None):
     p.add_argument("--disk", type=Path, action="append", required=True)
     p.add_argument("--state", type=Path, required=True)
     p.add_argument("--webhook-file", type=Path)
+    p.add_argument("--research-unit", action="append", default=[], metavar="UNIT")
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args(argv)
     recorders = []
     for spec in a.recorder:
         unit, sep, root = spec.partition("=")
-        if not sep or not re.fullmatch(r"[A-Za-z0-9_.@-]+\.service", unit) or unit.startswith("-") or not root:
+        if not sep or not UNIT_NAME.fullmatch(unit) or not root:
             p.error("--recorder must be a systemd service name and tape root")
         recorders.append((unit, Path(root)))
-    if not a.dry_run and a.webhook_file is None:
-        p.error("--webhook-file is required unless using --dry-run")
+    if not all(UNIT_NAME.fullmatch(unit) for unit in a.research_unit):
+        p.error("--research-unit must name a systemd service")
+    credential = a.webhook_file
+    if credential is None and (directory := os.environ.get("CREDENTIALS_DIRECTORY")):
+        candidate = Path(directory) / "discord-webhook"
+        if candidate.is_file():
+            credential = candidate
     try:
-        poll(recorders, a.disk, a.state, a.webhook_file, dry_run=a.dry_run)
+        poll(recorders, a.disk, a.state, credential, research_units=a.research_unit, dry_run=a.dry_run)
     except (OSError, ValueError, TypeError, http.client.HTTPException) as exc:
         # Lower-level HTTP and OS exceptions can contain credential paths or URLs.
         print(f"tape alert delivery or state update failed ({type(exc).__name__})", file=sys.stderr)

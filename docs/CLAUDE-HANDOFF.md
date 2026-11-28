@@ -1,15 +1,15 @@
 # Claude Code handoff
 
-## DOPPEL v2 sprint · PR‑1
+## DOPPEL sprint v3 · Platform and evidence review
 
-Use `sprint/pr-1-protect-apex` and [PR‑1 operations and evidence](SPRINT-V2-PR1.md).
+Sprint v3 supersedes the original PR sequence. Use `sprint/pr-1-protect-apex` for
+[platform operations and evidence](SPRINT-V2-PR1.md) and the [independent evidence review](handoffs/CODEX-V3-REVIEW-20261128.md).
 Hosted CI passed for `0e1251d` in 5m08s. The isolated Apex Rust capture verified 13
-streams. The dry run inventoried 1,088 closed segments. The original recorders remain
-active, and the cohort absorption, mechanism study, cohort freeze and fair-vs-market
-jobs are parked. The missing live gates are capacity, a private R2/B2 destination,
-the alert credential and a verified rollout. DigitalOcean has locked the connected team.
-The owner requires every test suite and full replay to run on Forge‑1 or GitHub Actions.
-Freeze the evaluator and cohort-v1. Preserve PR merge order.
+streams and the archive dry run inventoried 1,088 segments. The branch defaults to
+journal alerts, protected local retention and offshore feeds disabled. Opus owns the
+merge queue, live research and deployment. The cohort-v2 timer had been stopped under
+v2 and was still absent at 00:12 UTC on Nov 28 after Opus resumed the exam. Preserve the
+registered freeze time and the exact evaluator hash.
 
 ## Wallet-by-wallet audit · Layer 4
 

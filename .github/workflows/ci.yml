@@ -87,6 +87,20 @@ jobs:
           uv export --no-dev --no-hashes --no-emit-project -q > "$RUNNER_TEMP/requirements.lock"
           diff -u ops/requirements.lock "$RUNNER_TEMP/requirements.lock"
           uv build --out-dir "$RUNNER_TEMP/dist"
+      - name: Verify a failed test fails the shard
+        if: matrix.shard == 4
+        run: |
+          drill=$(mktemp -d "$RUNNER_TEMP/shard-drill.XXXXXX")
+          mkdir "$drill/tests"
+          printf '%s\n' 'def test_deliberate_failure():' '    assert False' > "$drill/tests/test_failure.py"
+          rc=0
+          (
+            cd "$drill"
+            "$GITHUB_WORKSPACE/.venv/bin/python" "$GITHUB_WORKSPACE/.github/ci/pytest_shard.py" \
+              --index 0 --count 1 --work "$drill/work" --report "$drill/pytest.xml"
+          ) || rc=$?
+          test "$rc" -eq 1
+          grep -q 'failures="1"' "$drill/pytest.xml"
       - name: Upload test result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

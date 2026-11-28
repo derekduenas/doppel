@@ -2,7 +2,7 @@
 
 import argparse
 from contextlib import nullcontext
-from datetime import timedelta
+from datetime import date, datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -89,15 +89,65 @@ def prune(root, floor_gib=12, *, target=None, state=None, retain_days=10, dry_ru
     return result
 
 
+def closed_days(root: Path, today: date) -> dict[date, list[Path]]:
+    days: dict[date, list[Path]] = {}
+    protected = protected_days(root)
+    for stream in root.iterdir():
+        if not (stream.name.startswith(("clob_", "rtds_", "spot_", "pmus_ws"))
+                or stream.name in {"pmus_books", "kalshi_books", "kalshi_ws"}):
+            continue
+        if stream.is_symlink() or not stream.is_dir():
+            continue
+        for path in stream.iterdir():
+            if (len(path.name) != 8 or not path.name.isascii() or not path.name.isdigit()
+                    or path.is_symlink() or not path.is_dir()):
+                continue
+            try:
+                day = date.fromisoformat(path.name)
+            except ValueError:
+                continue
+            if day < today and path.name not in protected:
+                days.setdefault(day, []).append(path)
+    return days
+
+
+def prune_local_floor(root: Path, floor_gib: int) -> int:
+    if floor_gib < 0:
+        raise ValueError("free-space floor must be nonnegative")
+    floor = floor_gib * GIB
+    if (free := shutil.disk_usage(root).free) < floor:   # one day per run
+        now = datetime.now(timezone.utc)
+        days = closed_days(root, now.date())
+        oldest = min(days) if days else None
+        message = f"deleting live-stream day {oldest:%Y%m%d}" if oldest else "nothing deletable"
+        with (root / "janitor.log").open("a") as log:
+            print(f"{now:%Y-%m-%dT%H:%M:%SZ} free={free}B < {floor}B: {message}", file=log)
+        if oldest is None:
+            return 1
+        for path in days[oldest]:
+            # A stream replaced by a symlink after enumeration must never redirect deletion.
+            fd = os.open(path.parent, os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                shutil.rmtree(path.name, dir_fd=fd)
+            finally:
+                os.close(fd)
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("root", type=Path)
     p.add_argument("floor_gib", type=int, nargs="?", default=12)
+    p.add_argument("--local-floor", action="store_true", help="existing protected-day local retention policy")
     p.add_argument("--remote", help="same named rclone destination as the hourly offload")
     p.add_argument("--state", type=Path, help="same proof directory as the hourly offload")
     p.add_argument("--retain-days", type=int, default=10)
     p.add_argument("--dry-run", action="store_true", help="check local deletion eligibility without remote requests")
     args = p.parse_args()
+    if args.local_floor:
+        if args.remote or args.state or args.dry_run:
+            p.error("--local-floor is separate from object-backed retention")
+        return prune_local_floor(args.root, args.floor_gib)
     if (args.remote is None) != (args.state is None):
         p.error("--remote and --state must be supplied together")
     try:

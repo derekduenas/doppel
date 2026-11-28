@@ -1,9 +1,9 @@
 [Unit]
-Description=Apply verified DOPPEL tape retention
+Description=Run DOPPEL tape janitor every 10 minutes
 
 [Timer]
-OnCalendar=*-*-* *:52:00 UTC
-Persistent=true
+OnBootSec=5min
+OnUnitActiveSec=10min
 
 [Install]
 WantedBy=timers.target
