@@ -52,6 +52,7 @@ jobs:
           mkdir -p dl tape/clob_btc_5m/20261126
           gh release download exam-input-20261126 -R "$GITHUB_REPOSITORY" -D dl
           for h in 06 07 08 09 10 11; do mv "dl/clob_btc_5m-20261126-$h.dtape.zst" "tape/clob_btc_5m/20261126/$h.dtape.zst"; done
+          mv dl/clob_btc_5m-manifest.jsonl tape/clob_btc_5m/manifest.jsonl
           sha256sum -c - <<'SUMS'
           6f32f771011ac3c96dfda1ca615bf7d660ccae9d28077fbbd99bc3cc4048a398  tape/clob_btc_5m/20261126/06.dtape.zst
           44207aafd4579a90489abbcd0e1c4421ad17fbeddbc886f7f0006d411331a749  tape/clob_btc_5m/20261126/07.dtape.zst
@@ -59,6 +60,7 @@ jobs:
           439be5cb5e82304fa2bd5827120752e814cc3845b305b4a711be5fb6da6f7f1b  tape/clob_btc_5m/20261126/09.dtape.zst
           d039678d81326687943d22ffce1fc57af00264dc3d9989279b148c913e8bdd18  tape/clob_btc_5m/20261126/10.dtape.zst
           4c7b7a6bc2df62e9da4ce8c1c9427570a429d0d1d73cc210c4990d479c365a1c  tape/clob_btc_5m/20261126/11.dtape.zst
+          8c40c3918805c1f3259b7566cff5e1b2e99002ecb74aae26d303b658f7ec0285  tape/clob_btc_5m/manifest.jsonl
           SUMS
           sha256sum "$PARAMS" | cut -c1-8 | grep -qx "$PARAMS_SHA256"
       - name: Download subject a of this seed
