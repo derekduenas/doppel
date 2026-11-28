@@ -1,0 +1,9 @@
+# Layer 5b native panel preparation
+
+`doppel.lab.layer5b_panel.prepare_rows` produces the exam's full public JSONL grid from closed, compatible BTC PM US WebSocket books, live reference BRTI polls, Binance Spot L2 and Hyperliquid BTC L2. It derives the two opposing quotes from the binary book, recomputes the 60-second opening from received BRTI, and calls the registered lead transform with both independent native touches. It preserves missing state and consumes packets strictly before each scheduled decision. Use the previous BRTI hour as warmup and keep all referenced input segments in the source receipts.
+
+On a research node, use a pinned feature producer which calls `prepare_rows` separately for the training and holdout windows. Start, end and cadence must align to complete, disjoint markets and must be chosen before reading holdout. The producer supplies `predict_lead_up(fair_probability, witness_pair)`, returning the calibrated lead-implied Up probability or `None` to abstain. The exact producer source, fitted coefficients and development-data digest belong in its preregistered provenance. Keep both streams and the two model inputs fixed across the forecast and scoring phases.
+
+Verify the public JSONL and native source digests, bind and publish the plan hash, and then follow the two-phase forecast and scoring protocol. The native extractors cover the existing `pmus_ws_5m` / `pmus_ws_15m`, `ref_brti_live`, `lead_binance_spot_l2` and `lead_hyperliquid_l2` wire formats. A different book venue or a different BRTI publication stream requires its own clock and settlement review. Keep the confirmation tape out of study design.
+
+The overlap inventory and preregistered lead transform remain operator inputs. The native adapter does not use real capture until the operator provides those inputs on research compute.
