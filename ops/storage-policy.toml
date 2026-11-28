@@ -98,6 +98,24 @@ include = ["**"]
 min_age = "1h"
 local_days = 0
 
+[[class]]
+name = "paper"
+why = "paper/shadow journals (hash-chained decision records); our own ground truth"
+local = "/mnt/volume_nyc1_1793485122853/doppel/paper"
+r2 = "apex/paper"
+include = ["**"]
+min_age = "1h"
+local_days = 0
+
+[[class]]
+name = "brti-stream"
+why = "DOPPEL's own BRTI recorder (absorbed PERELMAN); source of record after the Dec 1 cutover"
+local = "/mnt/volume_nyc1_1793485122853/doppel/brti-stream"
+r2 = "apex/brti-stream"
+include = ["**"]
+min_age = "2h"
+local_days = 0
+
 # ---- sealed archives: immutable, copied once, deletable on Apex only by the owner -------------
 [[class]]
 name = "sealed-20261126"
@@ -140,7 +158,8 @@ local_days = 0
 paths = [
   "/opt/doppel", "/opt/doppel.old", "/opt/doppel-bin", "/opt/doppel-rust", "/opt/doppel-testenv",   # releases/venvs: rebuilt from git
   "/var/tmp",                                                                                         # scratch, CI checkouts, exam outputs (results go to git/evidence)
-  "/srv/git/doppel.git",                                                                              # mirror of GitHub
+  "/srv/git/doppel.git",
+  "/mnt/volume_nyc1_1793485122853/doppel/perelman-relay",                                             # copy of PERELMAN's stream; PERELMAN keeps the original                                                                              # mirror of GitHub
 ]
 skip_names = ["status.json", "janitor.log", "janitor-protect.txt", "*.lock", "*.tmp", "*.partial"]
 

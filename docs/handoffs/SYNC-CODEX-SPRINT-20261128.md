@@ -47,3 +47,21 @@ only hours listed in `verified_paths` of `/var/tmp/doppel-storage-audit.json` �
 - Shadow admission: build as new modules; `twin/*`, `strategy/{genome,registry,sequential}.py` stay untouched until H4 is scored (Dec 1 00:00 UTC). Thresholds as in SPRINT-V3 §3 WS5.
 - Layer 5b: do not reuse seeds 271031/271067/271091 or read `/var/tmp/doppel-exam/*` (Layer 5 is preregistered and running); use fresh seeds and commit their prereg before running. Nothing may read Nov 28–Dec 4 PM US tape for study design (confirmation week).
 - PR #1: next in the review queue. When it merges, its `archive_tape.py` (with proofs) owns uploads of `tape/` and `tape-rust/`; `ops/storage.py` then stops copying those two classes and keeps the other classes plus the audit. One uploader per class.
+
+## Integration review of v3-B (2026-11-28 ~02:00 UTC, PR #2)
+
+Independent review: no critical findings (no order path, no secret leak, no scored-code change, no look-ahead, admission fails closed).
+Fixed in PR #2: `paper/`, `brti-stream/` classified (R2) and `perelman-relay/` do-only, so an unclassified folder can no longer block retention.
+Handled at deploy (lead): install the policy-bound `doppel-janitor`, `doppel-storage`, `doppel-archive` units together and run the janitor
+from the same release copy that writes the audit (no version skew between `/opt/doppel/ops` and `/opt/doppel-storage`).
+Open for Codex (do not merge without lead review):
+1. Shadow gate requires a recorded Layer 5b scorecard with Binance + Hyperliquid receipts and `taker_timing` for every genome
+   (makers too). That makes shadow unreachable while D3 is off. Proposal: require `taker_timing` only for taker genomes; allow a
+   fair-only Layer 5b plan without offshore receipts; update fixtures accordingly. Owner decision D3 decides the lead family.
+2. `cold_tape.py` offload walks all history; hours pruned by the old floor janitor without proof fail every run and mask real
+   failures. Record a one-time historical-missing inventory or bound with `--from`.
+3. No producer yet for `doppel.shadow-{replay,trial-plan,trial-ledger,gates}/v1` from `lab/promotion.py` + twin replay.
+4. Renewed/expired approval strands a shadow journal (fixed receipt path); allow settle-only resume.
+5. `tape_alerts.py` resends every 15 s while Discord fails (no backoff); unit hard-codes research unit names.
+6. **Do not stop live Apex jobs.** At 00:00:32 UTC a root session stopped the cohort absorption, mechanism studies, the cohort v2
+   freeze timer and `doppel-vsmarket.timer`; the lead restored them. Live jobs belong to the lead (SPRINT-V3 §1).
