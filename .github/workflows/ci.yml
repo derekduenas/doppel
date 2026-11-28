@@ -1,0 +1,254 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, 'sprint/v3b-*']
+  workflow_dispatch:
+    inputs:
+      sprint_pods:
+        description: Run the five pinned sprint pod suites as well as the current revision
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12.13"
+  UV_VERSION: "0.11.2"
+  RUSTUP_TOOLCHAIN: "1.99.1"
+  OPENBLAS_NUM_THREADS: "1"
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+
+jobs:
+  python:
+    name: Python / shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install locked dependencies
+        run: uv sync --locked --python "$PYTHON_VERSION"
+      - name: Verify frozen scoring and cohort lineage
+        if: matrix.shard == 0
+        run: |
+          uv run --no-sync python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import subprocess
+          from doppel.twin.cli import code_sha256
+
+          frozen = "c2d01f506f6dcb32ab935df3632e500b798bab5444779c910a7a683e0f3d25e4"
+          if (actual := code_sha256()) != frozen:
+              raise SystemExit(f"Evaluator hash drift: {actual} != {frozen}")
+          expected = "1775c0998506abf721e27ed3cb0043b5816b2dde587462034e55a4622a396b54"
+          evidence = Path("evidence/2026-11-27-wallet-selection/intake.json")
+          if json.loads(evidence.read_bytes())["cohort"]["file_sha256"] != expected:
+              raise SystemExit("Frozen cohort-v1 digest in the intake receipt changed")
+          tracked = subprocess.check_output(["git", "ls-files", "-z"]).decode().split("\0")
+          for name in tracked:
+              path = Path(name)
+              if path.name == "cohort-v1.json" and hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                  raise SystemExit(f"Frozen cohort-v1 payload changed: {path}")
+          print(f"Evaluator SHA-256 {frozen}; cohort-v1 SHA-256 {expected}")
+          PY
+          uv run --no-sync doppel-genome verify
+          uv run --no-sync doppel-genome dna
+      - name: Run shard
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          uv run --no-sync python .github/ci/pytest_shard.py --index "$SHARD" --count 5 \
+            --work "$RUNNER_TEMP/fixtures-$SHARD" --report "$RUNNER_TEMP/reports/pytest.xml"
+      - name: Publish Layer 5b synthetic fixture receipt
+        if: github.ref_name == 'sprint/v3b-layer5b'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layer5b-synthetic-${{ matrix.shard }}
+          path: ${{ runner.temp }}/fixtures-${{ matrix.shard }}/pytest/test_synthetic*0/layer5b-synthetic-score.json
+          if-no-files-found: ignore
+      - name: Check Python types and deployment package
+        if: matrix.shard == 4
+        run: |
+          uv run --no-sync pyright --pythonpath "$PWD/.venv/bin/python" src
+          uv lock --offline --check
+          uv export --no-dev --no-hashes --no-emit-project -q > "$RUNNER_TEMP/requirements.lock"
+          diff -u ops/requirements.lock "$RUNNER_TEMP/requirements.lock"
+          uv build --out-dir "$RUNNER_TEMP/dist"
+      - name: Verify a failed test fails the shard
+        if: matrix.shard == 4
+        run: |
+          drill=$(mktemp -d "$RUNNER_TEMP/shard-drill.XXXXXX")
+          mkdir "$drill/tests"
+          printf '%s\n' 'def test_deliberate_failure():' '    assert False' > "$drill/tests/test_failure.py"
+          rc=0
+          (
+            cd "$drill"
+            "$GITHUB_WORKSPACE/.venv/bin/python" "$GITHUB_WORKSPACE/.github/ci/pytest_shard.py" \
+              --index 0 --count 1 --work "$drill/work" --report "$drill/pytest.xml"
+          ) || rc=$?
+          test "$rc" -eq 1
+          grep -q 'failures="1"' "$drill/pytest.xml"
+      - name: Upload test result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: python-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/reports/pytest.xml
+          if-no-files-found: ignore
+
+  sprint-pods:
+    name: Sprint pod / ${{ matrix.pod }}
+    if: >-
+      (github.event_name == 'pull_request' && github.head_ref == 'sprint/pr-1-protect-apex') ||
+      (github.event_name == 'workflow_dispatch' && inputs.sprint_pods)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - pod: simulator
+            revision: 44a3dd283cd79cd630fe67270b278a635c2d809c
+          - pod: paper
+            revision: 968e49f300900ca8bd720b0cc4a4128101b35b08
+          - pod: promotion
+            revision: e918da29de3a3bb5811941ac203349bc025d90a6
+          - pod: brti-absorb
+            revision: 2c95e85965a8fc2b0076232256e34b9c30ad5e14
+          - pod: perps-feeds
+            revision: a71edbfb846a7fc4b50f299d9596e0185509592e
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ matrix.revision }}
+          path: sprint-pod
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: sprint-pod/uv.lock
+      - name: Install pod's locked dependencies
+        working-directory: sprint-pod
+        run: uv sync --locked --python "$PYTHON_VERSION"
+      - name: Run complete pod test suite
+        working-directory: sprint-pod
+        run: |
+          pids=()
+          for shard in 0 1; do
+            .venv/bin/python "$GITHUB_WORKSPACE/.github/ci/pytest_shard.py" --index "$shard" --count 2 \
+              --work "$RUNNER_TEMP/fixtures-$shard" --report "$RUNNER_TEMP/reports/pytest-$shard.xml" &
+            pids+=("$!")
+          done
+          status=0
+          for pid in "${pids[@]}"; do wait "$pid" || status=1; done
+          exit "$status"
+      - name: Upload pod test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sprint-pod-${{ matrix.pod }}
+          path: ${{ runner.temp }}/reports/pytest-*.xml
+          if-no-files-found: ignore
+
+  rust:
+    name: Rust / test, lint, format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy,rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Run Rust checks
+        run: |
+          cargo fmt --all --check
+          cargo test --workspace --locked
+          cargo clippy --workspace --locked --all-targets -- -D warnings
+
+  recorder-release:
+    name: Linux recorder release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: linux-recorder-release
+      - name: Build and verify release archive
+        run: |
+          cargo build --release --locked --package doppel-tape --bin doppel-taped
+          stage="$RUNNER_TEMP/recorder-release"
+          bundle="$RUNNER_TEMP/release-artifacts"
+          install -D -m 0755 target/release/doppel-taped "$stage/doppel-taped"
+          mkdir -p "$bundle"
+          python3 - "$stage" <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import subprocess
+          import sys
+
+          root = Path(sys.argv[1])
+          binary = root / "doppel-taped"
+          with binary.open("rb") as source:
+              digest = hashlib.file_digest(source, "sha256").hexdigest()
+          receipt = {
+              "schema": "doppel-recorder-release/1",
+              "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "platform": {"os": platform.system(), "arch": platform.machine(), "libc": platform.libc_ver()},
+              "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
+              "binary": {"path": binary.name, "bytes": binary.stat().st_size, "sha256": digest},
+              "archive": "doppel-taped-linux-x86_64.tar.gz",
+              "archive_checksum": "doppel-taped-linux-x86_64.tar.gz.sha256",
+          }
+          (root / "BUILD.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+          (root / "SHA256SUMS").write_text(f"{digest}  {binary.name}\n")
+          PY
+          (cd "$stage" && sha256sum --check SHA256SUMS)
+          tar -C "$stage" -czf "$bundle/doppel-taped-linux-x86_64.tar.gz" BUILD.json SHA256SUMS doppel-taped
+          (
+            cd "$bundle"
+            sha256sum doppel-taped-linux-x86_64.tar.gz > doppel-taped-linux-x86_64.tar.gz.sha256
+            sha256sum --check doppel-taped-linux-x86_64.tar.gz.sha256
+          )
+      - name: Upload release archive and checksum
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: doppel-taped-linux-x86_64-${{ github.sha }}
+          path: ${{ runner.temp }}/release-artifacts/*
+          if-no-files-found: error

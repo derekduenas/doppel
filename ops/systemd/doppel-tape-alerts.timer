@@ -1,0 +1,10 @@
+[Unit]
+Description=Check DOPPEL recorder and disk health every 15 seconds
+
+[Timer]
+OnBootSec=15s
+OnUnitInactiveSec=15s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

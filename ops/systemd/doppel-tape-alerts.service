@@ -1,0 +1,17 @@
+[Unit]
+Description=DOPPEL recorder and disk alerts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=doppel
+StateDirectory=doppel-tape-alerts
+StateDirectoryMode=0700
+EnvironmentFile=-/etc/doppel/tape-alerts.env
+ExecStart=/usr/bin/python3 /opt/doppel/ops/tape_alerts.py --state /var/lib/doppel-tape-alerts/state.json --disk / --disk /mnt/volume_nyc1_1793485122853 --recorder doppel-tape.service=/mnt/volume_nyc1_1793485122853/doppel/tape --research-unit doppel-exam-271031.service --research-unit doppel-exam-271067.service --research-unit doppel-exam-271091.service --research-unit doppel-absorb-nov26.service --research-unit doppel-mech.service --research-unit doppel-cohortv2-freeze.service $DOPPEL_ADDITIONAL_RECORDERS
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+TimeoutStartSec=25

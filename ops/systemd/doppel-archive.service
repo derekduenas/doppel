@@ -1,0 +1,19 @@
+[Unit]
+Description=Archive native-sealed DOPPEL tape and verify R2 readback
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+StateDirectory=doppel-cold
+StateDirectoryMode=0700
+ExecStart=/bin/sh /opt/doppel-storage/doppel-cold-tape.sh
+Nice=15
+CPUWeight=10
+IOWeight=10
+IOSchedulingClass=idle
+MemoryMax=384M
+TimeoutStartSec=50min
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true

@@ -42,6 +42,7 @@ import argparse
 import json
 import os
 import random
+import re
 import sys
 import threading
 import time
@@ -154,17 +155,58 @@ class EndpointsDown(Exception):
     pass
 
 
+# Capability refusals: the endpoint is healthy but will not serve this request. Measured on Apex
+# 2026-11-27: publicnode answers historical eth_call with "Archive requests require a personal
+# token"; drpc's free plan limits eth_getLogs to 100-block spans. They re-route, never bench.
+ARCHIVE_REFUSED, SPAN_REFUSED = "archive_unsupported", "log_range_limit"
+REFUSALS = (ARCHIVE_REFUSED, SPAN_REFUSED)
+STATE_METHODS = ("eth_call", "eth_getCode", "eth_getBalance", "eth_getStorageAt")  # archive refusals apply
+_ARCHIVE_RE = re.compile(r"archive|missing trie node|historical state|state (is )?not available|pruned")
+_SPAN_RE = re.compile(r"block range|range (is )?too (large|wide|big)|ranges? over|exceed\w* .*(range|blocks|results)"
+                      r"|too many (blocks|results|logs)|more than \d+ (blocks|results|logs)"
+                      r"|limited to \d+ blocks?|max(imum)? (block )?range|\d+ blocks? range|range limit")
+
+
+def refusal_kind(error: object) -> str:
+    """Kind of a JSON-RPC ``error`` object: a capability refusal or a generic ``rpc_error``.
+    Only the kind is kept; the provider's message is never logged."""
+    msg = str(error.get("message", "") if isinstance(error, dict) else error or "").lower()
+    if _ARCHIVE_RE.search(msg):
+        return ARCHIVE_REFUSED
+    if _SPAN_RE.search(msg):
+        return SPAN_REFUSED
+    return "rpc_error"
+
+
+def log_span(params: list) -> int | None:
+    """Block span of an ``eth_getLogs`` filter with numeric bounds, else None."""
+    try:
+        f = params[0]
+        return int(f["toBlock"], 16) - int(f["fromBlock"], 16) + 1
+    except (IndexError, KeyError, TypeError, ValueError):
+        return None
+
+
 def http_transport(url: str, method: str, params: list, timeout: float = 20.0):
     """One JSON-RPC call per HTTP request (free public endpoints reject batch arrays with 403).
     Returns ``result`` (None when the node does not have the object); raises RpcError otherwise.
-    A JSON-RPC ``error`` body counts as a failure: public nodes also rate-limit with HTTP 200."""
+    A JSON-RPC ``error`` body counts as a failure: public nodes also rate-limit with HTTP 200.
+    A capability refusal, in a 200 body or a 4xx body, raises its own kind (``refusal_kind``)."""
     req = urllib.request.Request(
         url, json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode(),
         {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"})
     try:
         body = json.loads(urllib.request.urlopen(req, timeout=timeout).read())
     except urllib.error.HTTPError as e:
-        raise RpcError(f"http_{e.code}") from None
+        kind = f"http_{e.code}"
+        if 400 <= e.code < 500 and e.code != 429:
+            try:
+                err = json.loads(e.read())
+                refused = refusal_kind(err.get("error") if isinstance(err, dict) else None)
+                kind = refused if refused in REFUSALS else kind
+            except (OSError, ValueError):
+                pass
+        raise RpcError(kind) from None
     except TimeoutError:
         raise RpcError("timeout") from None
     except urllib.error.URLError as e:
@@ -172,7 +214,7 @@ def http_transport(url: str, method: str, params: list, timeout: float = 20.0):
     except (OSError, ValueError):
         raise RpcError("bad_response") from None
     if not isinstance(body, dict) or "result" not in body:
-        raise RpcError("rpc_error")
+        raise RpcError(refusal_kind(body.get("error")) if isinstance(body, dict) else "rpc_error")
     return body["result"]
 
 
@@ -186,6 +228,12 @@ class _Endpoint:
         self.requests = 0
         self.benched = 0
         self.errors: Counter[str] = Counter()
+        self.refused: set[str] = set()  # methods refused as a capability (archive state)
+        self.max_span: int | None = None  # largest eth_getLogs span it may still be sent
+
+    def serves(self, method: str, span: int | None) -> bool:
+        return method not in self.refused and not (
+            method == "eth_getLogs" and span is not None and self.max_span is not None and span > self.max_span)
 
 
 class Pool:
@@ -236,16 +284,40 @@ class Pool:
 
     def call(self, method: str, params: list, avoid: str | None = None, *,
              allowed: frozenset[str] | None = None) -> tuple[object, str]:
-        """(result, url of the endpoint that answered). ``avoid`` skips one endpoint if another exists."""
+        """(result, url of the endpoint that answered). ``avoid`` skips one endpoint if another exists.
+
+        A capability refusal (``REFUSALS``) neither backs off nor benches the endpoint and uses no
+        attempt: that endpoint is no longer offered this method (archive) or this log span or wider
+        (span), and the call moves to another one. With no capable endpoint left it raises the
+        refusal, so a caller can narrow the request (``absorb.scan`` halves its span)."""
+        span = log_span(params) if method == "eth_getLogs" else None
         last = RpcError("no_attempt")
-        for _ in range(self.attempts):
-            e = self._reserve(avoid, allowed)
+        tries = 0
+        while tries < self.attempts:
+            with self._lock:
+                routed = [e for e in self.eps if allowed is None or e.url in allowed]
+                capable = frozenset(e.url for e in routed if e.serves(method, span))
+            if routed and not capable:  # every routed endpoint refused this capability
+                raise RpcError(SPAN_REFUSED if method == "eth_getLogs" and method not in
+                               set().union(*(e.refused for e in routed)) else ARCHIVE_REFUSED)
+            e = self._reserve(avoid, capable or allowed)
             try:
                 res = self.transport(e.url, method, params)
             except Exception as x:  # anything from the transport is that endpoint's failure
                 last = x if isinstance(x, RpcError) else RpcError(type(x).__name__)
+                if (last.kind == SPAN_REFUSED and method != "eth_getLogs"
+                        or last.kind == ARCHIVE_REFUSED and method not in STATE_METHODS):
+                    last = RpcError("rpc_error")  # a refusal text on another method is just an error
                 with self._lock:
                     e.errors[last.kind] += 1
+                    if last.kind == SPAN_REFUSED and span is not None:
+                        e.max_span = span - 1 if e.max_span is None else min(e.max_span, span - 1)
+                        continue
+                    if last.kind in REFUSALS:
+                        e.refused.add(method)
+                        continue
+                tries += 1
+                with self._lock:
                     e.fails += 1
                     delay = min(self.backoff_cap_s, self.backoff_s * 2 ** (e.fails - 1)) * (0.5 + self.rng())
                     e.next_t = max(e.next_t, self.now() + delay)

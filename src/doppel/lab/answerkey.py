@@ -1167,10 +1167,13 @@ def documented_no_draft(report: dict) -> bool:
             and "verdict" in (report.get("explained_by_observed_inputs") or {}))
 
 
-def run_tools(pub: Path, out: Path, wallet: str, t_from: int, split: int, t_to: int) -> dict:
-    """The five tools on ``pub`` only. Returns their parsed outputs, exit codes and peak RSS."""
+def run_tools(pub: Path, out: Path, wallet: str, t_from: int, split: int, t_to: int, *,
+              slice_s: int | None = None) -> dict:
+    """The five tools on ``pub`` only. Returns their parsed outputs, exit codes and peak RSS.
+    ``slice_s`` is passed to both ordermatch runs as ``--slice-s`` (None: ordermatch's default)."""
     tape, orders = str(pub / "tape"), str(pub / "orders.jsonl")
     span = ["--from", str(t_from), "--to", str(t_to)]
+    sl = [] if slice_s is None else ["--slice-s", str(slice_s)]
     om = out / "ordermatch"
     info: dict = {"exit": {}, "rss_mb": {}}
 
@@ -1182,7 +1185,7 @@ def run_tools(pub: Path, out: Path, wallet: str, t_from: int, split: int, t_to: 
         if rc and not (mod == "rulefit" and rc == 1):
             raise ValueError(f"{step} exited {rc}, see {out / (step + '.log')}")
 
-    go("ordermatch", ["--data", tape, "--orders", orders, "--wallet", wallet, *span, "--out", str(om)])
+    go("ordermatch", ["--data", tape, "--orders", orders, "--wallet", wallet, *span, *sl, "--out", str(om)])
     go("orderreplay", ["--data", tape, "--ordermatch-dir", str(om), *span, "--orders", orders,
                        "--out", str(out / "orderreplay")])
     go("profile", ["--orders", orders, "--ordermatch", str(om / "ordermatch.json"), "--wallet", wallet,
@@ -1190,7 +1193,7 @@ def run_tools(pub: Path, out: Path, wallet: str, t_from: int, split: int, t_to: 
     train_om = out / "ordermatch-train"
     train_orders = str(pub / "train-orders.jsonl")
     go("ordermatch", ["--data", tape, "--orders", train_orders, "--wallet", wallet, "--from", str(t_from),
-                      "--to", str(split), "--out", str(train_om)], name="ordermatch-train")
+                      "--to", str(split), *sl, "--out", str(train_om)], name="ordermatch-train")
     brti = ["--brti-lab", tape] if (pub / "tape" / "ref_brti_raw").exists() else []
     go("rulefit", ["--data", tape, "--ordermatch-dir", str(train_om), "--orders", train_orders, "--wallet", wallet,
                    "--from", str(t_from), "--to", str(split), "--tokens", str(pub / "lab" / "tokens.jsonl"),
@@ -1258,7 +1261,8 @@ def pipeline_checks(sim: Sim, tools: dict, tdir: Path | None = None) -> dict:
 
 # ---------------------------------------------------------------- driver
 def run_strategy(key: str, root: Path, tokens: Path, stream: str, t_from: int, split: int, t_to: int,
-                 out: Path, seed: int, params: dict | None = None, tools: bool = True) -> dict:
+                 out: Path, seed: int, params: dict | None = None, tools: bool = True, *,
+                 slice_s: int | None = None) -> dict:
     cls = POLICIES[key]
     pol = cls(seed)
     pol.params = dict(cls.params) | (params or {})
@@ -1296,7 +1300,7 @@ def run_strategy(key: str, root: Path, tokens: Path, stream: str, t_from: int, s
     if tools:
         if not truth["fills"]:
             raise ValueError(f"{pol.name} produced zero fills; the trial cannot score this subject")
-        tl = run_tools(pub, d / "tools", wallet, t_from, split, t_to)
+        tl = run_tools(pub, d / "tools", wallet, t_from, split, t_to, slice_s=slice_s)
         res["tools"] = {k: tl[k] for k in ("exit", "rss_mb")}
         res["cells"] = score(pol.name, truth, tl)
         res["pipeline"] = pipeline_checks(sim, tl, d / "tools")
@@ -1347,6 +1351,7 @@ def main(argv=None) -> int:
                                               "window starts in the holdout: 2.5 h of 5m windows, 7.5 h of 15m. "
                                               "On a shorter holdout every fidelity verdict is INCONCLUSIVE by "
                                               "gate and the scorecard says so")
+    ap.add_argument("--slice-s", type=int, help="passed to doppel-ordermatch --slice-s (default: its own)")
     ap.add_argument("--strategies", default="a,b,c,d,e,f")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--policy-params", type=Path, help="frozen JSON object of parameter overrides by subject")
@@ -1379,7 +1384,7 @@ def main(argv=None) -> int:
         if k == "e" and "a" in res and "rate_per_s" not in subject_params:
             subject_params["rate_per_s"] = max(res["a"]["train_visible_maker_orders"], 1) / (split - a.t_from)
         res[k] = run_strategy(k, a.data, a.tokens, a.stream, a.t_from, split, a.t_to, a.out, a.seed, subject_params,
-                              not a.no_tools)
+                              not a.no_tools, slice_s=a.slice_s)
         print(f"{k} {res[k]['policy']}: {res[k]['truth']['status']} sim {res[k]['sim_s']} s", file=sys.stderr)
     card = {"range": [a.t_from, split, a.t_to], "stream": a.stream, "seed": a.seed, "input_preflight": preflight,
             "policy_params_sha256": hashlib.sha256(raw_params).hexdigest(), "scorecard_schema": 2,

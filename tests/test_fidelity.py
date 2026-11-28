@@ -945,3 +945,92 @@ def test_the_pm_us_twin_code_hash_does_not_cover_the_intl_adapter():   # S8
     assert not (twin_dir / "intl.py").exists()
     assert sorted(p.name for p in twin_dir.glob("*.py")) == ["__init__.py", "cli.py", "engine.py", "evaluate.py", "features.py",
                                                              "flowfeat.py", "tape.py", "verdict.py"]
+
+
+def test_ghost_scores_clone_only_windows_and_warns_when_the_whole_ci_is_below_zero():
+    """40 windows: the clone mirrors the wallet in the first 20; in the last 20 the wallet is idle and
+    the clone buys 10 Up at 0.60 (pays $6, collects $10 when Up wins, odd windows)."""
+    wins, wallet, prints = market()
+    keys = sorted(wins)
+    clone = {k: [Fill(f.t + 0.25, f.d, f.px, f.qty, f.role) for f in wallet[k]] for k in keys[:20]}
+    for k in keys[20:]:
+        wallet.pop(k)
+        clone[k] = [Fill(k[2] + 60.0, 1, 0.60, 10.0, "taker")]
+    doc = F.evaluate(clone, wallet, wins, C0, OK_GATES, others=prints, n_boot=500)
+    g = doc["ghost"]
+    expect = sum(10 * wins[k][2] - 6.0 for k in keys[20:]) / 20       # half +4, half -6: -1
+    assert g["windows"] == 20 and g["pnl_per_window"]["value"] == pytest.approx(expect)
+    lo, hi = g["pnl_per_window"]["ci95"]
+    assert lo <= expect <= hi and hi > 0 and doc["warnings"] == []    # mixed: not clearly negative
+    # losing every time on its own: -$6 in every ghost window
+    for k in keys[20:]:
+        up_wins = wins[k][2] == 1
+        clone[k] = [Fill(k[2] + 60.0, -1 if up_wins else 1, 0.40 if up_wins else 0.60, 10.0, "taker")]
+    doc2 = F.evaluate(clone, wallet, wins, C0, OK_GATES, others=prints, n_boot=500)
+    assert doc2["ghost"]["pnl_per_window"]["value"] == pytest.approx(-6.0)
+    assert doc2["ghost"]["pnl_per_window"]["ci95"][1] < 0 and doc2["warnings"] == ["ghost_negative"]
+    # the warning does not gate: the verdict is decided without it
+    assert doc2["verdict"] == F.decide(doc2["scores"], doc2["null"], doc2["gates_measured"])
+
+
+def _pnl_fill(s: int, o: int, kind: str) -> Fill:
+    """A 10-share taker fill worth +$6 ("win"), -$4 ("lose") or +-$5 by outcome ("flat")."""
+    if kind == "flat":
+        return Fill(s + 60.0, 1, 0.50, 10.0, "taker")
+    good = kind == "win"
+    up = (o == 1) == good          # buy Up at 0.40 when it wins (win) / when it loses (lose)
+    return Fill(s + 60.0, 1, 0.40, 10.0, "taker") if up else Fill(s + 60.0, -1, 0.60, 10.0, "taker")
+
+
+def _audit(wallet_only: str, clone_only: str) -> dict:
+    """40 windows: 10 agreed (identical fills), 15 wallet-only, 15 clone-only."""
+    wins, wallet, clone = {}, {}, {}
+    for i in range(40):
+        s, o = 1000 + 300 * i, i % 2
+        key = ("btc", "5m", s)
+        wins[key] = (s, s + 300, o)
+        if i < 10:
+            wallet[key] = [_pnl_fill(s, o, "win")]
+            clone[key] = [_pnl_fill(s, o, "win")]
+        elif i < 25:
+            wallet[key] = [_pnl_fill(s, o, wallet_only)]
+        else:
+            clone[key] = [_pnl_fill(s, o, clone_only)]
+    return F.evaluate(clone, wallet, wins, C0, OK_GATES, n_boot=500)
+
+
+def test_disagreement_audit_buckets_and_hints():
+    d = _audit("flat", "flat")["disagreement"]
+    assert (d["agreed"]["windows"], d["wallet_only"]["windows"], d["clone_only"]["windows"]) == (10, 15, 15)
+    assert d["agreed"]["clone_pnl_per_window"]["value"] == d["agreed"]["wallet_pnl_per_window"]["value"] == 6.0
+    lo, hi = d["wallet_only"]["pnl_per_window"]["ci95"]
+    assert lo < 0 < hi and d["clone_only"]["pnl_per_window"]["ci95"][0] < 0
+    assert [h.split(":")[0] for h in d["hints"]] == ["clone_captures_wallet_edge"]
+    # wallet-only losing: still "the clone already captures the edge"
+    d = _audit("lose", "flat")["disagreement"]
+    assert d["wallet_only"]["pnl_per_window"]["value"] == -4.0
+    assert [h.split(":")[0] for h in d["hints"]] == ["clone_captures_wallet_edge"]
+    # clone-only positive: a structural edge beyond the wallet
+    doc = _audit("flat", "win")
+    d = doc["disagreement"]
+    assert d["clone_only"]["pnl_per_window"]["ci95"][0] > 0 and doc["ghost"] == d["clone_only"]
+    assert [h.split(":")[0] for h in d["hints"]] == ["clone_captures_wallet_edge", "structural_edge_beyond_wallet"]
+    # wallet-only clearly positive, clone-only negative: a missing rule
+    doc = _audit("win", "lose")
+    d = doc["disagreement"]
+    assert d["wallet_only"]["pnl_per_window"]["value"] == 6.0 and d["clone_only"]["pnl_per_window"]["value"] == -4.0
+    assert [h.split(":")[0] for h in d["hints"]] == ["missing_rule"] and doc["warnings"] == ["ghost_negative"]
+    # hints never decide: the verdict is the one decide() gives without them
+    assert doc["verdict"] == F.decide(doc["scores"], doc["null"], doc["gates_measured"])
+
+
+def test_ghost_is_empty_for_a_perfect_mirror_and_has_no_ci_with_one_start():
+    wins, wallet, prints = market()
+    clone = {k: [Fill(f.t + 0.25, f.d, f.px, 10, "maker") for f in fs] for k, fs in wallet.items()}
+    doc = F.evaluate(clone, wallet, wins, C0, OK_GATES, others=prints)
+    assert doc["ghost"]["windows"] == 0 and doc["ghost"]["pnl_per_window"]["value"] is None
+    assert doc["warnings"] == [] and doc["verdict"]["decision"] == "PASS"
+    one = {("btc", "5m", 1000): F.window_record([Fill(1060.0, 1, 0.6, 10, "taker")], [], 1000, 1300, 0, C0)[0]}
+    g = F.ghost(one)
+    assert g["windows"] == 1 and g["pnl_per_window"]["value"] == pytest.approx(-6.0)
+    assert g["pnl_per_window"]["ci95"] is None and not g["negative"]

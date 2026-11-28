@@ -1,6 +1,7 @@
 //! Local mock tests: WebSocket watchdog, PM US signer headers per connect and no redirects,
 //! PM US rollover, Kalshi signing (generated keys), BRTI signed poll + 429, Kalshi WS seq gap,
-//! spot L2 seq gap and tape decode, LMAX REST poll back-off.
+//! spot L2 seq gap and tape decode, LMAX REST poll back-off, perps (Kalshi margin WS signed + seq
+//! gap, idle without a credential, Coinbase Derivatives subscriptions, public REST poll).
 //! No test touches a real venue.
 
 // The handshake callback signature (Result<Response, ErrorResponse>) is fixed by tungstenite.
@@ -13,6 +14,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use base64::Engine;
 use doppel_tape::kalshi::{KalshiBrti, KalshiWs, SigningKey};
+use doppel_tape::lead::LeadFeed;
 use doppel_tape::pmus::{fetch_signed_headers, PmusMarketsWs};
 use doppel_tape::recorder::{spawn_writer, Recorder, WriterThread};
 use doppel_tape::segment::read_segment;
@@ -64,6 +66,101 @@ fn sock_path() -> (tempfile::TempDir, PathBuf) {
     let d = tempfile::Builder::new().prefix("dp").tempdir_in("/tmp").unwrap();
     let p = d.path().join("m.sock");
     (d, p)
+}
+
+#[tokio::test]
+async fn lead_feeds_record_native_depth_and_trade_payloads() {
+    let fixtures = [
+        (
+            "lead_binance_spot_l2",
+            "wss://data-stream.binance.vision/ws/btcusdt@depth20@100ms",
+            None,
+            r#"{"lastUpdateId":160,"bids":[["50100.00","1.2"]],"asks":[["50101.00","2.3"]]}"#,
+        ),
+        (
+            "lead_binance_spot_trades",
+            "wss://data-stream.binance.vision/ws/btcusdt@trade",
+            None,
+            r#"{"e":"trade","E":1000,"s":"BTCUSDT","t":123,"p":"50100.00","q":"0.20","T":999,"m":true}"#,
+        ),
+        (
+            "lead_binance_perp_l2",
+            "wss://fstream.binance.com/public/ws/btcusdt@depth20@100ms",
+            None,
+            r#"{"e":"depthUpdate","E":1000,"T":999,"s":"BTCUSDT","U":156,"u":160,"pu":155,"b":[["50100.00","1.2"]],"a":[["50101.00","2.3"]],"st":1}"#,
+        ),
+        (
+            "lead_binance_perp_trades",
+            "wss://fstream.binance.com/market/ws/btcusdt@aggTrade",
+            None,
+            r#"{"e":"aggTrade","E":1000,"s":"BTCUSDT","a":321,"p":"50100.00","q":"0.20","f":101,"l":102,"T":999,"m":false,"st":1}"#,
+        ),
+        (
+            "lead_hyperliquid_l2",
+            "wss://api.hyperliquid.xyz/ws",
+            Some("l2Book"),
+            r#"{"channel":"l2Book","data":{"coin":"BTC","time":999,"levels":[[{"px":"50100.0","sz":"1.2","n":2}],[{"px":"50101.0","sz":"2.3","n":3}]]}}"#,
+        ),
+        (
+            "lead_hyperliquid_trades",
+            "wss://api.hyperliquid.xyz/ws",
+            Some("trades"),
+            r#"{"channel":"trades","data":[{"coin":"BTC","side":"A","px":"50100.0","sz":"0.2","time":999,"tid":100,"hash":"0x01"}]}"#,
+        ),
+    ];
+    let d = setup();
+    for (name, url, subscription, raw) in fixtures {
+        let mut venue = LeadFeed::new(name).unwrap();
+        assert_eq!(venue.url(), url);
+        assert!(!venue.keepalives_are_liveness());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        venue.url = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            if let Some(ch) = subscription {
+                let sub = ws.next().await.unwrap().unwrap().into_text().unwrap();
+                assert_eq!(
+                    serde_json::from_str::<Value>(&sub).unwrap(),
+                    json!({"method":"subscribe","subscription":{"type":ch,"coin":"BTC"}})
+                );
+            }
+            for frame in [
+                r#"{"channel":"subscriptionResponse","data":{"method":"subscribe"}}"#,
+                r#"{"channel":"pong"}"#,
+                r#"{"e":"aggTrade","s":"BTCUSDT","a":321,"p":"50100","q":".2","T":999,"m":false,"st":2}"#,
+                raw,
+            ] {
+                ws.send(Message::Text(frame.into())).await.unwrap();
+            }
+            while let Some(Ok(frame)) = ws.next().await {
+                if frame.is_close() {
+                    break;
+                }
+            }
+        });
+        let (rec, writer) = writer(d.path(), name);
+        let stats = rec.stats.clone();
+        let (stop, rx) = watch::channel(false);
+        let client = tokio::spawn(run_ws(venue, rec, rx, fast()));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while stats.msgs.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            stop.send(true).unwrap();
+            client.await.unwrap();
+            server.await.unwrap();
+        })
+        .await
+        .unwrap();
+        writer.join();
+        let all = tape(d.path(), name);
+        let data: Vec<_> = all.iter().filter(|r| r.get("meta").is_none()).collect();
+        assert_eq!(data.len(), 1, "{name}: {all:?}");
+        assert_eq!(data[0]["raw"], raw);
+        assert!(data[0]["tw"].as_i64().unwrap() > 0);
+        assert!(data[0]["tm"].as_i64().unwrap() > 0);
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -906,4 +1003,215 @@ async fn lmax_rest_poll_records_backs_off_and_decodes() {
         })
         .collect();
     assert_eq!(valid, [true, false, false, false, true, false]);
+}
+
+// ------------------------------------------------------------------------------------------------
+// perps: Kalshi margin WS (signed, seq gap -> reconnect), Coinbase Derivatives WS, public REST poll
+
+#[tokio::test]
+async fn perp_kalshi_signed_gap_reconnects_and_tape_decodes() {
+    let d = setup();
+    let (pem, vk) = ed_key();
+    let profile = d.path().join("kalshi-profile.json");
+    std::fs::write(&profile, json!({"key_id": "kid-perp", "private_key_pem": pem}).to_string()).unwrap();
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/trade-api/ws/v2/margin", l.local_addr().unwrap());
+    let cmds: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let sig_ok: Arc<Mutex<Vec<bool>>> = Arc::default();
+    let (cmds2, sig2) = (cmds.clone(), sig_ok.clone());
+    tokio::spawn(async move {
+        let mut conn = 0;
+        while let Ok((s, _)) = l.accept().await {
+            conn += 1;
+            let sig3 = sig2.clone();
+            let cb = move |req: &Request, resp: Response| {
+                let h = |n: &str| req.headers().get(n).map(|v| v.to_str().unwrap().to_string()).unwrap_or_default();
+                let msg = format!("{}GET{}", h("kalshi-access-timestamp"), req.uri().path());
+                let ok = h("kalshi-access-key") == "kid-perp" && verify(&Pub::Ed(vk), &msg, &h("kalshi-access-signature"));
+                sig3.lock().unwrap().push(ok);
+                Ok(resp)
+            };
+            let mut ws = tokio_tungstenite::accept_hdr_async(s, cb).await.unwrap();
+            let Some(Ok(Message::Text(t))) = ws.next().await else { continue };
+            cmds2.lock().unwrap().push(serde_json::from_str(t.as_str()).unwrap());
+            let mut send = vec![];
+            for (sid, ch) in [(1, "orderbook_delta"), (2, "trade"), (3, "ticker")] {
+                send.push(json!({"id": 1, "type": "subscribed", "msg": {"channel": ch, "sid": sid}}));
+            }
+            send.push(json!({"type": "orderbook_snapshot", "sid": 1, "seq": 1,
+                "msg": {"market_ticker": "KXBTCPERP", "bid": [["5.9931", "195.00"]], "ask": [["5.9933", "598.00"]]}}));
+            // the first connection skips seq 2 on the book
+            let seq = if conn == 1 { 3 } else { 2 };
+            send.push(json!({"type": "orderbook_delta", "sid": 1, "seq": seq,
+                "msg": {"market_ticker": "KXBTCPERP", "price": "5.9932", "delta": "5.00", "side": "bid"}}));
+            send.push(json!({"type": "trade", "sid": 2, "seq": 1,
+                "msg": {"trade_id": format!("t{conn}"), "market_ticker": "KXBTCPERP", "price": "5.9933", "count": "2.00", "taker_side": "bid"}}));
+            for m in send {
+                ws.send(Message::Text(m.to_string().into())).await.unwrap();
+            }
+            tokio::spawn(async move { while let Some(Ok(_)) = ws.next().await {} });
+        }
+    });
+    let (rec, wt) = writer(d.path(), "perp_kalshi_btc");
+    let stats = rec.stats.clone();
+    let mut v = doppel_tape::perps::KalshiPerpWs::new();
+    assert_eq!(v.url, "wss://external-api-margin-ws.kalshi.com/trade-api/ws/v2/margin");
+    v.url = url;
+    v.profile_path = Some(profile);
+    let (tx, rx) = watch::channel(false);
+    let h = tokio::spawn(run_ws(v, rec, rx, fast()));
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    tx.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), h).await.unwrap().unwrap();
+    wt.join();
+
+    let sigs = sig_ok.lock().unwrap().clone();
+    assert!(sigs.len() >= 2 && sigs.iter().all(|x| *x), "signed handshake on every connect: {sigs:?}");
+    let cmds = cmds.lock().unwrap().clone();
+    assert_eq!(
+        cmds[0],
+        json!({"id": 1, "cmd": "subscribe", "params": {"channels": ["orderbook_delta", "trade", "ticker"], "market_tickers": ["KXBTCPERP"]}})
+    );
+    let recs = tape(d.path(), "perp_kalshi_btc");
+    let c = ctls(&recs);
+    assert_eq!(&c[..5], ["connect", "subscribe", "seq_gap", "reconnect", "disconnect"], "{c:?}");
+    let gap = recs.iter().find(|r| r["meta"]["ctl"] == "seq_gap").unwrap();
+    assert_eq!(gap["meta"], json!({"ctl": "seq_gap", "sid": 1, "channel": "orderbook_delta", "expected": 2, "got": 3}));
+    assert_eq!(stats.extra("seq_gaps").unwrap(), 1);
+    assert!(!serde_json::to_string(&recs).unwrap().contains("PRIVATE KEY"));
+
+    // offline: the gap leaves no book, the second connection's snapshot + delta rebuild it
+    let mut k = doppel_fair::perp::KalshiPerp::new();
+    let mut last = None;
+    let mut gaps = 0;
+    for r in &recs {
+        gaps += k.apply_record(r["raw"].as_str().unwrap(), r["tw"].as_i64().unwrap(), r.get("meta")).is_err() as u32;
+        if r.get("meta").is_none() {
+            last = k.top();
+        }
+    }
+    assert_eq!(gaps, 1);
+    let t = last.expect("book after the reconnect");
+    assert!((t.bid - 59932.0).abs() < 1e-6 && (t.bid_qty - 0.0005).abs() < 1e-12 && (t.ask - 59933.0).abs() < 1e-6);
+    assert!(k.trades.len() >= 2 && k.trades.iter().all(|x| x.taker_buy == Some(true)));
+}
+
+#[tokio::test]
+async fn perp_kalshi_without_credential_idles() {
+    let d = setup();
+    let (rec, wt) = writer(d.path(), "perp_kalshi_btc");
+    let stats = rec.stats.clone();
+    let mut v = doppel_tape::perps::KalshiPerpWs::new();
+    v.profile_path = Some(d.path().join("missing.json"));
+    v.url = "ws://127.0.0.1:9/never".into();
+    let (tx, rx) = watch::channel(false);
+    let h = tokio::spawn(run_ws(v, rec, rx, fast()));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    tx.send(true).unwrap();
+    h.await.unwrap();
+    wt.join();
+    assert_eq!(stats.extra("idle").unwrap(), "no_credentials");
+    assert_eq!(ctls(&tape(d.path(), "perp_kalshi_btc")), ["idle"]);
+}
+
+#[tokio::test]
+async fn perp_cbde_subscribes_level2_trades_heartbeats() {
+    let d = setup();
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}", l.local_addr().unwrap());
+    let subs: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let s2 = subs.clone();
+    tokio::spawn(async move {
+        let Ok((s, _)) = l.accept().await else { return };
+        let mut ws = tokio_tungstenite::accept_async(s).await.unwrap();
+        for _ in 0..3 {
+            if let Some(Ok(Message::Text(t))) = ws.next().await {
+                s2.lock().unwrap().push(serde_json::from_str(t.as_str()).unwrap());
+            }
+        }
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures_perps/cbde_ws.jsonl");
+        for f in std::fs::read_to_string(fixture).unwrap().lines() {
+            let r: Value = serde_json::from_str(f).unwrap();
+            if r.get("meta").is_none() {
+                ws.send(Message::Text(r["raw"].as_str().unwrap().to_string().into())).await.unwrap();
+            }
+        }
+        while let Some(Ok(_)) = ws.next().await {}
+    });
+    let (rec, wt) = writer(d.path(), "perp_cbde_btc");
+    let stats = rec.stats.clone();
+    let mut v = doppel_tape::l2::SpotL2::cbde_btc();
+    v.url = url;
+    let (tx, rx) = watch::channel(false);
+    let h = tokio::spawn(run_ws(v, rec, rx, fast()));
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    tx.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), h).await.unwrap().unwrap();
+    wt.join();
+    let subs = subs.lock().unwrap().clone();
+    assert_eq!(
+        subs,
+        vec![
+            json!({"type": "subscribe", "product_ids": ["BIP-20DEC30-CDE"], "channel": "level2"}),
+            json!({"type": "subscribe", "product_ids": ["BIP-20DEC30-CDE"], "channel": "market_trades"}),
+            json!({"type": "subscribe", "channel": "heartbeats"}),
+        ]
+    );
+    let recs = tape(d.path(), "perp_cbde_btc");
+    assert_eq!(ctls(&recs)[..2], ["connect", "subscribe"]);
+    assert_eq!(stats.extra("seq_gaps").unwrap(), 0);
+    assert_eq!(recs.iter().filter(|r| r.get("meta").is_none()).count(), 80);
+}
+
+#[tokio::test]
+async fn perp_rest_records_keys_and_backs_off() {
+    let d = setup();
+    let n = Arc::new(Mutex::new(0));
+    let n2 = n.clone();
+    let (base, seen) = http_server(move |head| {
+        let mut g = n2.lock().unwrap();
+        *g += 1;
+        if *g == 3 {
+            return (429, String::new(), r#"{"error":{"code":"too_many_requests"}}"#.to_string());
+        }
+        let body = if head.contains("/orderbook") {
+            r#"{"orderbook":{"bids":[["5.9931","4.00"]],"asks":[["5.9933","2.00"]]}}"#
+        } else {
+            r#"{"trades":[]}"#
+        };
+        (200, String::new(), body.to_string())
+    })
+    .await;
+    let (rec, wt) = writer(d.path(), "perp_kalshi_btc_rest");
+    let stats = rec.stats.clone();
+    let s = Duration::from_secs;
+    let mut p = doppel_tape::perps::PerpRest::new(vec![
+        doppel_tape::perps::Target { key: "orderbook", url: format!("{base}/margin/markets/KXBTCPERP/orderbook"), every: s(1) },
+        doppel_tape::perps::Target { key: "trades", url: format!("{base}/margin/trades?ticker=KXBTCPERP&limit=100"), every: s(1) },
+    ]);
+    let client = doppel_tape::http::client(3);
+    let t = p.targets.clone();
+    let mut waits = Vec::new();
+    for i in [0, 1, 0, 0] {
+        waits.push(p.poll(&client, &rec, &t[i]).await);
+    }
+    assert_eq!(waits, [None, None, Some(5.0), None]);
+    drop(rec);
+    wt.join();
+    assert!(seen.lock().unwrap()[1].starts_with("GET /margin/trades?ticker=KXBTCPERP&limit=100 "));
+    assert_eq!(stats.extra("http_429").unwrap(), 1);
+    let recs = tape(d.path(), "perp_kalshi_btc_rest");
+    let km: Vec<_> = recs.iter().map(|r| (r["meta"]["key"].clone(), r["meta"]["status"].clone())).collect();
+    let want = [("orderbook", 200), ("trades", 200), ("orderbook", 429), ("orderbook", 200)].map(|(k, s)| (json!(k), json!(s)));
+    assert_eq!(km, want);
+    // offline: the 429 leaves no book, the next poll restores it
+    let mut k = doppel_fair::perp::KalshiPerp::new();
+    let valid: Vec<bool> = recs
+        .iter()
+        .map(|r| {
+            k.apply_record(r["raw"].as_str().unwrap(), r["tw"].as_i64().unwrap(), r.get("meta")).unwrap();
+            k.top().is_some()
+        })
+        .collect();
+    assert_eq!(valid, [true, true, false, true]);
 }

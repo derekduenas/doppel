@@ -1,59 +1,210 @@
-from datetime import date, datetime, timezone
-import importlib.util
+from datetime import UTC, datetime
+import json
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 
+import pytest
+
+from ops import cold_tape as cold
+from ops import tape_janitor as janitor
+
+
+NOW = datetime(2026, 11, 27, 12, tzinfo=UTC)
 OPS = Path(__file__).resolve().parents[1] / "ops"
-spec = importlib.util.spec_from_file_location("tape_janitor", OPS / "tape_janitor.py")
-janitor = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(janitor)
 
 
-def test_one_byte_below_floor_prunes_only_oldest_real_stream_day(tmp_path, monkeypatch):
-    root = tmp_path / "tape with spaces"
-    today = datetime.now(timezone.utc).strftime("%Y%m%d")
-    retained = ["pmus_ws_5m/20000102", f"pmus_ws_5m/{today}", "pmus_ws_5m/29991231",
-                "pmus_ws_5m/19990230", "goldsky_activity/20000101", "ref_brti_raw/20000101",
-                "receipts/20000101"]
-    pruned = ["pmus_ws_5m/20000101", "rtds_a/20000101"]
-    for rel in [*retained, *pruned]:
-        (root / rel).mkdir(parents=True)
-        (root / rel / "keep-or-prune").touch()
-    (root / "pmus_ws_link").symlink_to(root / "ref_brti_raw", target_is_directory=True)
-    (root / "rtds_a/19990101").symlink_to(root / "goldsky_activity/20000101", target_is_directory=True)
-    assert min(janitor.closed_days(root, date(2000, 1, 2))) == date(2000, 1, 1)
-    space = iter([12 * janitor.GIB - 1, 12 * janitor.GIB])
-    monkeypatch.setattr(janitor.shutil, "disk_usage", lambda _: SimpleNamespace(free=next(space)))
-    assert janitor.prune(root, 12) == 0
-    assert all(not (root / rel).exists() for rel in pruned)
-    assert all((root / rel / "keep-or-prune").is_file() for rel in retained)
-    assert (root / "rtds_a/19990101").is_symlink()
-    assert "deleting live-stream day 20000101" in (root / "janitor.log").read_text()
+class MemoryArchive:
+    remote = "r2:private/tape"
+
+    def __init__(self):
+        self.objects = {}
+        self.transfers = 0
+        self.fail = False
+
+    def ensure(self, key, payload, size, expected_sha):
+        data = payload if isinstance(payload, bytes) else payload.read()
+        assert len(data) == size and cold.sha(data) == expected_sha
+        if self.fail:
+            raise ValueError("remote SHA-256 verification failed")
+        self.objects.setdefault(key, data)
+        assert self.objects[key] == data
+        self.transfers += 1
+
+    def verify(self, key, size, expected_sha):
+        data = self.objects.get(key)
+        if data is None or len(data) != size or cold.sha(data) != expected_sha:
+            raise ValueError("remote SHA-256 verification failed")
 
 
-def test_entry_point_refuses_future_only_tree_below_floor(tmp_path):
-    root = tmp_path / "shadow tape"
-    future = root / "clob_btc/29991231"
-    future.mkdir(parents=True)
-    script = str(OPS / "doppel-janitor.sh")
-    assert subprocess.run(["sh", script, str(root), "0"]).returncode == 0
-    assert not (root / "janitor.log").exists()
-    assert subprocess.run(["sh", script, str(root), "1000000"]).returncode == 1
-    assert future.is_dir()
-    assert "nothing deletable" in (root / "janitor.log").read_text()
+def write_segment(root, stream, day, hour="00", data=b"bytes"):
+    name = f"{day}/{hour}.dtape.zst"
+    path = root / stream / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    row = {"file": name, "bytes": len(data), "sha256": cold.sha(data)}
+    with (root / stream / "manifest.jsonl").open("ab") as out:
+        out.write(cold.json_bytes(row))
+    return path
 
 
-def test_protected_days_survive_and_one_run_deletes_one_day(tmp_path, monkeypatch):
-    """Release review 2026-11-27: with free space pinned below the floor the janitor deleted every
-    closed day in a row, including registered evaluation inputs."""
+def test_only_fully_verified_expired_data_is_eligible(tmp_path):
+    root, state = tmp_path / "with spaces", tmp_path / "state"
+    expired = write_segment(root, "clob_btc_5m", "20261119")
+    same_day = write_segment(root, "spot_l2_lmax", "20261119")
+    next_day = write_segment(root, "rtds_a", "20261120")
+    protected = write_segment(root, "pmus_ws_5m", "20261117")
+    paid = write_segment(root, "goldsky_activity", "20261119")
+    reference = write_segment(root, "ref_brti_raw", "20261119")
+    kept_hour = write_segment(root, "lead_binance_spot", "20261120", "12")
+    active = write_segment(root, "rtds_b", "20261127", "12")
+    unverified = write_segment(root, "pmus_ws_5m", "20261118")
+    (root / "janitor-protect.txt").write_text("20261117\n")
+    target = MemoryArchive()
+
+    preview = cold.offload(root, target, state, ["auto"], None, NOW, dry_run=True)
+    assert preview["pending"] == 8 and not state.exists() and not target.transfers
+    result = cold.offload(root, target, state,
+                          ["clob_btc_5m", "spot_l2_lmax", "rtds_a", "pmus_ws_5m", "goldsky_activity",
+                           "ref_brti_raw", "lead_binance_spot", "rtds_b"],
+                          datetime(2026, 11, 19, tzinfo=UTC), NOW)
+    assert result["archived"] == 6 and not result["issues"] and target.transfers == 12
+
+    preview = janitor.prune(root, 0, target=target, state=state, now=NOW, retain_days=7, dry_run=True)
+    assert set(preview["ready"]) == {"clob_btc_5m/20261119/00.dtape.zst", "spot_l2_lmax/20261119/00.dtape.zst"}
+    assert expired.exists() and same_day.exists()
+    report = janitor.prune(root, 0, target=target, state=state, now=NOW, retain_days=7)
+    assert set(report["deleted"]) == set(preview["ready"]) and not report["issues"]
+    assert not expired.exists() and not same_day.exists()
+    assert all(path.exists() for path in (protected, next_day, paid, reference, kept_hour, active, unverified))
+
+
+def test_failed_remote_verification_or_deleted_object_never_authorizes_cleanup(tmp_path):
+    root, state = tmp_path / "tape", tmp_path / "state"
+    path = write_segment(root, "clob_btc_5m", "20261001")
+    target = MemoryArchive()
+    target.fail = True
+    report = cold.offload(root, target, state, ["auto"], None, NOW)
+    assert "remote SHA-256 verification failed" in report["issues"]
+    assert not list(state.glob("*.json"))
+    assert janitor.prune(root, 0, target=target, state=state, now=NOW)["deleted"] == []
+    target.fail = False
+    assert cold.offload(root, target, state, ["auto"], None, NOW)["archived"] == 1
+    transfers = target.transfers
+    assert cold.offload(root, target, state, ["auto"], None, NOW)["verified"] == 1
+    assert target.transfers == transfers
+    key = next(k for k in target.objects if k.startswith("data/"))
+    target.objects[key] = b"wrong"
+    report = janitor.prune(root, 0, target=target, state=state, now=NOW)
+    assert report["issues"] and path.is_file()
+    target.objects.clear()
+    report = janitor.prune(root, 0, target=target, state=state, now=NOW)
+    assert report["issues"] and path.is_file()
+
+
+def test_prune_refuses_changed_bytes_or_link(tmp_path):
+    root, state = tmp_path / "tape", tmp_path / "state"
+    path = write_segment(root, "clob_btc_5m", "20261001", data=b"old")
+    target = MemoryArchive()
+    assert cold.offload(root, target, state, ["auto"], None, NOW)["archived"] == 1
+    path.write_bytes(b"new")
+    result = janitor.prune(root, 0, target=target, state=state, now=NOW)
+    assert result["retained"] and path.read_bytes() == b"new"
+    elsewhere = tmp_path / "keep"
+    elsewhere.write_bytes(b"old")
+    path.unlink()
+    path.symlink_to(elsewhere)
+    result = janitor.prune(root, 0, target=target, state=state, now=NOW)
+    assert result["issues"] and path.is_symlink() and elsewhere.read_bytes() == b"old"
+
+
+def test_receipt_mismatch_is_preserved_with_proof_but_not_pruned(tmp_path):
+    root, state = tmp_path / "tape", tmp_path / "state"
+    path = write_segment(root, "spot_l2_lmax", "20261001")
+    receipt = root / "receipts/20261001/00.json"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_bytes(cold.json_bytes({"day": "20261001", "hour": 0, "streams": {
+        "spot_l2_lmax": {"bytes": 1, "sha256": "0" * 64, "crc_ok": True}}}))
+    target = MemoryArchive()
+    assert cold.offload(root, target, state, ["auto"], None, NOW)["archived"] == 1
+    assert receipt.read_bytes() in target.objects.values()
+    manifests = [json.loads(data) for key, data in target.objects.items() if key.startswith("checksums/")]
+    assert manifests[0]["receipt_sha256"] == cold.sha(receipt.read_bytes())
+    report = janitor.prune(root, 0, target=target, state=state, now=NOW)
+    assert report["retained"] and path.exists()
+
+
+def test_cold_retention_has_no_fallback_and_local_policy_protects_registered_days(tmp_path, monkeypatch):
     root = tmp_path / "tape"
-    for day in ("20000101", "20000102", "20000103"):
-        (root / "pmus_ws_5m" / day).mkdir(parents=True)
-    (root / "janitor-protect.txt").write_text("20000102\n")
-    monkeypatch.setattr(janitor.shutil, "disk_usage", lambda _: SimpleNamespace(free=0))  # never recovers
-    assert janitor.prune(root, 12) == 0
-    assert sorted(p.name for p in (root / "pmus_ws_5m").iterdir()) == ["20000102", "20000103"]  # one day only
-    assert janitor.prune(root, 12) == 0
-    assert [p.name for p in (root / "pmus_ws_5m").iterdir()] == ["20000102"]                    # protected stays
-    assert janitor.prune(root, 12) == 1 and (root / "pmus_ws_5m" / "20000102").is_dir()         # nothing deletable
+    path = write_segment(root, "clob_btc_5m", "20261001")
+    monkeypatch.setattr(janitor.shutil, "disk_usage", lambda _: SimpleNamespace(free=0))
+    assert janitor.prune(root, 12)["issues"]
+    assert path.is_file()
+    (root / "janitor-protect.txt").write_text("20261001\n")
+    older = write_segment(root, "clob_btc_5m", "20260930")
+    ran = subprocess.run(["sh", str(OPS / "doppel-janitor.sh"), str(root), "1000000"], capture_output=True)
+    assert ran.returncode == 1 and older.exists()
+    ran = subprocess.run([sys.executable, str(OPS / "tape_janitor.py"), "--local-floor",
+                          str(root), "1000000"], capture_output=True)
+    assert ran.returncode == 0
+    assert path.is_file() and not older.exists()
+    with pytest.raises(ValueError, match="7 to 14"):
+        janitor.prune(root, 12, retain_days=6)
+
+
+def test_policy_requires_fresh_audit_and_protects_days_and_corrupt_objects(tmp_path, monkeypatch):
+    root = tmp_path / "tape"
+    clean = write_segment(root, "clob_btc_5m", "20261001", data=b"old")
+    corrupt = write_segment(root, "clob_btc_5m", "20261002", data=b"new")
+    protected = write_segment(root, "clob_btc_5m", "20261003")
+    unlisted = write_segment(root, "clob_btc_5m", "20261004")
+    recent = write_segment(root, "clob_btc_5m", "20261125")
+    (root / "janitor-protect.txt").write_text("20261003\n")
+    cls = {"name": "tape", "local": str(root), "local_days": 14}
+    policy = {"class": [cls], "audit": {"grace": "3h"}}
+    listed = [f.relative_to(root).as_posix() for f in (clean, corrupt, protected, recent)]
+    audit = {"schema": janitor.storage.AUDIT_SCHEMA, "policy_sha256": janitor.storage.policy_sha256(policy),
+             "t": int(NOW.timestamp()) - 3600, "unclassified": [],
+             "classes": {"tape": {"verified": len(listed), "verified_paths": listed, "local_days": 14}}}
+    path = tmp_path / "audit.json"
+    path.write_text(json.dumps(audit))
+    monkeypatch.setattr(janitor.storage, "remote_digest", lambda *_: cold.sha(b"old"))
+    preview = janitor.policy_prune(policy, path, 0, dry_run=True, now=NOW)
+    assert len(preview["ready"]) == 2 and clean.exists()
+    result = janitor.policy_prune(policy, path, 0, now=NOW)
+    assert result["deleted"] == [f"tape/{listed[0]}"] and not clean.exists()
+    assert result["issues"] == [f"SHA-256 mismatch: tape/{listed[1]}"]
+    assert all(f.exists() for f in (corrupt, protected, unlisted, recent))
+    audit["t"] -= 4 * 3600
+    path.write_text(json.dumps(audit))
+    with pytest.raises(ValueError, match="stale"):
+        janitor.policy_prune(policy, path, 0, now=NOW)
+    assert corrupt.exists()
+
+
+def test_archive_cutover_keeps_flat_only_hours_and_checks_immutable_manifest(tmp_path, monkeypatch):
+    root = tmp_path / "tape"
+    flat = write_segment(root, "clob_btc_5m", "20261001", data=b"flat")
+    active = write_segment(root, "clob_btc_5m", "20261002", data=b"immutable")
+    target, state = MemoryArchive(), tmp_path / "state"
+    assert cold.offload(root, target, state, ["auto"], None, NOW)["archived"] == 2
+    flat_key, active_key = [p.relative_to(root).as_posix() for p in (flat, active)]
+    immutable = cold.data_key(active_key, cold.sha(b"immutable"))
+    cls = {"name": "tape", "local": str(root), "local_days": 14, "uploader": "archive_tape"}
+    policy = {"class": [cls], "audit": {"grace": "3h"}}
+    audit = {"schema": janitor.storage.AUDIT_SCHEMA, "policy_sha256": janitor.storage.policy_sha256(policy),
+             "t": int(NOW.timestamp()), "unclassified": [], "classes": {"tape": {
+                 "verified": 2, "verified_paths": [flat_key, active_key], "local_days": 14,
+                 "remote_keys": {flat_key: flat_key, active_key: immutable}}}}
+    audit_path = tmp_path / "audit.json"
+    audit_path.write_text(json.dumps(audit))
+
+    def digest(_, cls, key, size):
+        payload = target.objects[key]
+        assert len(payload) == size
+        return cold.sha(payload)
+
+    monkeypatch.setattr(janitor.storage, "remote_digest", digest)
+    assert janitor.policy_prune(policy, audit_path, 0, now=NOW)["deleted"] == [f"tape/{active_key}"]
+    assert flat.exists() and not active.exists()

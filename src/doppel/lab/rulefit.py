@@ -2470,7 +2470,13 @@ def run(root: Path, om_dir: Path | None, orders_path: Path | None, wallet: str, 
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="doppel-rulefit")
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "--taker-entries":
+        from .taker_entries import main as taker_entries_main
+
+        return taker_entries_main(argv[1:])
+    ap = argparse.ArgumentParser(prog="doppel-rulefit",
+                                 epilog="Use --taker-entries --help for receipt-time taker fitting and replay.")
     ap.add_argument("--data", type=Path, required=True, help="tape root")
     ap.add_argument("--ordermatch-dir", type=Path, help="doppel-ordermatch output directory")
     ap.add_argument("--orders", type=Path, help="doppel-ordertape output (parquet dir or JSONL)")

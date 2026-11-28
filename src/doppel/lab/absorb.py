@@ -78,8 +78,8 @@ import orjson
 from ..tape.segment import atomic_write
 from .fillstore import iter_wallet_fills
 from .goldsky import pagination_state, terminal_page, trade_binding
-from .ordertape import (DEFAULT_RPCS, EXCHANGES, BudgetExhausted, EndpointsDown, Pool, RpcError,
-                        http_transport)
+from .ordertape import (ARCHIVE_REFUSED, DEFAULT_RPCS, EXCHANGES, SPAN_REFUSED, BudgetExhausted,
+                        EndpointsDown, Pool, RpcError, http_transport)
 
 CTF = "0x4d97dcd97ec945f40cf65f87097ace5ea0476045"
 USDCE = "0x2791bca1f2de4661ed88a30c99a7a9449aa84174"
@@ -100,7 +100,7 @@ SEL_BALANCE_OF_BATCH = "4e1273f4"
 SEL_GET_OWNERS = "a0e67e2b"  # Gnosis Safe getOwners()
 U = 1_000_000
 SPELL_MIN = U  # a one-sided spell needs at least one share of imbalance
-DEFAULT_CHUNK = 200
+DEFAULT_CHUNK = 10_000  # publicnode's measured eth_getLogs span limit (Apex, 2026-11-27)
 DEFAULT_LOG_RPC, DEFAULT_STATE_RPC = DEFAULT_RPCS
 
 
@@ -289,8 +289,20 @@ class Chain:
         return self.get("eth_call", [{"to": to, "data": "0x" + data}, hex(block)])
 
 
+def _kind(e: Exception) -> str:
+    return e.kind if isinstance(e, RpcError) else type(e).__name__
+
+
+def _span_failure(kind: str) -> bool:
+    """A transport failure of ``eth_getLogs`` that a narrower span may avoid: a span refusal,
+    an unrecognized provider error, a timeout or an HTTP error. Validation faults are excluded."""
+    return kind in (SPAN_REFUSED, "rpc_error", "timeout", "bad_response", "network") or kind.startswith("http_")
+
+
 def scan(chain: Chain, wallet: str, b0: int, b1: int, chunk: int) -> dict:
-    """Transfer and OrderFilled logs of ``wallet`` over [b0, b1]; stops at the first failure."""
+    """Transfer and OrderFilled logs of ``wallet`` over [b0, b1]. A transport failure halves the
+    span and retries the same blocks; the scan stops at a failure of a one-block span, a
+    validation fault, budget exhaustion or endpoints down."""
     if chunk < 1 or b0 < 1 or b1 < b0:
         raise ValueError("use a positive chunk and a nonempty block interval with an opening block")
     wt = topic(wallet)
@@ -350,8 +362,14 @@ def scan(chain: Chain, wallet: str, b0: int, b1: int, chunk: int) -> dict:
         except (IndexError, KeyError, TypeError, ValueError, AttributeError):
             error = "invalid_log_response"
             break
-        except (BudgetExhausted, EndpointsDown, RpcError) as e:
-            error = type(e).__name__ if not isinstance(e, RpcError) else e.kind
+        except RpcError as e:
+            if _span_failure(e.kind) and hi > nxt:  # back off the span, never the wallet
+                chunk = (hi - nxt + 1) // 2
+                continue
+            error = e.kind
+            break
+        except (BudgetExhausted, EndpointsDown) as e:
+            error = type(e).__name__
             break
         nxt = hi + 1
     return {"logs": [logs[k] for k in sorted(logs, key=lambda k: (int(logs[k]["blockNumber"], 16), k[1]))],
@@ -893,12 +911,13 @@ def absorb_wallet(chain: Chain, wallet: str, fills: list[dict], window: tuple[in
             receipts[tx] = chain.get("eth_getTransactionReceipt", [tx])
         except (BudgetExhausted, EndpointsDown, RpcError) as e:
             receipts[tx] = None
-            err = err or type(e).__name__
+            err = err or _kind(e)
     touched = {lg["asset"] for lg in legs if lg["asset"] != "cash"} | {f["token_id"] for f in fills}
     # A buy can complete a position opened before this window, even if its opposite token never moves.
     markets = {pairs[t][0] for t in touched if t in pairs}
     tokens = sorted(touched | {t for t, (condition, _) in pairs.items() if condition in markets})
     start = end = None
+    archive_refused = False
     bts: dict[int, int] = {}
     boundaries = {}
     try:
@@ -907,7 +926,8 @@ def absorb_wallet(chain: Chain, wallet: str, fills: list[dict], window: tuple[in
         start = balances(chain, wallet, tokens, b0 - 1)
         end = balances(chain, wallet, tokens, b1)
     except (BudgetExhausted, EndpointsDown, RpcError) as e:
-        err = err or type(e).__name__
+        err = err or _kind(e)
+        archive_refused = _kind(e) == ARCHIVE_REFUSED
         start = end = None
     # Read existing block headers found during the CLI's block search or earlier wallet runs.
     # Comparing those headers costs no extra RPC per fill or transfer.
@@ -939,6 +959,8 @@ def absorb_wallet(chain: Chain, wallet: str, fills: list[dict], window: tuple[in
     bounds_ok = bool(boundaries and boundaries[b0 - 1] < times[0] <= bts[b0]
                      and bts[b0] <= bts[b1] < times[1] <= boundaries[b1 + 1])
     causes = res.pop("causes")
+    if archive_refused:  # no configured state endpoint serves historical balances
+        causes.insert(causes.index("balances_unavailable") + 1, "state_archive_unavailable")
     if not bounds_ok:
         causes.insert(0, "block_time_window_unverified")
     if not row_bounds_ok:
@@ -991,6 +1013,19 @@ def cohort_row(r: dict) -> dict:
 
 
 # ---------------------------------------------------------------- CLI
+def rpc_routes(rpc: list[str] | None, log_rpc: list[str] | None, state_rpc: list[str] | None
+               ) -> tuple[list[str], dict[str, frozenset[str]]]:
+    """Endpoints and per-method routes: logs to the log-capable endpoint, historical state to the
+    archive-capable one, everything else to all general endpoints."""
+    general = rpc or list(DEFAULT_RPCS)
+    logs = log_rpc or rpc or [DEFAULT_LOG_RPC]
+    state = state_rpc or rpc or [DEFAULT_STATE_RPC]
+    routes = {"eth_getLogs": frozenset(logs), "eth_call": frozenset(state), "eth_getCode": frozenset(state)}
+    for method in ("eth_blockNumber", "eth_getBlockByNumber", "eth_getTransactionReceipt"):
+        routes[method] = frozenset(general)
+    return list(dict.fromkeys([*general, *logs, *state])), routes
+
+
 def main(argv: list[str] | None = None, transport: Callable = http_transport) -> int:
     ap = argparse.ArgumentParser(prog="doppel-absorb", description="Absorption ledger per wallet")
     ap.add_argument("--store", type=Path, required=True, help="Parquet fill store (fillstore)")
@@ -1001,7 +1036,7 @@ def main(argv: list[str] | None = None, transport: Callable = http_transport) ->
     ap.add_argument("--to-block", type=int, help="instead of --to")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--rpc", nargs="+", help="general RPC endpoints; also overrides the built-in role defaults")
-    ap.add_argument("--log-rpc", nargs="+", help="only endpoints serving eth_getLogs")
+    ap.add_argument("--logs-rpc", "--log-rpc", dest="log_rpc", nargs="+", help="only endpoints serving eth_getLogs")
     ap.add_argument("--state-rpc", nargs="+", help="only endpoints serving historical eth_call and eth_getCode")
     ap.add_argument("--max-requests", type=int, default=None, help="HTTP requests, retries included")
     ap.add_argument("--rate", type=float, default=2.0, help="requests per second per endpoint")
@@ -1022,14 +1057,8 @@ def main(argv: list[str] | None = None, transport: Callable = http_transport) ->
     if len(set(wallets)) != len(wallets) or any(not re.fullmatch(r"0x[0-9a-f]{40}", w) for w in wallets):
         ap.error("wallets must be distinct 20-byte addresses")
     a.out.mkdir(parents=True, exist_ok=True)
-    general = a.rpc or list(DEFAULT_RPCS)
-    log_rpc = a.log_rpc or a.rpc or [DEFAULT_LOG_RPC]
-    state_rpc = a.state_rpc or a.rpc or [DEFAULT_STATE_RPC]
-    routes = {"eth_getLogs": frozenset(log_rpc), "eth_call": frozenset(state_rpc),
-              "eth_getCode": frozenset(state_rpc)}
-    for method in ("eth_blockNumber", "eth_getBlockByNumber", "eth_getTransactionReceipt"):
-        routes[method] = frozenset(general)
-    pool = Pool([*general, *log_rpc, *state_rpc], transport, rate=a.rate, max_requests=a.max_requests)
+    urls, routes = rpc_routes(a.rpc, a.log_rpc, a.state_rpc)
+    pool = Pool(urls, transport, rate=a.rate, max_requests=a.max_requests)
     chain = Chain(pool, a.out / "_chain" / "rpc-cache.jsonl", routes)
     try:
         # A retry at the same output path can observe a later head. Only historical reads are reusable.
