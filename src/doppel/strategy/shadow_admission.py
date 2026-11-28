@@ -16,7 +16,6 @@ import stat
 import tempfile
 import time
 
-import numpy as np
 import orjson
 
 from ..lab import promotion
@@ -148,7 +147,7 @@ def _verify_approval_metadata(approval, trust, genome, *, require_current=True):
     _require(isinstance(reference, dict) and all(_hex(digest) for digest in reference.values()),
              code, "approval has invalid artifact digests")
     common = set(EVIDENCE_FILES)
-    specific = {"layer5b.json"} if genome.mode == "taker" else {"maker.json"}
+    specific = {"layer5b.json", "taker-measurements.json"} if genome.mode == "taker" else {"maker.json"}
     for name in common - set(reference):
         raise AdmissionRejected(REJECT_FOR.get(name, "REJECT_UNMEASURED_GATE"), f"missing {name} in approval")
     _require(specific <= set(reference), "REJECT_UNMEASURED_GATE", "missing archetype evidence")
@@ -281,30 +280,10 @@ def _complete_ledger(genome, trust, approval, plan, ledger, reg, records, window
 
 
 def _statistics(candidate, values):
-    code = "REJECT_UNMEASURED_GATE"
-    arr = np.asarray(values, dtype=float)
-    n, size = arr.shape
-    moments = [promotion.moments(rows) for rows in arr]
-    _require(all(m is not None and all(_num(v) for v in m) for m in moments),
-             code, "a planned trial lacks estimable return moments")
-    sharpe = np.asarray([m[0] / m[1] for m in moments if m is not None])
-    variance = max(float(sharpe.var(ddof=1)), 1 / (size - 1))
-    m = moments[candidate]
-    assert m is not None
-    dsr = promotion.psr(float(sharpe[candidate]), promotion.expected_max_sr(n, variance), size, m[2], m[3])
-    pbo = promotion.pbo(arr.T, promotion.PBO_S)["pbo"]
-    pvals = [block_bootstrap_p(rows, VERDICT_OPTIONS["block"], VERDICT_OPTIONS["n_boot"], VERDICT_OPTIONS["seed"])
-             for rows in arr]
-    _require(all(p is not None and _num(p) for p in pvals), code, "trial p-values are unavailable")
-    fs, survivors = promotion.bh([p for p in pvals if p is not None])
-    rows = arr[candidate]
-    hbw, _ = promotion.andrews_bandwidth(rows)
-    hvar = promotion.hac_var(rows, hbw)
-    t = float(np.mean(rows)) / math.sqrt(hvar / size) if hvar > 0 else float("nan")
-    hp = math.erfc(t / math.sqrt(2)) / 2
-    _require(all(_num(v) for v in (dsr, pbo, fs[candidate], t, hp)), code, "a required statistic is undefined")
-    return {"dsr": dsr, "pbo": pbo, "fdr_q": fs[candidate], "hac_t": t, "hac_p": hp,
-            "bootstrap_p": pvals[candidate], "bh_survives": survivors[candidate], "trial_count": n}
+    try:
+        return promotion.canonical_trial_statistics(values)[2][candidate]
+    except ValueError as exc:
+        raise AdmissionRejected("REJECT_UNMEASURED_GATE", str(exc)) from exc
 
 
 def _scenarios(replay):
@@ -365,6 +344,18 @@ def _measured_gates(genome, trust, evidence, approved, replay, windows):
         coverage = windows if requires_offshore(genome) and genome.mode == "maker" else ()
         result["offshore_receipts"] = _offshore_proofs(src["offshore_receipts"], evidence, approved, coverage)
     if genome.mode == "taker":
+        doc = evidence["taker-measurements.json"]
+        digest = approved["files"]["taker-measurements.json"]
+        measurements = doc.get("measurements")
+        names = (*external, "residual_correlation")
+        _require(doc.get("schema") == "doppel.shadow-taker-measurements/v1"
+                 and doc.get("genome_id") == genome.id and doc.get("replay_sha256") == approved["files"]["replay.json"]
+                 and isinstance(measurements, dict) and set(measurements) == set(names),
+                 code, "taker measurements do not bind the sealed genome and replay")
+        for name in names:
+            expected = {k: v for k, v in result[name].items() if k != "source_sha256"}
+            _require(result[name]["source_sha256"] == digest and measurements[name] == expected,
+                     code, f"{name} disagrees with its signed measurement artifact")
         result["taker_timing"] = _taker_timing(genome, src, evidence["layer5b.json"], approved)
     else:
         maker_digest = approved["files"]["maker.json"]
@@ -493,7 +484,7 @@ def _issue(path, receipt):
         raise AdmissionRejected("REJECT_RECEIPT_IO", "cannot persist the admission receipt") from exc
 
 
-def _check_promotion(report, approved, windows):
+def _check_promotion(report, approved, windows, stats):
     code = "REJECT_NONCANONICAL_REPLAY"
     rows = report.get("candidates")
     sources = report.get("sources")
@@ -506,6 +497,16 @@ def _check_promotion(report, approved, windows):
              and matches[0].get("base_decision") == "PASS" and matches[0].get("windows") == len(windows)
              and sources.get(matches[0].get("input")) == approved["files"]["replay.json"],
              code, "promotion lacks a passing row tied to the exact canonical replay")
+    row = matches[0]
+    fields = (("dsr", "dsr", "dsr"), ("pbo", "pbo", "pbo"), ("fdr", "bh_q", "fdr_q"),
+              ("hac", "t", "hac_t"), ("hac", "p_one_sided", "hac_p"),
+              ("bootstrap", "p_one_sided", "bootstrap_p"))
+    for section, field, name in fields:
+        claimed = row.get(section, {}).get(field)
+        _require(_num(claimed) and math.isclose(claimed, stats[name], rel_tol=0, abs_tol=5.1e-7),
+                 code, f"promotion {name} disagrees with the canonical trial ledger")
+    _require(row.get("fdr", {}).get("bh_survives") is stats["bh_survives"],
+             code, "promotion FDR decision disagrees with the canonical trial ledger")
 
 
 def _verified_evidence(genome, trust, approved, evidence, simulation_sha256):
@@ -514,10 +515,10 @@ def _verified_evidence(genome, trust, approved, evidence, simulation_sha256):
         reg, records, windows, returns = _canonical_replay(genome, trust, approved, replay, simulation_sha256)
         candidate, values = _complete_ledger(genome, trust, approved, evidence["plan.json"],
                                              evidence["trials.json"], reg, records, windows, returns)
-        _check_promotion(evidence["promotion.json"], approved, windows)
         scenarios = _scenarios(replay)
         measured = _measured_gates(genome, trust, evidence, approved, replay, windows)
         stats = _statistics(candidate, values)
+        _check_promotion(evidence["promotion.json"], approved, windows, stats)
         if "probability.json" in evidence:
             model = evidence["probability.json"]
             _require(model.get("schema") == "doppel.shadow-probability/v1" and model.get("genome_id") == genome.id
