@@ -1,0 +1,9 @@
+# Native offshore book witnesses for Layer 5b
+
+The native recorder captures `lead_binance_spot_l2` as top-20 partial snapshots and `lead_hyperliquid_l2` as BTC L2 snapshots. `doppel.lab.lead_witnesses.LeadWitnesses.from_segments(binance_paths, hyperliquid_paths)` streams staged segment paths in chronological order. It checks zstd frame completeness and payload CRCs. Expected segment SHA-256 hashes and the coverage of the two intervals still belong in the recorded plan and source receipts.
+
+Call `at(cutoff_ns)` for each scheduled cutoff in nondecreasing order. A result contains a bid, ask and displayed sizes from each stream plus `tw_ns`, `tm_ns`, the recorder sequence, and the available native update ID or exchange timestamp. Use `result.binance.tw_ns` and `result.hyperliquid.tw_ns` for the two Layer 5b source clocks. `result.tw_ns` is their maximum and is the earliest possible receipt clock for a feature computed from those two observations. If a transform uses other inputs, its output clock must also account for their receipts.
+
+Both books require valid quotes with positive sizes and independent receipt clocks strictly before the cutoff and within three seconds. A control record or invalid snapshot clears that stream at subsequent cutoffs until a valid full snapshot arrives. Multiple records with the same clock are applied in recorder sequence order after the cutoff advances past that clock. A regressing receipt clock or invalid recorder envelope halts extraction. Keep unavailable cuts in the public panel with a null lead witness.
+
+The extractor holds one pending record and one validated quote per stream, plus the current decompressed frame from each tape reader. The native-to-panel producer still needs the pinned lead-to-BRTI transform, verified overlapping recorded source intervals and reproducible train/holdout panel digests before the registered timing exam can use these observations.
