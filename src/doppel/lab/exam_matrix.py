@@ -199,7 +199,11 @@ def run_subject(data: Path, out: Path, receipts: Path, materializer: Path,
     score = {key: scored[key] for key in ("policy", "params", "cells", "tools", "pipeline", "fidelity_reason",
                                           "train_visible_maker_orders")}
     score["decoy_reference_maker_orders"] = midpoint_orders
+    input_bytes = (data / INPUT_RECEIPT).read_bytes()
+    if hashlib.sha256(input_bytes).hexdigest() != inputs_sha:
+        raise ValueError("input receipt changed during the subject run")
     receipts.mkdir(parents=True, exist_ok=False)
+    (receipts / INPUT_RECEIPT).write_bytes(input_bytes)
     _write(receipts / SCORE, score)
     receipt = {"schema": RECEIPT_SCHEMA, "source_scope": "matrix_replay_comparison", "commit": commit,
                "seed_slot": seed_slot, "trader_slot": trader_slot, "seed": seed, "trader": trader,
@@ -238,6 +242,10 @@ def aggregate(root: Path, commit: str) -> dict:
         if (any(receipt.get(key) != value for key, value in expected.items())
                 or not _sha(receipt.get("input_sha256")) or not _sha(receipt.get("score_sha256"))):
             raise ValueError(f"receipt scope differs for seed {seed}, trader {trader}")
+        inputs = _read(path.with_name(INPUT_RECEIPT), receipt["input_sha256"])
+        if (inputs.get("schema") != INPUT_SCHEMA or inputs.get("prefix") != PREFIX or inputs.get("range") != list(RANGE)
+                or inputs.get("preflight_sha256") != PREFLIGHT_SHA or inputs.get("tokens_sha256") != TOKENS_SHA):
+            raise ValueError(f"input receipt scope differs for seed {seed}, trader {trader}")
         score = _read(path.with_name(SCORE), receipt["score_sha256"])
         cells = score["cells"]
         if score["policy"] != policy or set(cells) != set(answerkey.OBLIGATIONS):
@@ -246,12 +254,12 @@ def aggregate(root: Path, commit: str) -> dict:
         subjects[coordinate] = score
     if len(input_hashes) > 1:
         raise ValueError("matrix subjects used different sealed inputs")
-    rows = []
+    rows: list[dict] = []
     for seed_slot, seed in enumerate(SEEDS, 1):
         for trader_slot, trader in enumerate(TRADERS):
             score = subjects.get((seed_slot, trader_slot))
-            row = {"seed": seed, "trader": trader, "policy": answerkey.POLICIES[trader].name,
-                   "status": "MISSING" if score is None else "VERIFIED_RECEIPT"}
+            row: dict = {"seed": seed, "trader": trader, "policy": answerkey.POLICIES[trader].name,
+                         "status": "MISSING" if score is None else "VERIFIED_RECEIPT"}
             if score is not None:
                 cells = score["cells"]
                 row.update(components=answerkey.totals({trader: cells}), fidelity=cells["fidelity_verdict"]["state"],

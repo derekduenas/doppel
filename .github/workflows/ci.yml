@@ -213,7 +213,7 @@ jobs:
         with:
           key: book-cache
       - name: Validate manual exam workflow
-        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 .github/workflows/exam-matrix.yml
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 .github/workflows/exam-cache-matrix.yml
       - name: Verify native materializer
         run: |
           cargo test --locked -p doppel-tape --features materialize --test materialize

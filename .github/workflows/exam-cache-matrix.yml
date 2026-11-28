@@ -1,4 +1,4 @@
-name: Layer 5a replay matrix
+name: Layer 5a cached replay comparison
 
 on:
   workflow_dispatch:
