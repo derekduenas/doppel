@@ -17,7 +17,9 @@ NS = 1_000_000_000
 CUTOFF = int(datetime(2026, 11, 28, tzinfo=timezone.utc).timestamp()) * NS
 V1_SHA256 = "1775c0998506abf721e27ed3cb0043b5816b2dde587462034e55a4622a396b54"
 TOKENS_SHA256 = "72f6055444f589d317fb24716b0dc9bb222a6d63b00fbc540ec82534abac0875"
-BUILDER_SHA256 = "f8f437c8d66efd84be34b344927ad3820c3d8d2eeffa41322fa8303d2fd77d40"
+BUILDER_SHA256 = "f8f437c8d66efd84be34b344927ad3820c3d8d2eeffa41322fa8303d2fd77d40"  # d1eb412
+# 9146a49: perf-only BestQuotes change (exact; 5.43M real-tape touches checked equal). Same rules, same output.
+BUILDER_SHA256S = frozenset({BUILDER_SHA256, "3c84d5fddc2b9729de31f4c3e205f1215bd1eea414987ac477bad16feb9d89b2"})
 HEX = re.compile(r"[0-9a-f]{64}")
 WALLET = re.compile(r"0x[0-9a-f]{40}")
 SEGMENT = re.compile(r"([a-z0-9_]+)/([0-9]{8})/([0-9]{2})\.dtape\.zst")
@@ -104,7 +106,7 @@ def seal(tape, manifest, stats_file, tokens, cohort_v1, destination):
     if (doc["schema"] != "doppel-cohort-v2/1" or stats["schema"] != "doppel-cohort-v2/1/stats"
             or doc["sha256"] != scan_digest(body) or doc["stats_sha256"] != scan_digest(stats)
             or doc["frozen_tw"] != CUTOFF or stats["frozen_tw"] != CUTOFF or scope["until_tw"] != CUTOFF
-            or not scope["from_tw"] < scope["split_tw"] < CUTOFF or doc["code_sha256"] != BUILDER_SHA256):
+            or not scope["from_tw"] < scope["split_tw"] < CUTOFF or doc["code_sha256"] not in BUILDER_SHA256S):
         raise ValueError("cohort artifacts do not match the pinned builder, bounds and digests")
     sources = doc["inputs"]
     if (sources.get("tokens") != TOKENS_SHA256 or file_sha(tokens) != TOKENS_SHA256
@@ -124,7 +126,7 @@ def seal(tape, manifest, stats_file, tokens, cohort_v1, destination):
     evidence = verify_inputs(tape, sources)
     receipt = {
         "schema": "doppel-cohort-v2-freeze/1", "cutoff_ns_exclusive": CUTOFF,
-        "period_a": scope, "builder_sha256": BUILDER_SHA256,
+        "period_a": scope, "builder_sha256": doc["code_sha256"],
         "cohort_v1_sha256": V1_SHA256, "token_map_sha256": TOKENS_SHA256,
         "frozen_manifest_file_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
         "frozen_stats_file_sha256": hashlib.sha256(stats_bytes).hexdigest(),
