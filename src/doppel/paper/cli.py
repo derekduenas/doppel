@@ -34,7 +34,7 @@ def _run(a) -> int:
     if errs:
         print("genome not runnable on paper: " + "; ".join(errs), file=sys.stderr)
         return 2
-    cfg = SimConfig(latency_ms=a.latency_ms, opening=a.opening)
+    cfg = SimConfig(latency_ms=a.latency_ms, opening=a.opening, markouts_s=tuple(a.markouts_s))
     if a.shadow_bundle is not None and a.t_from is not None:
         print("refused: shadow requires --from-now or an existing approved journal", file=sys.stderr)
         return 2
@@ -85,6 +85,8 @@ def main(argv=None) -> int:
     src.add_argument("--from", dest="t_from", type=parse_ts, help="start a new journal at TS (catch-up from the tape)")
     r.add_argument("--until", type=parse_ts, help="stop once the watermark reaches TS")
     r.add_argument("--latency-ms", type=float, default=SimConfig().latency_ms)
+    r.add_argument("--markouts-s", nargs="+", type=int, default=SimConfig().markouts_s,
+                   help="post-fill markout horizons in seconds (must match the signed Shadow simulation)")
     r.add_argument("--opening", choices=("published", "received_raw"), required=True,
                    help="opening-price rule (required; must equal the genome's bound evaluation protocol)")
     r.add_argument("--registry", type=Path, default=Path("."),
@@ -109,6 +111,8 @@ def main(argv=None) -> int:
     vf.add_argument("--journal", type=Path, required=True)
     a = ap.parse_args(argv)
     if a.cmd == "run":
+        if any(s <= 0 for s in a.markouts_s) or len(set(a.markouts_s)) != len(a.markouts_s):
+            ap.error("--markouts-s requires distinct positive horizons")
         return _run(a)
     if a.cmd == "verify":
         n, top = 0, "-"

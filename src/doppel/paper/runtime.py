@@ -60,6 +60,7 @@ from ..twin.engine import SimConfig
 from ..twin.flowfeat import uses_intl
 from ..twin.tape import NS, PRE_S
 from ..tape.universe import HORIZONS
+from .epoch import ShadowEpochs
 from .inputs import LiveWindow, RefLive, route_ws
 from .journal import Journal, iter_records, strip
 from .shadow import ShadowSession, authorize
@@ -182,6 +183,7 @@ class State:
     last_ckpt_w: int = 0
     late_records: int = 0
     hub: Hub = field(default_factory=Hub)
+    shadow_epochs: ShadowEpochs | None = None
 
 
 class PaperRuntime:
@@ -247,7 +249,9 @@ class PaperRuntime:
         per = PerelmanTail(Path(self.settings.perelman_src)) if self.settings.perelman_src else None
         nxt = {h: -(-first_start // HORIZONS[h]) * HORIZONS[h] for h in self.g.universe.horizons}
         return State(cursor=first_start * NS - back - 1, first_start=first_start, next_start=nxt, tails=tails,
-                     perelman=per, last_commit_w=first_start * NS - back, last_ckpt_w=first_start * NS - back)
+                     perelman=per, last_commit_w=first_start * NS - back, last_ckpt_w=first_start * NS - back,
+                     shadow_epochs=ShadowEpochs.start(self.g, first_start, self.settings.max_book_age_s)
+                     if self._shadow is not None else None)
 
     # ================================================================== one cycle
     def cycle(self, marker: dict | None = None, late_keys: set | None = None) -> int:
@@ -501,6 +505,7 @@ class PaperRuntime:
             if W < w.hi:
                 continue
             ts = w.settle_time(st.ref)
+            res = None
             if ts is not None and ts <= W:
                 w.refresh_bounds(st.ref)
                 res = w.sim.close()
@@ -513,6 +518,8 @@ class PaperRuntime:
                 body = {"outcome": None, "net_usd": net, "status": "unsettled_worst_case"}
             else:
                 continue
+            if st.shadow_epochs is not None:
+                body["shadow_monitor"] = st.shadow_epochs.settle(w, res, inactive=st.halted is not None)
             self._emit({"k": "settle", "slug": w.slug, "t": ts, "start": w.start, "end": w.end,
                         "horizon": w.horizon, "asset": w.asset, "late": w.late,
                         "opening_source": w.feats.source, "opening_switches": w.feats.switches,
