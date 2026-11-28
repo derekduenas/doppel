@@ -64,17 +64,17 @@ local_days = 0
 
 [[class]]
 name = "tape-lead"
-why = "Rust lead and BRTI constituent recorder segments"
-local = "/mnt/volume_nyc1_1793485122853/doppel/tape-lead"
+why = "Rust lead (Binance, Hyperliquid) and BRTI constituent L2 segments; owner decision D3 = record (2026-11-28)"
+local = "/var/lib/doppel-lead/tape"   # root disk: the tape volume is reserved for the H1-H4 scoring days until Dec 1
 r2 = "apex/tape-lead"
 include = ["**/*.dtape.zst"]
 min_age = "2h"
-local_days = 14
+local_days = 0            # janitor is sandboxed to the volume; ~1.8 GB/day fits the root disk for weeks
 
 [[class]]
 name = "tape-lead-index"
 why = "Rust lead recorder segment manifests"
-local = "/mnt/volume_nyc1_1793485122853/doppel/tape-lead"
+local = "/var/lib/doppel-lead/tape"
 r2 = "apex/tape-lead"
 include = ["**/manifest.jsonl"]
 min_age = "0s"
