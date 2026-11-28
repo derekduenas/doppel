@@ -1,0 +1,147 @@
+{
+ "schema": "doppel.lead-health/v1",
+ "t0": 1795837669165752528,
+ "t1": 1795839469162609393,
+ "interval_s": 1799.996856865,
+ "pid_same": true,
+ "streams": {
+  "lead_binance_perp_l2": {
+   "msgs": 16927,
+   "reconnects": 0,
+   "stalls": 0,
+   "errors": 0,
+   "backpressure_drops": 0,
+   "connected_end": true,
+   "last_msg_age_s_end": 0.0
+  },
+  "lead_binance_perp_trades": {
+   "msgs": 10113,
+   "reconnects": 0,
+   "stalls": 0,
+   "errors": 0,
+   "backpressure_drops": 0,
+   "connected_end": true,
+   "last_msg_age_s_end": 0.738
+  },
+  "lead_binance_spot_l2": {
+   "msgs": 17779,
+   "reconnects": 0,
+   "stalls": 0,
+   "errors": 0,
+   "backpressure_drops": 0,
+   "connected_end": true,
+   "last_msg_age_s_end": 0.067
+  },
+  "lead_binance_spot_trades": {
+   "msgs": 27437,
+   "reconnects": 0,
+   "stalls": 0,
+   "errors": 0,
+   "backpressure_drops": 0,
+   "connected_end": true,
+   "last_msg_age_s_end": 0.96
+  },
+  "lead_hyperliquid_l2": {
+   "msgs": 146,
+   "reconnects": 0,
+   "stalls": 0,
+   "errors": 0,
+   "backpressure_drops": 0,
+   "connected_end": true,
+   "last_msg_age_s_end": 3.591
+  },
+  "lead_hyperliquid_trades": {
+   "msgs": 1218,
+   "reconnects": 0,
+   "stalls": 0,
+   "errors": 0,
+   "backpressure_drops": 0,
+   "connected_end": true,
+   "last_msg_age_s_end": 1.304
+  },
+  "spot_l2_bitstamp": {
+   "msgs": 15845,
+   "reconnects": 0,
+   "stalls": 0,
+   "errors": 0,
+   "backpressure_drops": 0,
+   "seq_gaps": 0,
+   "resyncs": 0,
+   "no_data": 0,
+   "connected_end": true,
+   "last_msg_age_s_end": 0.046
+  },
+  "spot_l2_bullish": {
+   "msgs": 8030,
+   "reconnects": 0,
+   "stalls": 0,
+   "errors": 0,
+   "backpressure_drops": 0,
+   "seq_gaps": 0,
+   "resyncs": 0,
+   "no_data": 0,
+   "connected_end": true,
+   "last_msg_age_s_end": 0.62
+  },
+  "spot_l2_coinbase": {
+   "msgs": 32410,
+   "reconnects": 0,
+   "stalls": 0,
+   "errors": 0,
+   "backpressure_drops": 0,
+   "seq_gaps": 0,
+   "resyncs": 0,
+   "no_data": 0,
+   "connected_end": true,
+   "last_msg_age_s_end": 0.043
+  },
+  "spot_l2_cryptocom": {
+   "msgs": 3614,
+   "reconnects": 0,
+   "stalls": 0,
+   "errors": 0,
+   "backpressure_drops": 0,
+   "seq_gaps": 0,
+   "resyncs": 0,
+   "no_data": 0,
+   "connected_end": true,
+   "last_msg_age_s_end": 0.011
+  },
+  "spot_l2_gemini": {
+   "msgs": 41679,
+   "reconnects": 0,
+   "stalls": 0,
+   "errors": 0,
+   "backpressure_drops": 0,
+   "seq_gaps": 0,
+   "resyncs": 0,
+   "no_data": 0,
+   "connected_end": true,
+   "last_msg_age_s_end": 0.063
+  },
+  "spot_l2_kraken": {
+   "msgs": 207965,
+   "reconnects": 0,
+   "stalls": 0,
+   "errors": 0,
+   "backpressure_drops": 0,
+   "seq_gaps": 0,
+   "resyncs": 0,
+   "no_data": 0,
+   "connected_end": true,
+   "last_msg_age_s_end": 0.014
+  },
+  "spot_l2_lmax": {
+   "msgs": 8,
+   "reconnects": 0,
+   "stalls": 0,
+   "errors": 0,
+   "backpressure_drops": 0,
+   "http_429": 8,
+   "connected_end": false,
+   "last_msg_age_s_end": 34.773
+  }
+ },
+ "zero_drop": true,
+ "issues": {}
+}
