@@ -50,8 +50,10 @@ from .goldsky import pagination_state, terminal_page
 from .ordertape import ARCHIVE_REFUSED, BudgetExhausted, EndpointsDown, Pool, RpcError, http_transport
 
 STOPS = ("BudgetExhausted", "EndpointsDown", ARCHIVE_REFUSED)  # a dead pool or route stops the run
-LOG_QUERIES = 5  # eth_getLogs filters per chunk (absorb.scan)
-STATE_CALLS = 6  # balanceOfBatch + two cash balanceOf, at b0 - 1 and at b1
+LOG_QUERIES = 8  # eth_getLogs filters per chunk (absorb.scan)
+STATE_CALLS = 6  # balanceOfBatch + two cash balanceOf, at b0 - 1 and at b1 (+2 with V2 positions)
+# Bumped when absorb's chain reading changes, so completed wallets are recomputed (2: Polymarket V2).
+DECODER_VERSION = 2
 NOMINAL_BLOCK_S = 2.0  # Polygon PoS block time, for planning without a chain read
 # Non-fill share transactions per Goldsky fill on the 2026-11-26 reconciled day:
 # control 249/2082 = 0.12, candidate (364 + 278)/4556 = 0.14. Each needs one receipt.
@@ -79,12 +81,13 @@ def _file_sha(path: Path | None) -> str | None:
 
 def inputs_digest(store: Path, tokens: Path | None, orders: Path | None) -> str:
     """Digest of the local inputs every wallet's ledger depends on: the fill-store state (changes
-    on every compaction), the token map and the committed order-tape parts."""
+    on every compaction), the token map, the committed order-tape parts and the decoder version."""
     parts = []
     if orders is not None and orders.exists():
         from .ordertape import committed_parts
         parts = [[p.name, p.stat().st_size] for p in committed_parts(orders)]
-    doc = {"store_state": _file_sha(Path(store) / "state.json"), "tokens": _file_sha(tokens), "orders": parts}
+    doc = {"store_state": _file_sha(Path(store) / "state.json"), "tokens": _file_sha(tokens), "orders": parts,
+           "decoder": DECODER_VERSION}
     return hashlib.sha256(orjson.dumps(doc, option=orjson.OPT_SORT_KEYS)).hexdigest()
 
 

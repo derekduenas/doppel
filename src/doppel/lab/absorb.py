@@ -36,6 +36,22 @@ payout)`` from gnosis/conditional-tokens-contracts ``contracts/ConditionalTokens
 and ERC-20 transfer events are the standards. V1 exchanges and the V1 NegRiskAdapter are not
 covered: their fills appear as unclassified share movements, never as fills.
 
+Polymarket's second market system ("Polymarket V2", ``Polymarket/polymarket-v2-external``; see
+``docs/POLYMARKET-CONTRACTS.md``) settles in the same pUSD but keeps positions on its own ERC-1155
+``PositionManager`` ``0x006F54F7f9A22e0000CC2AB60031000000ae9fEF`` and trades on ``Exchange``
+``0xe3333700cA9d93003F00f0F71f8515005F6c00Aa``, whose ``OrderFilled`` has the same signature and
+topic as CTFExchangeV2's. Both are scanned like their classic counterparts. Its position id is
+structured: ``moduleId`` in the top byte, the condition in the next 240 bits, the outcome index in
+the low byte, so for a ``BinaryModule`` (module 1) id seen on the PositionManager the pair
+(condition, outcome) is read from the id itself. Its splits, merges and redemptions are
+``BaseModule`` events of the module contracts: ``PositionsSplit(address indexed initiator, bytes31
+indexed conditionId, address indexed recipient0, address recipient1, uint256 amount)``,
+``PositionsMerged(address indexed initiator, bytes31 indexed conditionId, address indexed recipient,
+uint256 amount)``, ``PositionRedeemed(address indexed initiator, uint256 indexed positionId, address
+indexed recipient, uint256 amount, uint256 payout)``. The initiator is the Router or Exchange, so
+they are attributed to the wallet by recipient; one V2 tx may name several conditions. The
+AutoRedeemer redeems to itself and forwards the payout, so its redemptions read as ``transfer``.
+
 Why receipts and not stakeholder filters: V2 splits, merges and redemptions go through the
 collateral adapter (``CtfCollateralAdapter.sol``), so the CTF events name the adapter, and the
 wallet only sees a batch transfer from or to it. Exchange MINT/MERGE matches split inside a fill
@@ -87,6 +103,12 @@ PUSD = "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb"
 CASH = (PUSD, USDCE)
 ADAPTERS = ("0xada100874d00e3331d00f2007a9c336a65009718",
             "0xada200001000ef00d07553cee7006808f895c6f1")
+PM = "0x006f54f7f9a22e0000cc2ab60031000000ae9fef"  # Polymarket V2 PositionManager (ERC-1155)
+PM_EXCHANGE = "0xe3333700ca9d93003f00f0f71f8515005f6c00aa"  # Polymarket V2 Exchange
+PM_MODULES = ("0x1000008dd9001b968442c1000017eae6e0da00ba",  # BinaryModule, moduleById(1)
+              "0x200000900045e3b6259600682756002200028933",  # NegRiskModule, moduleById(2)
+              "0x30000034706c7d8e12009dab006be20000c031a8")  # CombinatorialModule, moduleById(3)
+PM_BINARY_MODULE_ID = 1
 ZERO = "0x" + "0" * 40
 T_SINGLE = "0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62"
 T_BATCH = "0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb"
@@ -95,6 +117,9 @@ T_FILLED = "0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee"
 T_SPLIT = "0x2e6bb91f8cbcda0c93623c54d0403a43514fabc40084ec96b6d5379a74786298"
 T_MERGE = "0x6f13ca62553fcc2bcd2372180a43949c1e4cebba603901ede2f4e14f36b282ca"
 T_REDEEM = "0x2682012a4a4f1973119f1c9b90745d1bd91fa2bab387344f044cb3586864d18d"
+T_PM_SPLIT = "0xb6a6b8b17a43b07b9359dd12d304e42077eede9e672f8646144842c8604582a4"
+T_PM_MERGE = "0xf233f7be4ce81130a78e8eb2fa626497586c56094d27bfec2e196471e9c60301"
+T_PM_REDEEM = "0x4fd474b703f46b453536518b4cbc159dfbea6fd663233763d321a9bc8ccdf97f"
 SEL_BALANCE_OF = "70a08231"
 SEL_BALANCE_OF_BATCH = "4e1273f4"
 SEL_GET_OWNERS = "a0e67e2b"  # Gnosis Safe getOwners()
@@ -136,7 +161,7 @@ def legs_of(log: dict, wallet: str) -> list[dict]:
     t, addr = [word.lower() for word in log["topics"]], log["address"].lower()
     base = {"tx": log["transactionHash"].lower(), "block": int(log["blockNumber"], 16),
             "li": int(log["logIndex"], 16)}
-    if addr == CTF and t[0] in (T_SINGLE, T_BATCH):
+    if addr in (CTF, PM) and t[0] in (T_SINGLE, T_BATCH):
         frm, to = _addr(t[2]), _addr(t[3])
         if wallet not in (frm, to):
             return []
@@ -152,7 +177,7 @@ def legs_of(log: dict, wallet: str) -> list[dict]:
         for i, v in zip(ids, vals):
             d = (v if to == wallet else 0) - (v if frm == wallet else 0)
             out.append(base | {"asset": str(i), "delta": d, "cp": frm if to == wallet else to,
-                               "batch": batch})
+                               "batch": batch} | ({"contract": PM} if addr == PM else {}))
         return out
     if addr in CASH and t[0] == T_ERC20:
         frm, to = _addr(t[1]), _addr(t[2])
@@ -203,6 +228,44 @@ def ctf_events(receipt: dict) -> list[dict]:
     return out
 
 
+def pm_events(receipt: dict) -> list[dict]:
+    """Split / merge / redemption events of the Polymarket V2 modules in a receipt, shaped like
+    ``ctf_events``: ``stakeholder`` is the emitting module, ``recipients`` the attributed holders."""
+    out = []
+    for lg in receipt.get("logs") or []:
+        addr = lg["address"].lower()
+        if addr not in PM_MODULES or not lg["topics"]:
+            continue
+        t = [word.lower() for word in lg["topics"]]
+        if t[0] not in (T_PM_SPLIT, T_PM_MERGE, T_PM_REDEEM):
+            continue
+        w = _words(lg["data"])
+        if len(t) != 4 or len(w) != (1 if t[0] == T_PM_MERGE else 2):
+            raise ValueError("invalid V2 module operation")
+        if t[0] == T_PM_REDEEM:
+            pid = int(t[2], 16)
+            out.append({"kind": "redeem", "stakeholder": addr, "recipients": [_addr(t[3])],
+                        "condition": f"{pid >> 8:062x}", "amount": w[0], "index_sets": []})
+            continue
+        if not t[2].endswith("00") or (t[0] == T_PM_SPLIT and w[0] >> 160):
+            raise ValueError("invalid V2 module operation")  # bytes31 ids are left-aligned
+        recipients = [_addr(t[3])] + ([f"0x{w[0]:040x}"] if t[0] == T_PM_SPLIT else [])
+        out.append({"kind": "split" if t[0] == T_PM_SPLIT else "merge", "stakeholder": addr,
+                    "recipients": recipients, "condition": t[2][2:64], "amount": w[-1], "index_sets": []})
+    return out
+
+
+def pm_pairs(tokens) -> dict[str, tuple[str, int]]:
+    """(condition, outcome) of PositionManager BinaryModule ids and of their sibling, from the id."""
+    out: dict[str, tuple[str, int]] = {}
+    for t in tokens:
+        i = int(t)
+        if i >> 248 == PM_BINARY_MODULE_ID and i & 0xFF in (0, 1):
+            cond = f"{i >> 8:062x}"
+            out[str(i)], out[str(i ^ 1)] = (cond, i & 0xFF), (cond, (i & 0xFF) ^ 1)
+    return out
+
+
 def _receipt_matches(receipt: dict, tx: str, wallet: str, scanned: list[dict]) -> bool:
     """The receipt used for classification must contain the same wallet movements as getLogs."""
     try:
@@ -214,6 +277,7 @@ def _receipt_matches(receipt: dict, tx: str, wallet: str, scanned: list[dict]) -
                     or int(log["blockNumber"], 16) != scanned[0]["block"]):
                 return False
         ctf_events(receipt)  # a malformed operation cannot be used to classify wallet movements
+        pm_events(receipt)
         receipt_legs = [leg for log in receipt["logs"] for leg in legs_of(log, wallet)]
 
         def movements(legs):
@@ -308,7 +372,10 @@ def scan(chain: Chain, wallet: str, b0: int, b1: int, chunk: int) -> dict:
     wt = topic(wallet)
     queries = [(CTF, [[T_SINGLE, T_BATCH], None, wt]), (CTF, [[T_SINGLE, T_BATCH], None, None, wt]),
                (list(CASH), [T_ERC20, wt]), (list(CASH), [T_ERC20, None, wt]),
-               (sorted(EXCHANGES), [T_FILLED, None, wt])]
+               (sorted(EXCHANGES), [T_FILLED, None, wt]),
+               # Polymarket V2 system. Separate filters keep the classic queries' cache keys.
+               (PM, [[T_SINGLE, T_BATCH], None, wt]), (PM, [[T_SINGLE, T_BATCH], None, None, wt]),
+               (PM_EXCHANGE, [T_FILLED, None, wt])]
     logs: dict[tuple[str, int], dict] = {}
     at_index: dict[tuple[int, int], str] = {}
     timestamps: dict[int, int] = {}
@@ -377,23 +444,32 @@ def scan(chain: Chain, wallet: str, b0: int, b1: int, chunk: int) -> dict:
             "next_block": nxt if nxt <= b1 else None, "complete": nxt > b1, "error": error}
 
 
-def balances(chain: Chain, wallet: str, tokens: list[str], block: int) -> dict[str, int]:
-    """Shares per token and cash (pUSD + USDC.e) of ``wallet`` at ``block``."""
+def _balance_batch(chain: Chain, contract: str, wallet: str, tokens: list[str], block: int) -> list[int]:
+    n = len(tokens)
+    data = (SEL_BALANCE_OF_BATCH + _enc(64, 96 + 32 * n, n) + _enc(*[int(wallet, 16)] * n)
+            + _enc(n, *[int(t) for t in tokens]))
+    encoded = chain.call(contract, data, block)
+    if not isinstance(encoded, str) or len(encoded) != 2 + 64 * (n + 2) or not encoded.startswith("0x"):
+        raise RpcError("invalid_balance_batch")
+    try:
+        vals = _words(encoded)
+    except ValueError as exc:
+        raise RpcError("invalid_balance_batch") from exc
+    if vals[:2] != [32, n]:
+        raise RpcError("invalid_balance_batch")
+    return vals[2:]
+
+
+def balances(chain: Chain, wallet: str, tokens: list[str], block: int,
+             pm_tokens: list[str] | None = None) -> dict[str, int]:
+    """Shares per token and cash (pUSD + USDC.e) of ``wallet`` at ``block``. A token's shares are
+    its ConditionalTokens balance plus, for ``pm_tokens``, its PositionManager balance."""
     out: dict[str, int] = {}
     if tokens:
-        n = len(tokens)
-        data = (SEL_BALANCE_OF_BATCH + _enc(64, 96 + 32 * n, n) + _enc(*[int(wallet, 16)] * n)
-                + _enc(n, *[int(t) for t in tokens]))
-        encoded = chain.call(CTF, data, block)
-        if not isinstance(encoded, str) or len(encoded) != 2 + 64 * (n + 2) or not encoded.startswith("0x"):
-            raise RpcError("invalid_balance_batch")
-        try:
-            vals = _words(encoded)
-        except ValueError as exc:
-            raise RpcError("invalid_balance_batch") from exc
-        if vals[:2] != [32, n]:
-            raise RpcError("invalid_balance_batch")
-        out = dict(zip(tokens, vals[2:], strict=True))
+        out = dict(zip(tokens, _balance_batch(chain, CTF, wallet, tokens, block), strict=True))
+    if pm_tokens:
+        for t, v in zip(pm_tokens, _balance_batch(chain, PM, wallet, pm_tokens, block), strict=True):
+            out[t] = out.get(t, 0) + v
     out["cash"] = 0
     for contract in CASH:
         encoded = chain.call(contract, SEL_BALANCE_OF + _enc(int(wallet, 16)), block)
@@ -524,11 +600,14 @@ def reconstruct(wallet: str, fills: list[dict], legs: list[dict], filled: list[d
             share_cps = {lg["cp"] for lg in ls if lg["asset"] != "cash"}
             ctf = [e for e in ctf_events(rec) if e["stakeholder"] == wallet or
                    (e["stakeholder"] in ADAPTERS and e["stakeholder"] in share_cps)]
+            ctf += [e for e in pm_events(rec) if wallet in e["recipients"]]
             ev = {e["kind"] for e in ctf}
             if not ev:
                 kind = "transfer"
-            elif (len(ev) != 1 or len({e["condition"] for e in ctf}) != 1 or
-                  not share_cps <= ({ZERO} | {e["stakeholder"] for e in ctf if e["stakeholder"] in ADAPTERS})):
+            # A V2 event names its own condition, so one V2 tx may redeem several (Router batches).
+            elif (len(ev) != 1 or len({e["condition"] for e in ctf if "recipients" not in e}) > 1 or
+                  not share_cps <= ({ZERO} | {e["stakeholder"] for e in ctf
+                                              if e["stakeholder"] in ADAPTERS + PM_MODULES})):
                 kind = "unclassified"
             else:
                 kind = next(iter(ev))
@@ -902,7 +981,7 @@ def absorb_wallet(chain: Chain, wallet: str, fills: list[dict], window: tuple[in
     sc = scan(chain, wallet, b0, b1, chunk)
     legs = [lg for log in sc["logs"] for lg in legs_of(log, wallet)]
     filled = [order_filled(log) for log in sc["logs"]
-              if log["address"].lower() in EXCHANGES and log["topics"][0] == T_FILLED]
+              if log["address"].lower() in (*EXCHANGES, PM_EXCHANGE) and log["topics"][0] == T_FILLED]
     fill_txs = {f["transaction_hash"].lower() for f in fills} | {o["tx"] for o in filled}
     receipts: dict[str, dict | None] = {}
     err = sc["error"]
@@ -913,6 +992,10 @@ def absorb_wallet(chain: Chain, wallet: str, fills: list[dict], window: tuple[in
             receipts[tx] = None
             err = err or _kind(e)
     touched = {lg["asset"] for lg in legs if lg["asset"] != "cash"} | {f["token_id"] for f in fills}
+    # PositionManager ids (seen on that contract, never inferred from bits alone) carry their pair.
+    pm_touched = {lg["asset"] for lg in legs if lg.get("contract") == PM}
+    pairs = pm_pairs(pm_touched) | pairs
+    pm_tokens = sorted(pm_touched | set(pm_pairs(pm_touched)))
     # A buy can complete a position opened before this window, even if its opposite token never moves.
     markets = {pairs[t][0] for t in touched if t in pairs}
     tokens = sorted(touched | {t for t, (condition, _) in pairs.items() if condition in markets})
@@ -923,8 +1006,8 @@ def absorb_wallet(chain: Chain, wallet: str, fills: list[dict], window: tuple[in
     try:
         bts = {b0: chain.block_ts(b0), b1: chain.block_ts(b1)}
         boundaries = {b0 - 1: chain.block_ts(b0 - 1), b1 + 1: chain.block_ts(b1 + 1)}
-        start = balances(chain, wallet, tokens, b0 - 1)
-        end = balances(chain, wallet, tokens, b1)
+        start = balances(chain, wallet, tokens, b0 - 1, pm_tokens)
+        end = balances(chain, wallet, tokens, b1, pm_tokens)
     except (BudgetExhausted, EndpointsDown, RpcError) as e:
         err = err or _kind(e)
         archive_refused = _kind(e) == ARCHIVE_REFUSED

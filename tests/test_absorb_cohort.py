@@ -285,7 +285,7 @@ def test_plan_makes_no_request_and_prices_the_fixed_end_repull(world, tmp_path, 
     p = orjson.loads(capsys.readouterr().out)
     assert p["wallets"] == p["wallets_to_absorb"] == 2
     assert p["blocks"] == 91 and p["blocks_source"].startswith("nominal")
-    assert p["rpc"]["per_wallet_fixed"] == 5 * 1 + 6 + 1
+    assert p["rpc"]["per_wallet_fixed"] == 8 * 1 + 6 + 1
     assert p["rpc"]["store_fills_in_window"] == 2
     assert p["goldsky"]["covered"] == 1 and p["goldsky"]["missing"] == 1
     assert p["goldsky"]["command_pulls"] == 2  # neither wallet holds the exact (from, to) record

@@ -247,14 +247,14 @@ def test_fee_convention_mismatch_is_named(chain):
 
 def test_scan_budget_stop_then_resume_without_duplicates(chain, tmp_path):
     fills = [chain.fill("0x01", 20, "BUY", NO, 10, 0.48), chain.fill("0x02", 80, "BUY", YES, 10, 0.49)]
-    part = _run(chain, fills, max_requests=6)  # one chunk of five queries, then the budget ends
+    part = _run(chain, fills, max_requests=9)  # one chunk of eight queries, then the budget ends
     assert part["status"] == "not_reconciled" and part["causes"][0] == "chain_scan_incomplete"
     assert part["completeness"]["chain_next_block"] == 35
     n = len(chain.calls)
     full = _run(chain, fills)
     assert full["status"] == "reconciled" and full["chain_legs"] == 4
-    # 4 chunks x 5 queries; the stopped run got 6 answers, so the resumed run asks for 14
-    assert chain.calls[n:].count("eth_getLogs") == 14
+    # 4 chunks x 8 queries; the stopped run got 9 answers, so the resumed run asks for 23
+    assert chain.calls[n:].count("eth_getLogs") == 23
     one_shot = _run(chain, fills, out=tmp_path / "fresh.jsonl")
     assert {k: v for k, v in full.items() if k != "completeness"} == \
         {k: v for k, v in one_shot.items() if k != "completeness"}
