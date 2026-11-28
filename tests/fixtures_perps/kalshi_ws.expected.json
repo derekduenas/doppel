@@ -1,0 +1,19 @@
+{
+  "_doc": "Top of book (USD/BTC, BTC) after each record of kalshi_ws.jsonl, then prints and ticker info. Checked by crates/doppel-fair/tests/perp_fixtures.rs and tests/test_perps.py.",
+  "tops": [
+    null, null, null, null, null,
+    [59931.0, 0.0195, 59933.0, 0.0598],
+    [59931.0, 0.0195, 59940.0, 0.0005],
+    [59931.0, 0.0195, 59940.0, 0.0005],
+    [59931.0, 0.0195, 59940.0, 0.0005],
+    [59932.0, 0.0007, 59940.0, 0.0005],
+    [59932.0, 0.0007, 59940.0, 0.0005],
+    null, null, null, null, null, null, null,
+    [59920.0, 0.001, 59925.0, 0.002],
+    [59920.0, 0.001, 59925.0, 0.002]
+  ],
+  "trades": [[3500, "t1", 59933.0, 0.0598, true], [5500, "t3", 59931.0, 0.0002, false]],
+  "info": [[4000, 59927.0, 59935.0, 0.00001]],
+  "seq_gaps": 1,
+  "trade_gaps": 1
+}

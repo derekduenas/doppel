@@ -58,6 +58,7 @@ doppel-opening-parity = "doppel.lab.opening_parity:main"
 doppel-promotion = "doppel.lab.promotion:main"
 doppel-absorb-cohort = "doppel.lab.absorb_cohort:main"
 doppel-census-absorbed = "doppel.lab.absorb_cohort:census_main"
+doppel-leadlag = "doppel.lab.leadlag:main"
 
 [dependency-groups]
 dev = [
