@@ -294,16 +294,20 @@ def predict(public_path: Path, model: dict) -> Iterator[dict]:
     ):
         raise ValueError("invalid taker entry training range")
     source, threshold = model.get("trigger_source"), model.get("threshold")
-    if status == "FIT" and (history[1] is None or source not in SOURCES or
-                            isinstance(threshold, bool) or threshold not in THRESHOLDS):
-        raise ValueError("invalid taker entry policy")
+    policy: Policy | None = None
+    if status == "FIT":
+        if (history[1] is None or not isinstance(source, str) or source not in SOURCES or
+                type(threshold) not in (int, float) or threshold not in THRESHOLDS):
+            raise ValueError("invalid taker entry policy")
+        policy = source, float(threshold)
     previous: dict[str, str | None] = {}
     sealed = _stamp(public_path)
     for key, row in jsonl(public_path, PUBLIC_FIELDS):
         stamp, market = key
         if history[1] is not None and stamp <= history[1]:
             raise ValueError("prediction grid overlaps training cutoffs")
-        if status == "FIT":
+        if policy is not None:
+            source, threshold = policy
             entry = _cross(previous, market, _signals(key, row).get(source), threshold)
             if entry is not None:
                 yield {"ts_ns": stamp, "market_id": market, "side": entry[0],

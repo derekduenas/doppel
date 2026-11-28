@@ -10,8 +10,11 @@ from itertools import zip_longest
 import json
 from pathlib import Path
 import random
+import resource
 import statistics
+import sys
 from tempfile import TemporaryDirectory
+from typing import TypeGuard
 
 from ..tape.segment import read_segment
 from . import taker_entries
@@ -20,6 +23,7 @@ from . import taker_entries
 NS = 1_000_000_000
 TOLERANCE_NS = NS
 MAX_AGE_NS = 3 * NS
+MAX_RSS_BYTES = 1_500_000_000
 FEE = 0.02085
 MIN_EVENTS = 20
 MIN_MARKETS = 10
@@ -32,6 +36,11 @@ RECORDING_STREAMS = {
     "hyperliquid": {"lead_hyperliquid_l2", "lead_hyperliquid_trades"},
 }
 PUBLIC = ("training-public.jsonl", "holdout-public.jsonl")
+
+
+def peak_rss_bytes() -> int:
+    peak = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    return peak if sys.platform == "darwin" else peak * 1024
 
 
 def sha256(path: Path) -> str:
@@ -205,7 +214,7 @@ def prior(clock: object, decision: int) -> bool:
     return type(clock) is int and 0 < clock < decision and decision - clock <= MAX_AGE_NS
 
 
-def probability(v: object) -> bool:
+def probability(v: object) -> TypeGuard[int | float]:
     return isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1
 
 
@@ -412,7 +421,7 @@ def freeze(plan_file: Path, plan_sha: str, inputs: Path, out: Path) -> dict:
         "schema": "doppel.layer5b-forecast/v1",
         "plan_sha256": plan_sha, "source_receipts_sha256": receipts, "artifacts": artifacts, "subjects": subjects,
         "fitter_sha256": sha256(Path(taker_entries.__file__)),
-        "exam_sha256": sha256(Path(__file__)),
+        "exam_sha256": sha256(Path(__file__)), "peak_rss_bytes": peak_rss_bytes(),
     },))
     return {"forecast_sha256": sha256(commitment), "forecast": str(commitment)}
 
@@ -490,14 +499,20 @@ def score(plan_file: Path, plan_sha: str, inputs: Path, forecasts: Path, forecas
     verified(commitment, forecast_sha)
     for name, checksum in artifacts.items():
         verified(forecasts / name, checksum)
-    passed = all(row["status"] == ("ABSTAIN" if SUBJECTS[name] is None else "PASS")
-                 for name, row in result.items())
+    forecast_rss = sealed.get("peak_rss_bytes")
+    if type(forecast_rss) is not int or forecast_rss <= 0:
+        raise ValueError("forecast manifest lacks a process high-water RSS measure")
+    score_rss = peak_rss_bytes()
+    memory_ok = max(forecast_rss, score_rss) < MAX_RSS_BYTES
+    passed = memory_ok and all(row["status"] == ("ABSTAIN" if SUBJECTS[name] is None else "PASS")
+                               for name, row in result.items())
     return {
         "schema": "doppel.layer5b-score/v1", "source_kind": plan["source_kind"],
         "status": ("MEASURED_PASS" if passed else "MEASURED_FAIL") if plan["source_kind"] == "recorded"
         else "UNMEASURED",
         "software_status": "PASS" if passed else "FAIL", "plan_sha256": plan_sha, "forecast_sha256": forecast_sha,
         "source_receipts_sha256": receipts, "subjects": result,
+        "peak_rss_bytes": {"forecast": forecast_rss, "score": score_rss, "limit": MAX_RSS_BYTES, "under_limit": memory_ok},
     }
 
 
@@ -521,6 +536,7 @@ def main(argv: list[str] | None = None) -> int:
         write_rows(args.out, (result,))
         print(json.dumps({"status": result["status"], "software_status": result["software_status"],
                           "score_sha256": sha256(args.out)}, sort_keys=True))
+        return int(result["software_status"] != "PASS")
     return 0
 
 

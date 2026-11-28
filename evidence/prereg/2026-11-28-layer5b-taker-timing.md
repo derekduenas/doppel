@@ -44,3 +44,5 @@ python -m doppel.lab.layer5b --plan plan.json --plan-sha256 "$PLAN_SHA" --inputs
 python -m doppel.lab.layer5b --plan plan.json --plan-sha256 "$PLAN_SHA" --inputs INPUTS \
   score --forecasts FORECASTS --forecast-sha256 "$FORECAST_SHA" --out SCORE.json
 ```
+
+Run the two phases in distinct processes. Record both high-water RSS values in the score document. The complete recorded bench must stay below 1,500,000,000 bytes in each process. The synthetic unit-test process measures its own high-water mark, which is only a fixture-scale diagnostic.

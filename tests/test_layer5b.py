@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -74,6 +75,7 @@ def test_synthetic_forecast_seals_before_scoring_and_cannot_qualify(tmp_path):
     assert control["truth"] > 0
     assert control["predicted"] == 0
     assert control["zero_leakage"] is True
+    (tmp_path / "layer5b-synthetic-score.json").write_text(json.dumps(result, indent=2) + "\n")
 
     with pytest.raises(ValueError, match="SHA-256 mismatch"):
         exam.score(plan_path, plan_sha, inputs, forecasts, "f" * 64)
@@ -141,3 +143,45 @@ def test_unavailable_future_witnesses_remain_missing():
     assert shifted["lead"]["binance_tw_ns"] == cutoff - 1
     assert shifted["lead"]["tw_ns"] == cutoff + 2 + 2 * NS
     assert row["lead"]["p_up"] == .7
+
+
+def test_causality_probe_detects_a_future_dependent_forecast(tmp_path, monkeypatch):
+    holdout = tmp_path / "holdout"
+    forecast = tmp_path / "forecast"
+    first, later = list(panel(1, 1))[:2]
+    predicted = {"ts_ns": first["ts_ns"], "market_id": first["market_id"], "side": "BUY_UP"}
+    exam.write_rows(holdout, (first, later))
+    exam.write_rows(forecast, (predicted,))
+
+    def leaky(public: Path, _model: dict):
+        if sum(1 for _ in exam.rows(public)) > 1:
+            yield predicted
+
+    monkeypatch.setattr(exam.taker_entries, "predict", leaky)
+    checks = exam.causality(holdout, {}, forecast, [first["ts_ns"]], tmp_path)
+    assert checks[0]["altered_future_rows"] == 1
+    assert checks[0]["prefix_equal"] is False
+    assert checks[0]["perturbed_future_equal"] is True
+
+
+def test_recorded_source_rejects_renamed_bytes_and_wrong_stream(tmp_path):
+    from doppel.tape.segment import SegmentWriter
+
+    now = 1_800_000_000_000_000_000
+    stream = "lead_binance_spot_l2"
+    segment = SegmentWriter(tmp_path, stream)
+    segment.append("{}", tw=now, tm=1)
+    segment.append("{}", tw=now + 2 * NS, tm=2)
+    segment.close()
+    path = next((tmp_path / stream).glob("*/*.dtape.zst"))
+    row = {"stream": stream, "covered_range_ns": [now, now + 2 * NS]}
+    assert exam.native_coverage("binance", path, row) == (now, now + 2 * NS)
+    with pytest.raises(ValueError, match="invalid native stream"):
+        exam.native_coverage("hyperliquid", path, row)
+    row["covered_range_ns"][1] += 10 * NS
+    with pytest.raises(ValueError, match="does not span"):
+        exam.native_coverage("binance", path, row)
+    broken = tmp_path / "fake.dtape.zst"
+    broken.write_bytes(b"declared role and coverage cannot validate arbitrary bytes")
+    with pytest.raises(ValueError, match="invalid zstd frame"):
+        exam.native_coverage("binance", broken, row)
