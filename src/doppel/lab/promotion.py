@@ -297,7 +297,11 @@ def promote(results: list[tuple[str, dict]], trials_doc: dict, sources: dict | N
             if len(x) > 1 else None
         ci = block_bootstrap_ci(x, None, bs.get("block_windows", 12), bs.get("n_boot", 2000), bs.get("seed", 0)) \
             if len(x) > 1 else (None, None)
-        rows.append({"input": name, "genome": doc.get("genome"), "range": doc.get("range"),
+        genome = doc.get("genome")
+        scope = doc.get("range")
+        if doc.get("schema") == "doppel.shadow-replay/v1":
+            genome, scope = {"id": doc["genome_id"]}, v["evaluation"]["range"]
+        rows.append({"input": name, "genome": genome, "range": scope,
                      "base_decision": "DIAGNOSTIC" if diag else v.get("decision"),
                      "base_reason": v.get("reason"), "base_p_value": v.get("p_value"), "windows": len(x),
                      "dsr": deflated_sharpe(x, tr["n_trials"], tr["sr_variance"]), "pbo": pb,
@@ -345,11 +349,41 @@ def _r(x, nd: int = 6):
     return None if x is None else round(float(x), nd)
 
 
+def _canonical_trial_inputs(ledger, results):
+    from ..twin.evaluate import VERDICT_OPTIONS
+
+    trials = ledger["trials"]
+    selected = {}
+    for _, replay in results:
+        if replay.get("schema") != "doppel.shadow-replay/v1":
+            continue
+        gid = replay["genome_id"]
+        eligible = series(replay)
+        matches = [row["trial_id"] for row in trials if row["genome_id"] == gid and row["returns_c"] == eligible
+                   and ("trial_id" not in replay or replay["trial_id"] == row["trial_id"])]
+        if len(matches) != 1 or gid in selected.values():
+            raise ValueError("canonical ledger does not uniquely identify each scored candidate")
+        selected[matches[0]] = gid
+    if not selected:
+        raise ValueError("canonical ledger requires a canonical replay candidate")
+    summary = {"n_trials": len(trials), "trials": [
+        {"id": selected.get(row["trial_id"], row["trial_id"]),
+         "p_value": block_bootstrap_p(row["returns_c"], VERDICT_OPTIONS["block"],
+                                      VERDICT_OPTIONS["n_boot"], VERDICT_OPTIONS["seed"])}
+        for row in trials]}
+    variants = {"variants": [{"id": row["trial_id"], "net_c": row["returns_c"]} for row in trials]}
+    return summary, variants
+
+
 def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "bundle":
+        from .shadow_bundle import main as bundle_main
+        return bundle_main(argv[1:])
     ap = argparse.ArgumentParser(prog="doppel-promotion")
     ap.add_argument("--results", type=Path, nargs="+", required=True,
                     help="doppel-twin output JSON(s); doppel-genome ledger --json files add p-values only")
-    ap.add_argument("--trials", type=Path, help="trials ledger JSON: {n_trials, trials: [{id, p_value}], sr_variance?}")
+    ap.add_argument("--trials", type=Path, help="canonical Shadow trial ledger or legacy research summary")
     ap.add_argument("--variants", type=Path,
                     help="PBO input: {variants: [{id, net_c: [...]}]}, every variant tried over the same windows")
     ap.add_argument("--pbo-s", type=int, default=PBO_S, help="CSCV partitions (even)")
@@ -360,9 +394,15 @@ def main(argv=None) -> int:
             raise ValueError("--trials is required: the number of trials in the search must be recorded")
         raws = {p: p.read_bytes() for p in [*a.results, a.trials, *([a.variants] if a.variants else [])]}
         srcs = {str(p): hashlib.sha256(b).hexdigest() for p, b in raws.items()}
-        doc = promote([(str(p), orjson.loads(raws[p])) for p in a.results], orjson.loads(raws[a.trials]), srcs,
-                      orjson.loads(raws[a.variants]) if a.variants else None, a.pbo_s)
-    except (OSError, ValueError, KeyError, orjson.JSONDecodeError) as e:
+        results = [(str(p), orjson.loads(raws[p])) for p in a.results]
+        trials = orjson.loads(raws[a.trials])
+        variants = orjson.loads(raws[a.variants]) if a.variants else None
+        if trials.get("schema") == "doppel.shadow-trial-ledger/v1":
+            if variants is not None or a.pbo_s != PBO_S:
+                raise ValueError("canonical Shadow promotion takes its complete variants and PBO defaults from the ledger")
+            trials, variants = _canonical_trial_inputs(trials, results)
+        doc = promote(results, trials, srcs, variants, a.pbo_s)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         print(f"REFUSED {e}", file=sys.stderr)
         return 2
     a.out.mkdir(parents=True, exist_ok=True)

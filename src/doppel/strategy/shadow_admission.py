@@ -20,21 +20,29 @@ import numpy as np
 import orjson
 
 from ..lab import promotion
+from ..lab.layer5b import RECORDING_STREAMS
 from ..twin.cli import code_sha256
 from ..twin.engine import SimConfig
 from ..twin.evaluate import VERDICT_OPTIONS
 from ..twin.verdict import block_bootstrap_p
 from .genome import Genome
 from .registry import Registry, protocol_matches
+from .shadow_archetypes import archetype, maker_evidence, requires_offshore
 
-EVIDENCE_FILES = ("plan.json", "trials.json", "replay.json", "gates.json", "layer5b.json")
+EVIDENCE_FILES = ("plan.json", "trials.json", "replay.json", "gates.json", "promotion.json")
+OFFSHORE_ROLES = ("binance", "hyperliquid")
+OFFSHORE_FILES = {f"{role}.json" for role in OFFSHORE_ROLES}
 FEE_GRID = {"api_live_rebated": 0.02085, "api_base_0695": 0.0695, "maker_0": 0.0}
 REPORTING_GRID = {**FEE_GRID, "gateway_0095": 0.095}
 SIZES = (25, 100, 500)
-GATES = frozenset(("dsr", "pbo", "fdr", "hac", "bootstrap", "promo_edge", "markout_2s", "markout_10s",
-                   "paper_replay_slippage", "residual_correlation", "taker_timing"))
-SIGNATURE_DOMAIN = b"DOPPEL-SHADOW-APPROVAL-v1\0"
+COMMON_GATES = frozenset(("dsr", "pbo", "fdr", "hac", "bootstrap", "promo_edge", "markout_2s", "markout_10s",
+                          "paper_replay_slippage", "residual_correlation"))
+MAKER_GATES = frozenset(("maker_queue_fill", "adverse_selection_stress"))
+GATES = COMMON_GATES | MAKER_GATES | {"taker_timing", "offshore_receipts"}
+SIGNATURE_DOMAIN = b"DOPPEL-SHADOW-APPROVAL-v2\0"
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
+REJECT_FOR = {"plan.json": "REJECT_INCOMPLETE_LEDGER", "trials.json": "REJECT_INCOMPLETE_LEDGER",
+              "replay.json": "REJECT_NONCANONICAL_REPLAY", "promotion.json": "REJECT_NONCANONICAL_REPLAY"}
 
 
 class AdmissionRejected(ValueError):
@@ -115,31 +123,58 @@ def _approval(bundle, trust, genome):
         Ed25519PublicKey.from_public_bytes(trust.public_key).verify(signature, SIGNATURE_DOMAIN + raw)
     except (OSError, ValueError, InvalidSignature) as exc:
         raise AdmissionRejected(code, "missing or invalid lead approval") from exc
+    _verify_approval_metadata(approval, trust, genome)
+    return approval, _sha(raw)
+
+
+def _verify_approval_metadata(approval, trust, genome, *, require_current=True):
+    code = "REJECT_UNTRUSTED_APPROVAL"
+    try:
+        kind = archetype(genome)
+        offshore = requires_offshore(genome)
+    except ValueError as exc:
+        raise AdmissionRejected(code, str(exc)) from exc
     now = time.time_ns()
     scoring = code_sha256()
-    _require(approval.get("schema") == "doppel.shadow-approval/v1" and approval.get("genome_id") == genome.id
+    _require(approval.get("schema") == "doppel.shadow-approval/v2" and approval.get("genome_id") == genome.id
+             and approval.get("archetype") == kind
              and _hex(trust.commit_sha, 40) and approval.get("commit_sha") == trust.commit_sha
              and approval.get("scoring_sha256") == scoring,
-             code, "approval does not match this genome and evaluator release")
+             code, "approval does not match this genome, archetype and evaluator release")
     start, end = approval.get("valid_from_ns"), approval.get("valid_until_ns")
-    _require(isinstance(start, int) and isinstance(end, int) and _int(start) and _int(end) and start <= now < end,
+    _require(_int(start, 1) and _int(end, 1) and start < end and (not require_current or start <= now < end),
              code, "approval is outside its validity interval")
     reference = approval.get("files")
-    _require(isinstance(reference, dict) and set(reference) == set(EVIDENCE_FILES)
-             and all(_hex(digest) for digest in reference.values()), code, "approval has incomplete artifact inventory")
-    return approval, _sha(raw)
+    _require(isinstance(reference, dict) and all(_hex(digest) for digest in reference.values()),
+             code, "approval has invalid artifact digests")
+    common = set(EVIDENCE_FILES)
+    specific = {"layer5b.json"} if genome.mode == "taker" else {"maker.json"}
+    for name in common - set(reference):
+        raise AdmissionRejected(REJECT_FOR.get(name, "REJECT_UNMEASURED_GATE"), f"missing {name} in approval")
+    _require(specific <= set(reference), "REJECT_UNMEASURED_GATE", "missing archetype evidence")
+    extra = set(reference) - common - specific - {"probability.json"}
+    _require(extra in (set(), OFFSHORE_FILES) and (not offshore or extra == OFFSHORE_FILES),
+             "REJECT_UNMEASURED_GATE", "offshore evidence requires both canonical source receipts")
 
 
 def _artifact(bundle, approval, name, code):
     try:
         raw = _read(bundle / name)
         _require(_sha(raw) == approval["files"][name], code, f"{name} differs from the signed evidence")
-        # The benchmark writer emits indented JSON. Its exact bytes are signed by digest.
-        return orjson.loads(raw) if name == "layer5b.json" else _json(raw)
+        return _decode_evidence(name, raw)
     except AdmissionRejected:
         raise
     except (OSError, ValueError) as exc:
         raise AdmissionRejected(code, f"missing or invalid {name}") from exc
+
+
+def _decode_evidence(name: str, raw: bytes) -> dict:
+    if name in OFFSHORE_FILES or name in {"layer5b.json", "promotion.json"}:
+        result = orjson.loads(raw)
+        if not isinstance(result, dict):
+            raise ValueError("evidence must be a JSON object")
+        return result
+    return _json(raw)
 
 
 def _window_key(row):
@@ -208,7 +243,7 @@ def _complete_ledger(genome, trust, approval, plan, ledger, reg, records, window
     start = reg["eval_window"]["start_s"]
     _require(_hex(trust.plan_sha256) and approval["files"]["plan.json"] == trust.plan_sha256
              and plan.get("schema") == "doppel.shadow-trial-plan/v1" and plan.get("family") == reg["family"]
-             and _int(plan.get("frozen_ns"), 1) and plan["frozen_ns"] < start * 1e9
+             and _int(plan.get("frozen_ns"), 1) and plan["frozen_ns"] < start * 10**9
              and ledger.get("schema") == "doppel.shadow-trial-ledger/v1"
              and ledger.get("plan_sha256") == trust.plan_sha256
              and isinstance(expected, list) and isinstance(trials, list)
@@ -290,14 +325,24 @@ def _scenarios(replay):
     return list(result.values())
 
 
-def _measured_gates(genome, trust, doc, timing, approved):
+def _measured_gates(genome, trust, evidence, approved, replay, windows):
     code = "REJECT_UNMEASURED_GATE"
+    doc = evidence["gates.json"]
     src = doc.get("gates")
-    _require(doc.get("schema") == "doppel.shadow-gates/v1" and doc.get("genome_id") == genome.id
+    has_offshore = OFFSHORE_FILES <= set(evidence)
+    applicable = COMMON_GATES | ({"taker_timing"} if genome.mode == "taker" else MAKER_GATES)
+    if has_offshore:
+        applicable = applicable | {"offshore_receipts"}
+    _require(doc.get("schema") == "doppel.shadow-gates/v2" and doc.get("genome_id") == genome.id
+             and doc.get("archetype") == approved["archetype"]
              and isinstance(src, dict) and set(src) == GATES
-             and all(isinstance(row, dict) and row.get("status") in ("MEASURED", "MEASURED_PASS")
-                     for row in src.values()),
-             code, "a required v3 gate is absent or unmeasured")
+             and all(isinstance(row, dict) for row in src.values()), code, "incomplete v3 gate map")
+    for name, row in src.items():
+        if name in applicable:
+            _require(row.get("status") != "MEASURED_FAIL", "REJECT_GATE_FAILED", f"{name} measured a failure")
+            _require(row.get("status") == "MEASURED_PASS", code, f"{name} is unmeasured")
+        else:
+            _require(row == {"status": "NOT_APPLICABLE_ARCHETYPE"}, code, f"invalid inapplicable gate: {name}")
     result = {}
     external = ("markout_2s", "markout_10s", "paper_replay_slippage")
     for name in external:
@@ -316,6 +361,69 @@ def _measured_gates(genome, trust, doc, timing, approved):
              "correlation evidence does not cover the operator's full active set")
     result["residual_correlation"] = {"values": vals, "source_sha256": cor["source_sha256"],
                                       "observations": cor.get("observations")}
+    if has_offshore:
+        coverage = windows if requires_offshore(genome) and genome.mode == "maker" else ()
+        result["offshore_receipts"] = _offshore_proofs(src["offshore_receipts"], evidence, approved, coverage)
+    if genome.mode == "taker":
+        result["taker_timing"] = _taker_timing(genome, src, evidence["layer5b.json"], approved)
+    else:
+        maker_digest = approved["files"]["maker.json"]
+        _require(all(src[name].get("source_sha256") == maker_digest for name in MAKER_GATES),
+                 code, "maker gates must reference the signed queue, fill and stress evidence")
+        _require(all(result[name]["value"] > 0 for name in ("markout_2s", "markout_10s")),
+                 "REJECT_GATE_FAILED", "maker post-fill markouts must be positive")
+        evaluation = replay["verdict"]["evaluation"]
+        try:
+            maker = maker_evidence(genome, evidence["maker.json"], approved["files"]["replay.json"],
+                                   evaluation["input_sha256"], expected_windows=len(windows),
+                                   base_cancel_latency_ms=evaluation["simulation"]["latency_ms"])
+        except ValueError as exc:
+            raise AdmissionRejected("REJECT_MAKER_EVIDENCE", str(exc)) from exc
+        for name in ("markout_2s", "markout_10s"):
+            fields = ("value", "observations", "source_sha256")
+            _require(all(maker[name][key] == result[name][key] for key in fields),
+                     code, f"{name} differs from the signed maker receipt")
+        result["maker_queue_fill"] = maker["queue"]
+        result["adverse_selection_stress"] = maker["stress"]
+    return result
+
+
+def _offshore_proofs(gate, evidence, approved, windows):
+    code = "REJECT_UNMEASURED_GATE"
+    hashes = {role: approved["files"][role + ".json"] for role in OFFSHORE_ROLES}
+    _require(gate.get("sources_sha256") == hashes, code, "offshore gate does not name both signed source receipts")
+    seen = set()
+    for role in OFFSHORE_ROLES:
+        doc = evidence[role + ".json"]
+        segments = doc.get("segments")
+        _require(doc.get("schema") == "doppel.layer5b-source/v1" and doc.get("role") == role
+                 and doc.get("clock") == "local_receive_ns" and isinstance(segments, list) and segments,
+                 code, f"invalid native {role} receipt")
+        spans = []
+        for segment in segments:
+            digest, path, covered = (segment.get(k) for k in ("sha256", "path", "covered_range_ns"))
+            _require(_hex(digest) and digest not in seen
+                     and isinstance(path, str) and path and not Path(path).is_absolute()
+                     and ".." not in Path(path).parts and path.endswith(".dtape.zst")
+                     and segment.get("stream") in RECORDING_STREAMS[role]
+                     and isinstance(covered, list) and len(covered) == 2
+                     and all(_int(t, 1) for t in covered) and covered[0] < covered[1],
+                     code, f"invalid or reused {role} segment proof")
+            seen.add(digest)
+            spans.append(covered)
+        merged: list[list[int]] = []
+        for left, right in sorted(spans):
+            if merged and left <= merged[-1][1]:
+                merged[-1][1] = max(right, merged[-1][1])
+            else:
+                merged.append([left, right])
+        _require(all(any(left <= start * 10**9 and end * 10**9 <= right for left, right in merged)
+                     for start, end in windows), code, f"{role} receipts do not cover the maker's offshore guard replay")
+    return hashes
+
+
+def _taker_timing(genome, src, timing, approved):
+    code = "REJECT_UNMEASURED_GATE"
     sources = timing.get("source_receipts_sha256")
     subjects = timing.get("subjects")
     rss = timing.get("peak_rss_bytes")
@@ -326,6 +434,7 @@ def _measured_gates(genome, trust, doc, timing, approved):
              and _hex(timing.get("plan_sha256")) and _hex(timing.get("forecast_sha256"))
              and isinstance(sources, dict) and {"books", "brti", "binance", "hyperliquid"} <= set(sources)
              and all(_hex(h) for h in sources.values())
+             and all(sources[role] == approved["files"][role + ".json"] for role in OFFSHORE_ROLES)
              and isinstance(rss, dict) and rss.get("limit") == 1_500_000_000 and rss.get("under_limit") is True
              and all(_int(rss.get(k), 1) and rss[k] < 1_500_000_000 for k in ("forecast", "score"))
              and isinstance(subjects, dict) and set(subjects) == set(names),
@@ -355,14 +464,11 @@ def _measured_gates(genome, trust, doc, timing, approved):
                          (("precision", m / p), ("recall", m / n), ("f1", 2 * m / (p + n)))),
                      code, f"{subject} timing metrics contradict its matched entries")
     family = genome.evidence.get("taker_trigger_source")
-    if genome.mode == "taker":
-        _require(family in ("lead", "fair") and src["taker_timing"].get("trigger_source") == family,
-                 code, "the registered taker must use the same measured trigger family as its timing evidence")
-    result["taker_timing"] = {"source_sha256": src["taker_timing"]["source_sha256"],
-                              "subjects": subjects, "plan_sha256": timing["plan_sha256"],
-                              "candidate_trigger_source": family if genome.mode == "taker" else None,
-                              "peak_rss_bytes": rss}
-    return result
+    _require(family in ("lead", "fair") and src["taker_timing"].get("trigger_source") == family,
+             code, "the registered taker must use the same measured trigger family as its timing evidence")
+    return {"source_sha256": src["taker_timing"]["source_sha256"],
+            "subjects": subjects, "plan_sha256": timing["plan_sha256"],
+            "candidate_trigger_source": family, "peak_rss_bytes": rss}
 
 
 def _issue(path, receipt):
@@ -387,21 +493,36 @@ def _issue(path, receipt):
         raise AdmissionRejected("REJECT_RECEIPT_IO", "cannot persist the admission receipt") from exc
 
 
-def admit_shadow(genome: Genome, bundle: Path, trust: AdmissionTrust, receipt_dir: Path, *,
-                 simulation_sha256: str) -> dict:
-    """Validate all proofs and issue an immutable receipt. No canary or order authorization."""
-    approved, approval_hash = _approval(bundle, trust, genome)
-    replay = _artifact(bundle, approved, "replay.json", "REJECT_NONCANONICAL_REPLAY")
-    plan = _artifact(bundle, approved, "plan.json", "REJECT_INCOMPLETE_LEDGER")
-    ledger = _artifact(bundle, approved, "trials.json", "REJECT_INCOMPLETE_LEDGER")
-    gate = _artifact(bundle, approved, "gates.json", "REJECT_UNMEASURED_GATE")
-    timing = _artifact(bundle, approved, "layer5b.json", "REJECT_UNMEASURED_GATE")
+def _check_promotion(report, approved, windows):
+    code = "REJECT_NONCANONICAL_REPLAY"
+    rows = report.get("candidates")
+    sources = report.get("sources")
+    _require(isinstance(rows, list) and isinstance(sources, dict)
+             and approved["files"]["trials.json"] in sources.values()
+             and report.get("trials", {}).get("n_trials") == approved["n_trials"], code,
+             "promotion result does not state the verified trial inventory")
+    matches = [row for row in rows if (row.get("genome") or {}).get("id") == approved["genome_id"]]
+    _require(len(matches) == 1 and matches[0].get("decision") == "PROMOTE"
+             and matches[0].get("base_decision") == "PASS" and matches[0].get("windows") == len(windows)
+             and sources.get(matches[0].get("input")) == approved["files"]["replay.json"],
+             code, "promotion lacks a passing row tied to the exact canonical replay")
+
+
+def _verified_evidence(genome, trust, approved, evidence, simulation_sha256):
     try:
+        replay = evidence["replay.json"]
         reg, records, windows, returns = _canonical_replay(genome, trust, approved, replay, simulation_sha256)
-        candidate, values = _complete_ledger(genome, trust, approved, plan, ledger, reg, records, windows, returns)
+        candidate, values = _complete_ledger(genome, trust, approved, evidence["plan.json"],
+                                             evidence["trials.json"], reg, records, windows, returns)
+        _check_promotion(evidence["promotion.json"], approved, windows)
         scenarios = _scenarios(replay)
-        measured = _measured_gates(genome, trust, gate, timing, approved)
+        measured = _measured_gates(genome, trust, evidence, approved, replay, windows)
         stats = _statistics(candidate, values)
+        if "probability.json" in evidence:
+            model = evidence["probability.json"]
+            _require(model.get("schema") == "doppel.shadow-probability/v1" and model.get("genome_id") == genome.id
+                     and _int(model.get("fit_end_ns"), 1) and model["fit_end_ns"] < reg["eval_window"]["start_s"] * 10**9,
+                     "REJECT_UNMEASURED_GATE", "probability calibration is missing or overlaps the registered replay")
     except AdmissionRejected:
         raise
     except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError, OverflowError) as exc:
@@ -416,14 +537,37 @@ def admit_shadow(genome: Genome, bundle: Path, trust: AdmissionTrust, receipt_di
              and abs(measured["paper_replay_slippage"]["value"]) <= 0.3
              and all(r < 0.30 for r in measured["residual_correlation"]["values"].values()),
              code, "short-horizon markout, paper slippage or diversification threshold failed")
+    return reg["eval_window"]["start_s"] * 10**9, scenarios, measured, stats
+
+
+def _statistics_match(stated, stats):
+    return (isinstance(stated, dict) and set(stated) == set(stats)
+            and all((type(stated[k]) is type(v) and stated[k] == v)
+                    if type(v) in (bool, int) else (_num(stated[k]) and math.isclose(stated[k], v, abs_tol=1e-10))
+                    for k, v in stats.items()))
+
+
+def admit_shadow(genome: Genome, bundle: Path, trust: AdmissionTrust, receipt_dir: Path, *,
+                 simulation_sha256: str) -> dict:
+    """Validate all proofs and issue an immutable receipt."""
+    approved, approval_hash = _approval(bundle, trust, genome)
+    evidence = {name: _artifact(bundle, approved, name, REJECT_FOR.get(name, "REJECT_UNMEASURED_GATE"))
+                for name in approved["files"]}
+    start_ns, scenarios, measured, stats = _verified_evidence(genome, trust, approved, evidence, simulation_sha256)
+    _require(_statistics_match(approved.get("statistics"), stats), "REJECT_INCOMPLETE_LEDGER",
+             "signed statistics differ from the independently recomputed trial evidence")
     _require(time.time_ns() < approved["valid_until_ns"], "REJECT_UNTRUSTED_APPROVAL", "approval expired during admission")
-    body = {"schema": "doppel.shadow-admission/v1", "state": "SHADOW_ACTIVE", "genome_id": genome.id,
-            "commit_sha": trust.commit_sha, "scoring_sha256": approved["scoring_sha256"],
+    body = {"schema": "doppel.shadow-admission/v2", "state": "SHADOW_ACTIVE", "genome_id": genome.id,
+            "archetype": approved["archetype"], "commit_sha": trust.commit_sha,
+            "scoring_sha256": approved["scoring_sha256"], "replay_start_ns": start_ns,
             "simulation_sha256": simulation_sha256, "approval_sha256": approval_hash,
             "valid_until_ns": approved["valid_until_ns"], "registry_result_sha256": approved["registry_result_sha256"],
             "replay_sha256": approved["files"]["replay.json"], "trial_plan_sha256": trust.plan_sha256,
             "trial_ledger_sha256": approved["files"]["trials.json"], "trial_head_sha256": approved["trial_head_sha256"],
-            "n_trials": stats["trial_count"], "scenario_grid": scenarios, "gates": {**stats, **measured}}
+            "promotion_sha256": approved["files"]["promotion.json"],
+            "probability_sha256": approved["files"].get("probability.json"),
+            "n_trials": stats["trial_count"], "scenario_grid": scenarios, "gates": {**stats, **measured},
+            "gate_statuses": {k: row["status"] for k, row in evidence["gates.json"]["gates"].items()}}
     receipt = {**body, "receipt_sha256": _sha(_canon(body))}
     _issue(receipt_dir / genome.id / "admission_receipt.json", receipt)
     return receipt

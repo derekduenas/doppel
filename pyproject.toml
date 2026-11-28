@@ -18,6 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
+doppel = "doppel.cli:main"
 doppel-tape = "doppel.tape.cli:main"
 doppel-goldsky = "doppel.lab.goldsky:main"
 doppel-completeness = "doppel.lab.completeness:main"

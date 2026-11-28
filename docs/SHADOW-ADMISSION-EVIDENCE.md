@@ -1,27 +1,43 @@
-# Shadow admission evidence contract
+# Shadow admission evidence
 
-The intake service receives its Ed25519 public key, deployed commit, preregistered trial-plan SHA-256 and complete active-genome roster from operator-controlled configuration. It reads the registry from the deployed release. It passes the executable simulator configuration digest into admission. A fixture key is never a deployment trust anchor. The approval author verifies source provenance and the complete attempted-variant inventory before signing. The validator can establish whether the supplied inventory matches its independently pinned plan and registered family. Attempts omitted from both require independent oversight.
+Shadow intake pins the operator Ed25519 public key, deployed commit, preregistered trial-plan SHA-256, current evaluator, and complete active-genome roster independently of candidate inputs. The registry must contain the first bound replay verdict for the exact sealed genome. On the approval machine, verify the raw source receipts, held-out evidence, and actual trial inventory before signing. The intake validator checks the signed receipts and the complete chain against the independently pinned plan. The signature is the operator's attestation of the receipt sources.
 
-The required files use sorted-key JSON encoded with orjson, with an optional final newline. The Layer 5b scorecard can retain its emitted formatting. SHA-256 applies to the exact file bytes including any newline. Do not attach private keys or actual wallet evidence to a public review branch.
+## Produce and sign a bundle
 
-| File | Required content |
+Run on research or approval compute with the immutable inputs. Keep actual wallet evidence and private keys out of Git.
+
+```sh
+doppel-promotion --results "$REPLAY" --trials "$TRIAL_LEDGER" --out "$PROMOTION_DIR"
+cp "$FROZEN_PLAN" "$PROMOTION_DIR/plan.json"
+
+doppel promote bundle --promotion-dir "$PROMOTION_DIR" --replay-artifact "$REPLAY" \
+  --trial-ledger "$TRIAL_LEDGER" --gate-results "$GATES" --genome "$GENOME" \
+  --registry-root "$REGISTRY_ROOT" --commit-sha "$RELEASE_SHA" --plan-sha256 "$PLAN_SHA" \
+  --public-key-hex "$PUBLIC_KEY_HEX" --valid-from-ns "$FROM_NS" --valid-until-ns "$UNTIL_NS" \
+  --out "$BUNDLE"
+```
+
+Supply each already-active genome as a repeatable `--active-genome` argument. The command produces the SHA-256 of the approval manifest and never overwrites a bundle directory. The unsigned output supports independent review. To produce signed output, run with the same inputs into a fresh directory and pass either `--signature` with a detached binary Ed25519 signature or `--signing-key` with an owner-only file containing a raw 32-byte Ed25519 seed for the pinned public key. Sign the exact canonical `approval.json` bytes prefixed by `DOPPEL-SHADOW-APPROVAL-v2` and a NUL byte. Both signing methods verify the signature before publishing the output. Admission requires the signed bundle.
+
+The canonical trial ledger supplies the reporting command with its variants and returns. The bundle verifies the exact replay and ledger hashes used by that promotion report. It independently recomputes DSR, FDR, HAC, PBO and the block bootstrap from the verified ledger before signing, and admission repeats the calculations. Lock the trial plan before the registered replay interval. A changed plan needs a separate preregistration.
+
+## Input files
+
+Use sorted-key JSON with orjson and an optional final newline for canonical inputs. The promotion report, Layer 5b scorecard and native offshore receipts keep their original formatting since their digests cover exact file bytes. Put the applicable artifact files next to the gate results.
+
+| File | Content |
 | --- | --- |
-| `approval.json` | `schema=doppel.shadow-approval/v1`, exact `genome_id`, `commit_sha`, `scoring_sha256`, `registry_result_sha256`, `valid_from_ns`, `valid_until_ns`, `n_trials`, `trial_head_sha256`, `candidate_trial_id` and a `files` map of SHA-256 digests for each of the next five JSON files. The window is inclusive at the start and exclusive at the end. |
-| `approval.sig` | A binary 64-byte Ed25519 signature over `SIGNATURE_DOMAIN + approval_json_bytes` from the approved key. The domain is `DOPPEL-SHADOW-APPROVAL-v1` followed by a NUL byte. |
-| `plan.json` | `schema=doppel.shadow-trial-plan/v1`, registry `family`, `frozen_ns` before the held-out period opens, and an ordered `attempts` list. Each entry has SHA-256 fields `trial_id`, `genome_id`, `subject_id` and `variant_id`. The service configuration pins this file independently of the approval closure. Include every wallet and variant attempted. |
-| `trials.json` | `schema=doppel.shadow-trial-ledger/v1`, `plan_sha256`, `windows` as ordered `[start_s,end_s]` pairs, and `trials` in plan order. Each has the four identity fields, zero-based `seq`, `previous_sha256`, exact per-window `returns_c` and `sha256` of its object without `sha256`. The initial predecessor is 64 zeros. Include each planned trial on the same eligible nonoverlapping window grid. A missing return prevents PBO from passing. |
-| `replay.json` | `schema=doppel.shadow-replay/v1`, `genome_id`, `commit_sha`, the exact canonical, bound first registry `verdict`, its `windows` with `start`, `end`, `eligible`, `net_c`, and the nine `scenarios` across `api_live_rebated`, `api_base_0695` and `maker_0` at sizes 25, 100 and 500. Record `fee_tier`, `coefficient`, `size`, `execution=l2_book_walk_vwap`, `attempted`, `filled` and `net_c` in each scenario. Diagnostic `gateway_0095` rows may be retained. The signed closure attests that the depth scenario outputs came from the sealed input and registered candidate. |
-| `gates.json` | `schema=doppel.shadow-gates/v1`, `genome_id` and a `gates` map with exactly the names below. |
-| `layer5b.json` | The recorded `doppel.layer5b-score/v1` scorecard. Its source receipts must cover the book, BRTI, Binance and Hyperliquid. Synthetic fixtures have no production weight. |
+| `plan.json` | `doppel.shadow-trial-plan/v1`, registry `family`, cutoff `frozen_ns` and ordered `attempts`. Every attempt has SHA-256 `trial_id`, `genome_id`, `subject_id`, `variant_id`. Preserve every wallet and variant evaluated. |
+| `trials.json` | `doppel.shadow-trial-ledger/v1`, exact `plan_sha256`, ordered nonoverlapping `windows` and `trials` in plan order. Each row has its four identity fields, zero-based `seq`, `previous_sha256`, aligned `returns_c`, and the canonical hash of the row without `sha256`. The first predecessor is 64 zeros. |
+| `replay.json` | `doppel.shadow-replay/v1`, `genome_id`, `commit_sha`, exact registry `verdict`, eligible `windows` and nine `scenarios`. Scenarios report `fee_tier` (`api_live_rebated` 0.02085, `api_base_0695` 0.0695, `maker_0` 0), `coefficient`, `size` (25, 100, 500), `execution=l2_book_walk_vwap`, `attempted`, `filled`, `net_c`. Diagnostic `gateway_0095` rows are accepted in addition. Include `trial_id` when multiple trials share the candidate genome ID. |
+| Gate results | A `gates` map. Supply measured `paper_replay_slippage` as `status`, `value`, `observations`, `source_sha256`. Supply `residual_correlation` as `status`, `values` keyed by every active genome, `observations`, `source_sha256`. Takers also supply those numeric fields for `markout_2s` and `markout_10s`. The bundle fills statuses for recomputable gates and the exact provenance links for archetype artifacts. An explicit input status can never override a failed proof. |
+| `layer5b.json` | Takers require the recorded `doppel.layer5b-score/v1` with both benchmark families, random abstention, matched-count evidence, zero-leakage checks, ±1 s timing and measured RSS. The candidate's sealed trigger must match its benchmark family. |
+| `binance.json`, `hyperliquid.json` | Native `doppel.layer5b-source/v1` receipts with exact role and `local_receive_ns`, plus `segments` containing relative native paths, stream names, SHA-256 digests and half-open `covered_range_ns` intervals. The taker scorecard must name these exact receipt hashes. An offshore-guarded maker needs their coverage over the eligible replay windows. |
+| `maker.json` | `doppel.shadow-maker/v1`, `genome_id`, `archetype`, `replay_sha256`, and `input_sha256` from the registry-bound replay. The `queue` receipt reports model `pessimistic_l2_fifo`, source digest, `windows`, `quote_observations`, `known_queue_observations`, `fills`, `verified_fills`, `fill_windows`, `feed_gap_windows`, `min_trade_coverage`, `max_inferred_share`, `max_unidentified_share`. The `markouts` map has `2s` and `10s` with positive `value`, `observations`, `windows` and `source_sha256`. The `stress` receipt reports `method=delayed_cancel`, `plan_sha256`, `source_sha256`, `windows`, `base_cancel_latency_ms`, `extra_cancel_latency_ms`, `net_c_per_window`, `ci_low_c_per_window`. Record the locked stress assumptions and all eligible windows. |
+| `probability.json` | Candidate probability model for the Shadow watchdog. Its exact digest is included in the receipt when supplied. Its genome ID and fit end must match the candidate and predate the registered replay. |
 
-The required gate names are `dsr`, `pbo`, `fdr`, `hac`, `bootstrap`, `promo_edge`, `markout_2s`, `markout_10s`, `paper_replay_slippage`, `residual_correlation` and `taker_timing`. Each must state `MEASURED` or `MEASURED_PASS`.
+The derived archetype comes from the executable genome mode and its hashed evidence. A taker uses `taker_trigger_source=lead` or `fair`. Makers may explicitly declare `archetype=structural_twap`. List public data sources referenced by a maker cancel guard in the hashed `cancel_guard_sources` field. A pure maker can supply both offshore receipts, or omit them. Both taker archetypes require them.
 
-- DSR, PBO, FDR, HAC and bootstrap are recomputed from the full aligned series. The declared statuses and submitted p-values cannot supply them.
-- The promo edge comes from the signed fee and depth grid, at a positive net and completion of at least half the attempts at one size.
-- Both markouts and paper slippage carry a signed finite `value` in cents, positive `observations` and a `source_sha256` for the independently reviewed measurement.
-- Residual correlation carries `values` keyed by every active genome ID, `observations` and a `source_sha256`. The deployment roster supplies the expected IDs. The evidence must explicitly cover even an empty active roster.
-- Taker timing carries `source_sha256` equal to the exact Layer 5b scorecard digest. For a taker genome, `trigger_source` also matches `genome.evidence.taker_trigger_source`, and its benchmark subject must pass. The validator checks both positive subjects' truth and market denominators, precision and recall, matched-count consistency, one-second timing, leakage perturbation, recorded-source receipts and peak RSS. The random taker must abstain against positive truth. The benchmark measures the capability of the reconstructed trigger family. It cannot establish a particular wallet's private intent.
+The assembled `doppel.shadow-gates/v2` map records `MEASURED_PASS`, `MEASURED_FAIL`, `UNMEASURED`, or `NOT_APPLICABLE_ARCHETYPE`. A promotable bundle requires every applicable gate to pass and every inapplicable gate to be explicitly marked. Version 1 signatures require reassembly and renewed approval under the archetype-aware contract.
 
-On admission, the service writes `<receipt_dir>/<genome_id>/admission_receipt.json` atomically. The canonical object without `receipt_sha256` reproduces its receipt hash. This writes evidence about authorization only. A runtime activation requires a successful start and a corresponding journal record. Only a byte-identical retry can reuse an existing file. Use a separate receipt directory for a subsequent approved run and preserve the earlier receipt.
-
-No production replay exporter for the complete signed fee and 25/100/500 depth grid, trusted key provisioning, recorded Layer 5b proof, or actual admission is implied by fixture tests. A lead can build and sign a real bundle only after all measurements exist.
+Admission independently rechecks the hard gates, then issues `<receipt_dir>/<genome_id>/admission_receipt.json`. The exact canonical object without `receipt_sha256` reproduces that digest. Only a byte-identical retry can reuse an existing receipt. The receipt authorizes the paper Shadow path. Successful runtime startup separately records activation in its journal.
