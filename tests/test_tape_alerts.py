@@ -66,19 +66,20 @@ def test_restart_alert_with_reset_counters_and_retry(tmp_path, monkeypatch, heal
     monkeypatch.setattr(alerts.time, "time_ns", lambda: NOW)
     recorders = [(UNIT, tmp_path)]
     state = tmp_path / "state.json"
+    webhook = tmp_path / "test-webhook"
     sent = []
     monkeypatch.setattr(alerts, "send_discord", lambda _, messages: sent.extend(messages))
-    alerts.poll(recorders, [], state, None)
+    alerts.poll(recorders, [], state, webhook)
     assert sent == []
     current["InvocationID"] = "two"
     monkeypatch.setattr(alerts, "send_discord",
                         lambda *_: (_ for _ in ()).throw(OSError("unavailable")))
     with pytest.raises(OSError, match="unavailable"):
-        alerts.poll(recorders, [], state, None)
+        alerts.poll(recorders, [], state, webhook)
     assert json.loads(state.read_bytes())["units"][UNIT]["InvocationID"] == "one"
     monkeypatch.setattr(alerts, "send_discord", lambda _, messages: sent.extend(messages))
-    alerts.poll(recorders, [], state, None)
-    alerts.poll(recorders, [], state, None)
+    alerts.poll(recorders, [], state, webhook)
+    alerts.poll(recorders, [], state, webhook)
     assert sent == [f"{UNIT} restarted"]
 
 

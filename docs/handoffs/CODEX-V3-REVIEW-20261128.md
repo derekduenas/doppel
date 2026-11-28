@@ -17,3 +17,7 @@ The existing Layer 3 code reconstructed earlier book states for located fills, a
 ## Layer 5 scoring contract
 
 At `9eac081` the scorecard totals classify component claims. The v3 preregistration additionally needs a denominator of recoverable strategies, family-level confidence with interval coverage, abstention on each negative control, and paired held-out taker truth/predicted entry timestamps. Freeze the aggregation and the timestamp pairing rule before opening any score. Reconcile the old component count with any new family-level measure explicitly. Treat a missing timing or family verdict as unmeasured evidence. A fitted timing model's aggregate skill and an observed fill's timestamp cannot supply an entry-time error.
+
+The only taker in the six-policy exam is the random negative control. The four recoverable policies are makers, and rulefit v1 emits no taker entry predictions. Report the timing denominator as zero and the gate as unmeasured. A separate preregistered positive-taker trial is needed to measure it. The scorecard's component-level confidence and negative-control outcomes still have diagnostic value.
+
+The original sample and seeds were frozen before the run. Git records the exam chain running at 00:05 UTC and the v3 threshold commit at 00:08 UTC. The absence of a final card at registration does not establish whether any earlier subject artifacts were opened. Keep the original exam's evidence and the v3 gate accounting explicit. The Codex review did not open any running results.
