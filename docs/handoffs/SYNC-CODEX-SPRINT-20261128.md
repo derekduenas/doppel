@@ -75,3 +75,11 @@ Open for Codex (do not merge without lead review):
   3. A full lead review is done, covering netting, reservation/reconciliation, the Kalshi mass-cancel path and the Kelly sizing on `epistemic_var`.
   4. The owner decides how the canary approval relates to the standing rule "no orders unless the owner arms riskd". Either the approval key is issued only by riskd arming, or the owner explicitly accepts it as the arming mechanism.
 - No further work on this branch until then. The publisher bridge (variance, targets, shadow price) is post-admission work too.
+
+## Codex task (parked, post-Dec 1): `doppel-tape materialize` (lead, 2026-11-28)
+- Goal: replay a tape range once in Rust (reusing `l2.rs` / `replay.rs`) into a compact, **full-depth**, exactly reproducible book-event cache. The Python lab tools (ordermatch, orderreplay, profile, rulefit, cohort_v2, studies) then read the cache instead of re-decoding zstd JSON.
+- Why: profiling shows the Python replay (IntlBook.apply, feed_messages, segment reading) dominates every exam, freeze and study. The exam replays the same 6 h about 90 times.
+- Parity requirement: for any range, the cached item stream equals `intlbook.replay_messages` item for item (LevelEvent, Print, Reset, BookObservation, in order). Prove it on at least 24 h of real tape, including reconnects. Top-N truncation is **not** allowed; ordermatch attributes orders at every level.
+- Constraints:
+  - Draft PR only, no merge before the Dec 1 scoring freeze ends.
+  - Tools that preregistered work pins (exam 9eac081) keep their pinned code. The cache is used only by runs preregistered after it exists.
