@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, Write},
     os::{
@@ -34,7 +34,8 @@ pub struct Ledger {
     head: String,
 }
 
-pub(crate) type Recovery = (Ledger, Option<State>, BTreeSet<(Venue, String)>);
+pub(crate) type ClosedOrders = BTreeMap<(Venue, String), String>;
+pub(crate) type Recovery = (Ledger, Option<State>, BTreeSet<(Venue, String)>, ClosedOrders);
 
 impl Ledger {
     pub(crate) fn open(path: &Path) -> Result<Recovery> {
@@ -53,6 +54,7 @@ impl Ledger {
         let mut ledger = Self { file, seq: 0, head: "0".repeat(64) };
         let mut state = None;
         let mut seen = BTreeSet::new();
+        let mut closed = BTreeMap::new();
         let mut reader = BufReader::new(&ledger.file);
         let mut line = String::new();
         while reader.read_line(&mut line)? != 0 {
@@ -71,13 +73,21 @@ impl Ledger {
                     return Err("ledger already contains this fill".into());
                 }
             }
+            if p.event["closed"].as_bool() == Some(true) {
+                let venue = serde_json::from_value(p.event["venue"].clone())?;
+                let venue_id = p.event["venue_id"].as_str().ok_or("closed venue ID missing")?;
+                let client_id = p.event["client_id"].as_str().ok_or("closed client ID missing")?;
+                if closed.insert((venue, venue_id.to_owned()), client_id.to_owned()).is_some() {
+                    return Err("ledger closed the order twice".into());
+                }
+            }
             ledger.seq += 1;
             ledger.head = row.sha256;
             state = Some(p.state);
             line.clear();
         }
         drop(reader);
-        Ok((ledger, state, seen))
+        Ok((ledger, state, seen, closed))
     }
 
     pub(crate) fn append(&mut self, event: Value, state: &State) -> Result<()> {

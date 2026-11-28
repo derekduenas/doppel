@@ -617,3 +617,63 @@ async fn main_result() -> Result<()> {
     };
     run(config, live, reset).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use doppel_exec::{risk::Level, Kind};
+
+    #[tokio::test]
+    async fn dry_run_records_request_and_uses_no_live_transport() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("canary.jsonl");
+        let now = wall_ns();
+        let mut oms = Oms::open(&path, Limits::default(), None, [Venue::Pmus].into(), now).unwrap();
+        let market = Market { venue: Venue::Pmus, id: "fixture-btc-up".into() };
+        oms.venue_ready(Venue::Pmus, true);
+        oms.rtt(Venue::Pmus, 5, now);
+        for feed in [Feed::Brti, Feed::Binance, Feed::Hyperliquid] {
+            assert!(oms.feed(feed, now, now));
+        }
+        assert!(oms
+            .book(
+                market.clone(),
+                Book {
+                    received_ns: now,
+                    bids: vec![Level { price_bps: 4900, quantity: 40 }],
+                    asks: vec![Level { price_bps: 5100, quantity: 40 }]
+                },
+                now
+            )
+            .unwrap());
+        assert!(oms.signal(
+            Signal {
+                genome_id: "fixture".into(),
+                market,
+                p_hat: 0.8,
+                epistemic_var: 0.,
+                target_contracts: 3,
+                shadow_expected_price_bps: Some(5100),
+                kind: Kind::Taker,
+                ts_ns: now
+            },
+            now
+        ));
+        let action = oms.next(now).unwrap().unwrap();
+        let api = Api::Pmus(Pmus::new("fixture-id-not-logged".into(), SigningKey::from_bytes(&[42; 32])));
+        dispatch(&mut oms, action, &Client::new(), &api, false, &mut RateLimit::new(), &mut 0).await.unwrap();
+        let raw = fs::read_to_string(path).unwrap();
+        assert!(!raw.contains("fixture-id-not-logged"));
+        assert!(!raw.contains("X-PM-Signature"));
+        let request = raw
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .find(|row| row["payload"]["event"]["type"] == "request")
+            .unwrap();
+        let event = &request["payload"]["event"];
+        assert_eq!(event["path"], "/v1/orders");
+        assert_eq!(event["body"]["marketSlug"], "fixture-btc-up");
+        assert_eq!(event["body"]["quantity"], 3);
+        assert!(!raw.contains("\"type\":\"fill\""));
+    }
+}

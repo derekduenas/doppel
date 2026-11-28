@@ -1,7 +1,7 @@
 //! The sole order-emitting state machine. A timeout keeps the reservation live.
 use crate::{
     admission::Approval,
-    ledger::Ledger,
+    ledger::{ClosedOrders, Ledger},
     netting::{fresh, Net, Netter, Signal, WatchState},
     risk::{self, Book, Limits, Plan, Position},
     Effect, Kind, Market, Order, Result, Venue, WireEvent, DAY_NS, MILLIS,
@@ -93,6 +93,7 @@ pub struct Oms {
     books: BTreeMap<Market, Book>,
     netter: Netter,
     seen: BTreeSet<(Venue, String)>,
+    closed: ClosedOrders,
     sweeping: bool,
     failed: bool,
 }
@@ -103,7 +104,7 @@ impl Oms {
         if venues.is_empty() || now == 0 {
             return Err("missing configured venues or clock".into());
         }
-        let (mut ledger, existing, seen) = Ledger::open(path)?;
+        let (mut ledger, existing, seen, closed) = Ledger::open(path)?;
         let scope = approval.as_ref().map_or("dry-run", Approval::account_scope).to_owned();
         let state = if let Some(mut state) = existing {
             if state.scope != scope || state.last_ns > now {
@@ -127,6 +128,7 @@ impl Oms {
             approval,
             venues,
             seen,
+            closed,
             cancel_dispatched: BTreeSet::new(),
             feeds: BTreeMap::new(),
             rtts: BTreeMap::new(),
@@ -205,7 +207,9 @@ impl Oms {
     }
 
     pub fn rtt(&mut self, venue: Venue, rtt_ms: u64, now: u64) {
-        self.rtts.insert(venue, (rtt_ms, now));
+        if self.rtts.get(&venue).is_none_or(|&(previous, ts)| now > ts || (now == ts && rtt_ms > previous)) {
+            self.rtts.insert(venue, (rtt_ms, now));
+        }
     }
 
     pub fn venue_ready(&mut self, venue: Venue, ready: bool) {
@@ -235,7 +239,11 @@ impl Oms {
 
     pub fn watchdog(&mut self, genome: String, state: WatchState, ts: u64, now: u64) -> Result<()> {
         self.clock(now)?;
-        if ts > now || ts == 0 || !self.netter.watch(genome.clone(), state, ts) {
+        if ts > now
+            || ts == 0
+            || self.approval.as_ref().is_some_and(|a| !a.active_genome(&genome, now))
+            || !self.netter.watch(genome.clone(), state, ts)
+        {
             return Ok(());
         }
         if state == WatchState::KillDemoteShadow {
@@ -477,6 +485,9 @@ impl Oms {
         self.clock(now)?;
         match event {
             WireEvent::Ack { client_id, venue_id } => {
+                if self.closed.get(&(venue, venue_id.clone())) == Some(&client_id) {
+                    return Ok(());
+                }
                 if venue_id.is_empty()
                     || self
                         .state
@@ -507,11 +518,14 @@ impl Oms {
                         return self.fault("invalid_terminal_size", now);
                     }
                     w.terminal_fill = Some(filled);
-                    if w.filled == filled {
+                    let release = w.filled == filled;
+                    let client_id = w.order.client_id.clone();
+                    if release {
                         self.state.working.swap_remove(i);
+                        self.closed.insert((venue, venue_id.clone()), client_id.clone());
                     }
-                    self.save(json!({"type":"terminal","venue":venue,"venue_id":venue_id,
-                                     "cum_filled":filled,"ack_ts_ns":now}))?;
+                    self.save(json!({"type":"terminal","venue":venue,"venue_id":venue_id,"client_id":client_id,
+                                     "cum_filled":filled,"ack_ts_ns":now,"closed":release}))?;
                 }
                 Ok(())
             }
@@ -549,8 +563,10 @@ impl Oms {
                 let w = &mut self.state.working[i];
                 w.venue_id = Some(venue_id.clone());
                 w.filled += quantity;
-                if w.filled == w.order.quantity || w.terminal_fill == Some(w.filled) {
+                let release = w.filled == w.order.quantity || w.terminal_fill == Some(w.filled);
+                if release {
                     self.state.working.swap_remove(i);
+                    self.closed.insert((venue, venue_id.clone()), order.client_id.clone());
                 }
                 self.seen.insert(key);
                 for seconds in [2_u32, 10] {
@@ -569,7 +585,7 @@ impl Oms {
                     "intent_ts_ns":order.intent_ts_ns,"fill_price_bps":price_bps,"quantity":quantity,
                     "fee_paid_micros":fee_micros,"rebate_est_micros":risk::estimated_rebate(&order,quantity,price_bps,ts_ns),
                     "shadow_expected_price_bps":order.shadow_price_bps,"slippage_cents":f64::from(slip)/100.0,
-                    "canary_slippage_pass":slip <= 50}))?;
+                    "canary_slippage_pass":slip <= 50,"closed":release}))?;
                 self.trip_daily(now)?;
                 if fee_micros.is_none() {
                     self.fault("fill_fee_unmeasured", now)?;
@@ -742,7 +758,13 @@ mod tests {
         oms.event(Venue::Pmus, fill.clone(), T).unwrap();
         oms.event(Venue::Pmus, fill, T).unwrap();
         assert!(oms.working_order(Venue::Pmus, "o").is_none());
+        oms.event(Venue::Pmus, WireEvent::Ack { client_id: o.client_id.clone(), venue_id: "o".into() }, T).unwrap();
+        assert_eq!(oms.stop(), None);
         assert_eq!(oms.state.holdings[0].position.quantity, 2);
+        drop(oms);
+        let mut oms = healthy(&dir.path().join("ledger"), T);
+        oms.event(Venue::Pmus, WireEvent::Ack { client_id: o.client_id, venue_id: "o".into() }, T).unwrap();
+        assert_eq!(oms.stop(), None);
     }
 
     #[test]

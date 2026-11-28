@@ -76,6 +76,10 @@ impl Approval {
             && self.grants.iter().any(|g| g.genome_id == genome && now < g.valid_until_ns && g.markets.contains(market))
     }
 
+    pub fn active_genome(&self, genome: &str, now: u64) -> bool {
+        self.grants.iter().any(|g| g.genome_id == genome && now < g.valid_until_ns)
+    }
+
     pub fn active_genomes<'a>(&'a self, market: &'a Market, now: u64) -> impl Iterator<Item = &'a str> + 'a {
         self.grants.iter().filter(move |g| now < g.valid_until_ns && g.markets.contains(market)).map(|g| g.genome_id.as_str())
     }
