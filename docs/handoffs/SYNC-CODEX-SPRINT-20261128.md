@@ -32,3 +32,11 @@ All branches below are pushed to origin and apex; none is merged yet. Rebase on 
 - Both agents push to the same repos. Fetch first, never force-push `main`, never rewrite another agent's branch.
 - Only the lead deploys, via `ops/deploy.sh` from `main`.
 - Running on Apex now (do not stop): Layer 5 exam chain (`doppel-exam-chain`), cohort v1 absorption (`doppel-absorb-nov26`), mechanism studies (`doppel-mech`), cohort v2 freeze timer, CI checkouts under `/var/tmp/doppel-ci`.
+
+## Storage (added 2026-11-28 00:40 UTC)
+
+R2 is live (bucket `doppel-tape`, config `/etc/doppel/rclone.conf`, use `/usr/local/bin/rclone-r2`; apt rclone 1.60 fails with
+`NotImplemented`, and `acl = private` must not be set). Where data lives is now defined by `ops/storage-policy.toml`, with
+`ops/storage.py copy|audit` and `doppel-storage.timer` (hourly :20) installed on Apex from main 09c22dc (`docs/STORAGE.md`).
+For PR-1: make `archive_tape.py`/`tape_janitor.py` read that policy instead of their own paths, and have the janitor prune
+only hours listed in `verified_paths` of `/var/tmp/doppel-storage-audit.json` — do not add a second uploader.
