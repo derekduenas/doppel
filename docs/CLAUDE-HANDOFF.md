@@ -1,5 +1,16 @@
 # Claude Code handoff
 
+## DOPPEL v2 sprint · PR‑1
+
+Use `sprint/pr-1-protect-apex` and [PR‑1 operations and evidence](SPRINT-V2-PR1.md).
+Hosted CI passed for `0e1251d` in 5m08s. The isolated Apex Rust capture verified 13
+streams. The dry run inventoried 1,088 closed segments. The original recorders remain
+active, and the cohort absorption, mechanism study, cohort freeze and fair-vs-market
+jobs are parked. The missing live gates are capacity, a private R2/B2 destination,
+the alert credential and a verified rollout. DigitalOcean has locked the connected team.
+The owner requires every test suite and full replay to run on Forge‑1 or GitHub Actions.
+Freeze the evaluator and cohort-v1. Preserve PR merge order.
+
 ## Wallet-by-wallet audit · Layer 4
 
 Resume on `review/wallet-rivals-20261127` in `/Users/derekduenas/doppel-wallet-rivals-20261127`.
