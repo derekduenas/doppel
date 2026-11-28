@@ -83,6 +83,20 @@ impl Netter {
         true
     }
 
+    /// Every active contributor must publish the same decision timestamp, including flat targets.
+    pub fn complete<'a>(&self, market: &Market, now: u64, expected: impl Iterator<Item = &'a str>) -> bool {
+        let Some(signals) = self.by_market.get(market) else { return false };
+        let mut cutoff = None;
+        for genome in expected {
+            let Some(s) = signals.get(genome).filter(|s| fresh(s.ts_ns, now)) else { return false };
+            if cutoff.is_some_and(|ts| ts != s.ts_ns) {
+                return false;
+            }
+            cutoff = Some(s.ts_ns);
+        }
+        cutoff.is_some()
+    }
+
     pub fn net(&self, market: &Market, now: u64, allowed: impl Fn(&str) -> bool) -> Option<Net> {
         let used: Vec<_> = self
             .by_market

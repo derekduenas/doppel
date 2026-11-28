@@ -43,6 +43,7 @@ struct Working {
     filled: u32,
     terminal_fill: Option<u32>,
     cancel_sent: bool,
+    sent: bool,
     submitted_ns: u64,
 }
 
@@ -284,6 +285,7 @@ impl Oms {
     fn stop_entries(&self, now: u64) -> bool {
         self.state.halt.is_some()
             || self.sweeping
+            || self.state.working.iter().any(|w| self.cancel_dispatched.contains(&w.order.market.venue))
             || self.failed
             || self.approval.as_ref().is_some_and(|a| !a.valid(now))
             || [Feed::Brti, Feed::Binance, Feed::Hyperliquid].iter().any(|f| !self.feeds.get(f).is_some_and(|&ts| fresh(ts, now)))
@@ -313,9 +315,20 @@ impl Oms {
     }
 
     /// Each call emits at most one action; the caller processes it before asking again.
+    fn expire_marks(&mut self, now: u64) -> Result<()> {
+        while let Some(i) = self.state.marks.iter().position(|mark| now > mark.due_ns.saturating_add(250 * MILLIS)) {
+            let mark = self.state.marks.swap_remove(i);
+            self.save(json!({"type":"markout","venue":mark.market.venue,"market_id":mark.market.id,
+                             "fill_id":mark.fill_id,"horizon_s":mark.seconds,"due_ts_ns":mark.due_ns,
+                             "book_ts_ns":null,"markout_cents":null,"reason":"no_eligible_book"}))?;
+        }
+        Ok(())
+    }
+
     pub fn next(&mut self, now: u64) -> Result<Option<Action>> {
         self.clock(now)?;
         self.trip_daily(now)?;
+        self.expire_marks(now)?;
         self.netter.prune(now);
         let stopped = self.stop_entries(now);
         if stopped {
@@ -326,7 +339,7 @@ impl Oms {
             self.cancel_dispatched.clear();
         }
         let flatten = self.state.flatten && !self.state.reconcile_required;
-        if (stopped && !flatten) || self.failed {
+        if (stopped && !flatten) || self.failed || (flatten && !self.state.working.is_empty()) {
             return Ok(None);
         }
         let mut exposure: BTreeSet<_> = self.state.holdings.iter().map(|h| h.market.clone()).collect();
@@ -350,7 +363,11 @@ impl Oms {
                     ts_ns: now,
                 })
             } else {
-                self.netter.net(market, now, |g| self.approval.as_ref().is_none_or(|a| a.allows(g, market, now)))
+                if self.approval.as_ref().is_some_and(|a| !self.netter.complete(market, now, a.active_genomes(market, now))) {
+                    None
+                } else {
+                    self.netter.net(market, now, |g| self.approval.as_ref().is_none_or(|a| a.allows(g, market, now)))
+                }
             };
             let desired = net.and_then(|net| {
                 Plan { market, book, position: holding, net, limits: &self.limits, remaining_day, now, flatten, sweeping: self.sweeping }
@@ -391,6 +408,7 @@ impl Oms {
             filled: 0,
             terminal_fill: None,
             cancel_sent: false,
+            sent: false,
             submitted_ns: now,
         });
         self.save(json!({"type":"intent","intent_ts_ns":order.intent_ts_ns,"order":order}))?;
@@ -405,7 +423,7 @@ impl Oms {
         self.clock(now)?;
         let record = match action {
             Action::Submit(o) => {
-                if !self.state.working.iter().any(|w| &w.order == o && w.venue_id.is_none()) {
+                if !self.state.working.iter().any(|w| &w.order == o && !w.sent && w.venue_id.is_none()) {
                     return Err("request was not reserved by the OMS".into());
                 }
                 // Re-evaluate the circuit breakers just before transport dispatch.
@@ -415,6 +433,10 @@ impl Oms {
                 {
                     self.reject_submission(&o.client_id, now)?;
                     return Err("entry circuit opened before submit".into());
+                }
+                if let Some(w) = self.state.working.iter_mut().find(|w| w.order.client_id == o.client_id) {
+                    w.sent = true;
+                    w.submitted_ns = now;
                 }
                 json!({"type":"submit","client_id":o.client_id,"intent_ts_ns":o.intent_ts_ns,
                        "submit_ts_ns":now,"shadow_expected_price_bps":o.shadow_price_bps})

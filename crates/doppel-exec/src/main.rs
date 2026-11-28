@@ -1,4 +1,5 @@
 //! Read receipt-clock market events from a trusted local JSONL producer.
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use doppel_exec::{
     admission::Approval,
     netting::{Signal, WatchState},
@@ -15,7 +16,7 @@ use ed25519_dalek::{pkcs8::DecodePrivateKey, SigningKey, VerifyingKey};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::{header::HeaderMap, Client};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
@@ -58,6 +59,7 @@ struct ApprovalFiles {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Input {
     Signal { signal: Signal },
+    Signals { signals: Vec<Signal> },
     Book { market: Market, book: Book },
     Feed { feed: Feed, received_ns: u64 },
     Watchdog { genome_id: String, state: WatchState, ts_ns: u64 },
@@ -92,10 +94,10 @@ impl Api {
         }
     }
 
-    fn open_orders(&self, ms: u64) -> Request {
+    fn open_orders(&self, ms: u64) -> Result<Request> {
         match self {
-            Self::Pmus(p) => p.open_orders(ms),
-            Self::Kalshi(k) => k.resting_value(ms),
+            Self::Pmus(p) => Ok(p.open_orders(ms)),
+            Self::Kalshi(k) => k.cancel_all(ms),
         }
     }
 
@@ -136,7 +138,6 @@ impl Api {
                     .as_array()
                     .is_some_and(|p| p.iter().all(|row| row["position_fp"].as_str().and_then(|s| s.parse::<f64>().ok()) == Some(0.0)))
                     && positions["cursor"].as_str() == Some("")
-                    && orders["total_resting_order_value"].as_i64() == Some(0)
             }
         }
     }
@@ -234,10 +235,14 @@ async fn socket(venue: Venue, api: Arc<Api>, outbound: mpsc::Sender<Remote>) -> 
     }
 }
 
-fn protected_bytes(path: &Path, private: bool) -> Result<Vec<u8>> {
+fn protected_bytes(path: &Path, private: bool, operator_owned: bool) -> Result<Vec<u8>> {
     let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)?;
     let meta = file.metadata()?;
-    if !meta.is_file() || meta.mode() & if private { 0o077 } else { 0o022 } != 0 || meta.len() > 65_536 {
+    if !meta.is_file()
+        || (operator_owned && meta.uid() != 0)
+        || meta.mode() & if private { 0o077 } else { 0o022 } != 0
+        || meta.len() > 65_536
+    {
         return Err("unsafe canary configuration or credential file".into());
     }
     let mut data = Vec::new();
@@ -253,8 +258,22 @@ fn setup(config: &Config, live: bool) -> Result<BTreeMap<Venue, Arc<Api>>> {
     for venue in &config.venues {
         let (id, key) = if live {
             let id = venue.key_id.clone().filter(|s| !s.is_empty()).ok_or("missing live key ID")?;
-            let pem = protected_bytes(venue.key_file.as_deref().ok_or("missing live key file")?, true)?;
-            let key = SigningKey::from_pkcs8_pem(std::str::from_utf8(&pem)?).map_err(|_| "invalid Ed25519 key")?;
+            let pem = protected_bytes(venue.key_file.as_deref().ok_or("missing live key file")?, true, false)?;
+            let encoded = std::str::from_utf8(&pem)?.trim();
+            let key = if encoded.starts_with("-----BEGIN") {
+                SigningKey::from_pkcs8_pem(encoded).map_err(|_| "invalid Ed25519 PEM")?
+            } else {
+                let raw = STANDARD.decode(encoded).map_err(|_| "invalid Ed25519 key encoding")?;
+                if !matches!(raw.len(), 32 | 64) {
+                    return Err("invalid Ed25519 seed length".into());
+                }
+                let seed: [u8; 32] = raw[..32].try_into()?;
+                let key = SigningKey::from_bytes(&seed);
+                if raw.len() == 64 && raw[32..] != key.verifying_key().to_bytes() {
+                    return Err("Ed25519 seed and public half disagree".into());
+                }
+                key
+            };
             (id, key)
         } else {
             ("offline-fixture".to_owned(), SigningKey::from_bytes(&[42; 32]))
@@ -274,6 +293,14 @@ fn apply_input(oms: &mut Oms, item: Input, now: u64, live: bool, sweep_clock: &m
     match item {
         Input::Signal { signal } => {
             oms.signal(signal, now);
+        }
+        Input::Signals { signals } => {
+            if signals.len() > 256 {
+                return Err("too many signals in one frame".into());
+            }
+            for signal in signals {
+                oms.signal(signal, now);
+            }
         }
         Input::Book { market, book } => {
             oms.book(market, book, now)?;
@@ -402,12 +429,16 @@ async fn run(config: Config, live: bool, reset: bool) -> Result<()> {
     let approval = if live {
         let files = config.approval.as_ref().ok_or("live approval is required")?;
         let bytes: [u8; 32] = hex::decode(&files.trusted_public_key_hex)?.try_into().map_err(|_| "invalid approval key")?;
-        Some(Approval::verify(
-            &protected_bytes(&files.manifest, false)?,
-            &protected_bytes(&files.signature, false)?,
+        let approval = Approval::verify(
+            &protected_bytes(&files.manifest, false, false)?,
+            &protected_bytes(&files.signature, false, false)?,
             &VerifyingKey::from_bytes(&bytes)?,
             wall_ns(),
-        )?)
+        )?;
+        if !approval.matches_account(&config.ledger, config.venues.iter().filter_map(|v| v.key_id.as_deref().map(|key| (v.venue, key)))) {
+            return Err("approval does not match the configured account keys or ledger".into());
+        }
+        Some(approval)
     } else {
         None
     };
@@ -415,13 +446,28 @@ async fn run(config: Config, live: bool, reset: bool) -> Result<()> {
     let (remote_tx, mut remote_rx) = mpsc::channel(256);
     let (probe_tx, mut probe_rx) = mpsc::channel(8);
     let mut tasks = Vec::new();
+    let mut quiet_until = 0;
     for (&venue, api) in &apis {
         if !live {
             oms.venue_ready(venue, true);
             continue;
         }
+        let orders_request = api.open_orders(wall_ns() / MILLIS)?;
+        if venue == Venue::Kalshi {
+            oms.request(
+                &Action::CancelAll { venue },
+                orders_request.method,
+                &orders_request.path,
+                orders_request.body.as_ref(),
+                wall_ns(),
+            )?;
+        }
+        let orders = transport(&client, api, orders_request).await?;
         let positions = transport(&client, api, api.positions(wall_ns() / MILLIS)).await?;
-        let orders = transport(&client, api, api.open_orders(wall_ns() / MILLIS)).await?;
+        if venue == Venue::Kalshi && (200..300).contains(&orders.status) {
+            quiet_until = wall_ns().saturating_add(60_000 * MILLIS);
+            oms.cancellation_ack(&Action::CancelAll { venue }, wall_ns())?;
+        }
         if !(200..300).contains(&positions.status) || !(200..300).contains(&orders.status) || !api.flat(&positions.data, &orders.data) {
             return Err("account startup reconciliation requires zero positions and resting orders".into());
         }
@@ -472,7 +518,6 @@ async fn run(config: Config, live: bool, reset: bool) -> Result<()> {
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut rate = RateLimit::new();
     let mut sweep_clock = 0;
-    let mut quiet_until = 0;
     let mut ready_venues = BTreeSet::new();
     let mut reset_pending = reset;
     let signal = tokio::signal::ctrl_c();
@@ -565,10 +610,7 @@ async fn main_result() -> Result<()> {
     }
     let config = if live {
         let path = Path::new(&args[3]);
-        let bytes = protected_bytes(path, false)?;
-        if fs::symlink_metadata(path)?.uid() != 0 {
-            return Err("live config must be operator-owned (uid 0)".into());
-        }
+        let bytes = protected_bytes(path, false, true)?;
         toml::from_str(std::str::from_utf8(&bytes)?)?
     } else {
         toml::from_str(&fs::read_to_string(&args[3])?)?

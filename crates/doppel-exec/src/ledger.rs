@@ -7,7 +7,10 @@ use std::{
     collections::BTreeSet,
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, Write},
-    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
+    os::{
+        fd::AsRawFd,
+        unix::fs::{MetadataExt, OpenOptionsExt},
+    },
     path::Path,
 };
 
@@ -36,8 +39,12 @@ pub(crate) type Recovery = (Ledger, Option<State>, BTreeSet<(Venue, String)>);
 impl Ledger {
     pub(crate) fn open(path: &Path) -> Result<Recovery> {
         let file = OpenOptions::new().create(true).read(true).append(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)?;
-        if !file.metadata()?.is_file() {
-            return Err("ledger must be a regular file".into());
+        let meta = file.metadata()?;
+        if !meta.is_file() || meta.mode() & 0o077 != 0 {
+            return Err("ledger must be a private regular file".into());
+        }
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            File::open(parent)?.sync_all()?;
         }
         // The file descriptor holds the writer lease until the OMS exits.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {

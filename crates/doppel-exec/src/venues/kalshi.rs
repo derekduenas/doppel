@@ -74,10 +74,6 @@ impl Kalshi {
         self.request("GET", "/trade-api/v2/portfolio/positions?subaccount=0".into(), None, ts_ms)
     }
 
-    pub fn resting_value(&self, ts_ms: u64) -> Request {
-        self.request("GET", "/trade-api/v2/portfolio/total_resting_order_value".into(), None, ts_ms)
-    }
-
     pub fn ws_headers(&self, ts_ms: u64) -> Vec<(String, String)> {
         self.headers("GET", WS_PATH, ts_ms)
     }

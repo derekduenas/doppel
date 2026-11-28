@@ -212,3 +212,53 @@ impl Plan<'_> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn taker_fee_and_rebate_schedule_use_venue_and_expiry() {
+        let p = 0.5;
+        assert!((fee_dollars(Venue::Pmus, 100, p, Kind::Taker, PROMO_END_NS - 1, false) - 0.52125).abs() < 1e-9);
+        assert!((fee_dollars(Venue::Pmus, 100, p, Kind::Taker, PROMO_END_NS, false) - 1.7375).abs() < 1e-9);
+        assert!((fee_dollars(Venue::Kalshi, 1, p, Kind::Taker, 1, false) - 0.02).abs() < 1e-9);
+        assert_eq!(fee_dollars(Venue::Kalshi, 1, p, Kind::Maker, 1, false), 0.0);
+    }
+
+    #[test]
+    fn crossing_only_when_after_fee_and_full_depth_pass() {
+        let market = Market { venue: Venue::Kalshi, id: "BTC-fixture".into() };
+        let book = Book {
+            received_ns: 1,
+            bids: vec![Level { price_bps: 4900, quantity: 100 }],
+            asks: vec![Level { price_bps: 5000, quantity: 1 }, Level { price_bps: 9500, quantity: 99 }],
+        };
+        let limits = Limits::default();
+        let empty = Position::default();
+        let plan = |p| Plan {
+            market: &market,
+            book: &book,
+            position: &empty,
+            limits: &limits,
+            net: Net {
+                p_meta: p,
+                q_target: 30,
+                epistemic_var: 1e-6,
+                size_scale: 1.0,
+                shadow_expected_price_bps: Some(5000),
+                kind: Kind::Taker,
+                ts_ns: 1,
+            },
+            remaining_day: limits.daily(),
+            now: 1,
+            flatten: false,
+            sweeping: false,
+        };
+        assert!(plan(0.52).order().is_none());
+        let order = plan(0.80).order().unwrap();
+        assert_eq!(order.quantity, 1);
+        assert_eq!(order.price_bps, 5000);
+        assert!(reserve(&order, order.quantity) <= limits.window());
+    }
+}
