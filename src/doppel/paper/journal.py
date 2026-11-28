@@ -26,7 +26,7 @@ import hashlib
 import os
 import time
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 import orjson
 
@@ -138,7 +138,8 @@ class Journal:
                           "dropped_sha256": hashlib.sha256(removed).hexdigest()}], t_ns=None)
         return first
 
-    def append(self, batch: list[dict], t_ns: int | None) -> None:
+    def append(self, batch: list[dict], t_ns: int | None,
+               *, forecast_wall: Callable[[], int] | None = None) -> None:
         """Write one batch; ``t_ns`` (logical time) picks the day file, None = the current file."""
         if not batch:
             return
@@ -148,18 +149,27 @@ class Journal:
                 self.path = p
         if self.path is None:
             raise JournalError("first batch needs a logical time")
-        buf = bytearray()
-        for rec in batch:
+        if forecast_wall is not None and (len(batch) < 2 or batch[-1].get("k") != "cycle"):
+            raise JournalError("a forecast seal requires a cycle marker")
+
+        def encode(rec: dict) -> bytes:
             body = {k: v for k, v in rec.items() if k not in CHAIN_FIELDS}
             body["n"] = self.n
             body["prev"] = self.head
             h = _digest(self.head, body)
             body["h"] = h
-            buf += orjson.dumps(body, option=orjson.OPT_SORT_KEYS) + b"\n"
             self.n += 1
             self.head = h
+            return orjson.dumps(body, option=orjson.OPT_SORT_KEYS) + b"\n"
+
         with open(self.path, "ab") as fh:
-            fh.write(bytes(buf))
+            if forecast_wall is not None:
+                fh.write(b"".join(encode(rec) for rec in batch[:-1]))
+                fh.flush()
+                os.fsync(fh.fileno())
+                fh.write(encode({**batch[-1], "forecast_fsynced_ns": forecast_wall()}))
+            else:
+                fh.write(b"".join(encode(rec) for rec in batch))
             fh.flush()
             os.fsync(fh.fileno())
 

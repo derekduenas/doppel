@@ -52,7 +52,7 @@ def _run(a) -> int:
     except AdmissionRejected as exc:
         print(f"shadow refused: {exc.code}", file=sys.stderr)
         return 2
-    except (RecoveryError, JournalError, ValueError) as exc:
+    except (RecoveryError, JournalError, OSError, ValueError) as exc:
         print(f"cannot start: {exc}", file=sys.stderr)
         return 3
     stop = {"x": False}
@@ -61,8 +61,8 @@ def _run(a) -> int:
     while not stop["x"]:
         try:
             W = rt.cycle()
-        except TapeError as exc:
-            print(f"stopped on a tape failure (journaled): {exc}", file=sys.stderr)
+        except (TapeError, JournalError, OSError) as exc:
+            print(f"paper stopped: {exc}", file=sys.stderr)
             return 3
         if rt.finished:
             print("halted and every window settled: exiting")

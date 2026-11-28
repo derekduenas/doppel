@@ -11,6 +11,7 @@ import stat
 
 from ..strategy.genome import Genome
 from ..strategy.shadow_admission import AdmissionRejected, AdmissionTrust, admit_shadow, simulation_digest
+from ..strategy.shadow_probability import ShadowProbability, load_probability
 from ..twin.engine import SimConfig
 
 APPROVAL = Path("/etc/doppel-shadow/approval.json")
@@ -35,10 +36,14 @@ class ShadowSession:
     receipt_sha256: str
     valid_until_ns: int
     approval_sha256: str
+    probability: ShadowProbability | None = None
 
     def journal_binding(self) -> dict:
-        return {"state": "SHADOW_ACTIVE", "receipt_sha256": self.receipt_sha256,
-                "valid_until_ns": self.valid_until_ns, "approval_sha256": self.approval_sha256}
+        row = {"state": "SHADOW_ACTIVE", "receipt_sha256": self.receipt_sha256,
+               "valid_until_ns": self.valid_until_ns, "approval_sha256": self.approval_sha256}
+        if self.probability is not None:
+            row["probability_sha256"] = self.probability.sha256
+        return row
 
     def stop_reason(self, now_ns: int) -> str | None:
         if now_ns >= self.valid_until_ns:
@@ -81,4 +86,9 @@ def authorize(genome: Genome, bundle: Path, tape: Path, journal: Path,
         raise AdmissionRejected("REJECT_UNTRUSTED_OPERATOR", "shadow configuration is unavailable or invalid") from exc
     receipt = admit_shadow(genome, bundle, trust, journal / "admissions",
                            simulation_sha256=simulation_digest(cfg))
-    return ShadowSession(receipt["receipt_sha256"], receipt["valid_until_ns"], hashlib.sha256(raw).hexdigest())
+    try:
+        model = load_probability(bundle / "probability.json", receipt["probability_sha256"], genome,
+                                 before_ns=receipt["replay_start_ns"])
+    except (OSError, TypeError, KeyError, ValueError) as exc:
+        raise AdmissionRejected("REJECT_UNMEASURED_GATE", "shadow requires a sealed candidate probability") from exc
+    return ShadowSession(receipt["receipt_sha256"], receipt["valid_until_ns"], hashlib.sha256(raw).hexdigest(), model)
