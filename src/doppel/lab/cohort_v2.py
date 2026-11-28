@@ -180,7 +180,7 @@ def load_outcomes(path: Path) -> dict[str, int | None]:
 
 
 def stream_marks(root: Path, stream: str, t_from: int, freeze_s: int, fills: dict[str, list],
-                 outcomes: dict[str, int | None]):
+                 outcomes: dict[str, int | None], *, book_cache: Path | None = None):
     """Streaming ``markout.intl_paths`` over [t_from, freeze): a token's ``MarketPath`` is built from the
     same replay and closed FINALIZE_LAG_S after max(window end, last fill + 60 s), then each of its
     fills is marked with ``markout.marks``. Yields (fill row, {horizon key: gross markout | None}).
@@ -215,7 +215,7 @@ def stream_marks(root: Path, stream: str, t_from: int, freeze_s: int, fills: dic
             yield r, res
 
     now = t_from * NS
-    for _, items in replay_messages(root, stream, t_from, freeze_s, book):
+    for _, items in replay_messages(root, stream, t_from, freeze_s, book, book_cache=book_cache):
         touched = set()
         for it in items:
             now = max(now, it.tw_ns)
@@ -389,7 +389,8 @@ def select(stats: dict[str, dict], n_sniper: int = 100, n_donor: int = 50, n_ctr
 
 # ---------------------------------------------------------------- build
 def build(root: Path, tokens: Path, freeze_s: int, *, cohort_v1: Path | None = None,
-          n_sniper: int = 100, n_donor: int = 50, n_ctrl: int = 50, seed: int = SEED) -> tuple[dict, dict]:
+          n_sniper: int = 100, n_donor: int = 50, n_ctrl: int = 50, seed: int = SEED,
+          book_cache: Path | None = None) -> tuple[dict, dict]:
     root = Path(root)
     if freeze_s % HOUR:
         raise ValueError("the freeze must be an hour boundary")
@@ -427,7 +428,8 @@ def build(root: Path, tokens: Path, freeze_s: int, *, cohort_v1: Path | None = N
             p = segment_path(root, stream, h * NS)
             if p.exists():
                 clob_inputs[_rel(root, p)] = _sha(p)
-        for (f, wallet, slug, _, _), m in stream_marks(root, stream, t_from, freeze_s, by_stream[stream], outcomes):
+        marks = stream_marks(root, stream, t_from, freeze_s, by_stream[stream], outcomes, book_cache=book_cache)
+        for (f, wallet, slug, _, _), m in marks:
             c = cells[wallet][slug]
             for j, k in enumerate(HK):
                 if m[k] is not None:
@@ -502,6 +504,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="doppel-cohort-v2",
                                  description="Freeze the preregistered cohort v2 (sniper, donor, controls).")
     ap.add_argument("--data", type=Path, required=True, help="tape root")
+    ap.add_argument("--book-cache", type=Path, help="verified lossless CLOB Parquet cache root")
     ap.add_argument("--tokens", type=Path, required=True, help="token outcomes: tokens.jsonl or JSON {token: {outcome}}")
     ap.add_argument("--out", type=Path, required=True, help="output directory")
     ap.add_argument("--freeze-at", help="ISO hour boundary (UTC if no offset); default: end of the last complete hour")
@@ -513,7 +516,7 @@ def main(argv=None) -> int:
             if p.exists():
                 raise FileExistsError(p)
         v1 = a.cohort_v1 if a.cohort_v1 is not None else a.out / "cohort-v1.json"
-        doc, stats_doc = build(a.data, a.tokens, _freeze_s(a.freeze_at), cohort_v1=v1)
+        doc, stats_doc = build(a.data, a.tokens, _freeze_s(a.freeze_at), cohort_v1=v1, book_cache=a.book_cache)
         verify(doc, stats_doc)
         atomic_write(stats_p, orjson.dumps(stats_doc, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS), replace=False)
         atomic_write(cohort_p, orjson.dumps(doc, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS), replace=False)

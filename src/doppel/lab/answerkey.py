@@ -654,9 +654,9 @@ class Sim:
                 self.pending.append((tw + lat, len(self.pending), a, o))
 
     # --- the pass
-    def run(self, root: Path, stream: str, out_root: Path, t_from: int, t_to: int) -> None:
+    def run(self, root: Path, stream: str, out_root: Path | None, t_from: int, t_to: int) -> None:
         self.t_stop = t_to
-        w = SegmentWriter(out_root, stream)
+        writer = SegmentWriter(out_root, stream) if out_root is not None else None
         try:
             for rec in _stream_records(root, stream, t_from, t_to):
                 tw = int(rec["tw"])
@@ -665,14 +665,16 @@ class Sim:
                     inj = self.land(t)
                     if inj:
                         self.pre_tw = max(self.pre_tw + 1, t)
-                        w.append(orjson.dumps(inj).decode(), tw=self.pre_tw)
+                        if writer is not None:
+                            writer.append(orjson.dumps(inj).decode(), tw=self.pre_tw)
                         self.stats["injected_records"] += 1
                 if "seq" not in rec:            # a missing hour inside the range: not written
                     self.book.reset()
                     self.stats["missing_segment"] += 1
                     continue
                 if not t_from * NS <= tw < t_to * NS:
-                    w.append(rec["raw"], tw=tw, tm=rec.get("tm"), meta=rec.get("meta"))
+                    if writer is not None:
+                        writer.append(rec["raw"], tw=tw, tm=rec.get("tm"), meta=rec.get("meta"))
                     self.pre_tw = max(self.pre_tw, tw)
                     continue
                 raw = rec.get("raw") or ""
@@ -685,22 +687,25 @@ class Sim:
                 if obj is None:
                     for _, items in self.book.feed_messages(rec):
                         self.stats.update(f"reset:{it.why}" for it in items if isinstance(it, Reset))
-                    w.append(raw, tw=tw, tm=rec.get("tm"), meta=rec.get("meta"))
+                    if writer is not None:
+                        writer.append(raw, tw=tw, tm=rec.get("tm"), meta=rec.get("meta"))
                 else:
                     self.dirty = False
                     new: list = []
                     for m in obj if isinstance(obj, list) else [obj]:
                         new += self.message(m, tw) if isinstance(m, dict) else [m]
-                    if self.dirty:
+                    if writer is not None and self.dirty:
                         new = [x for x in new if not (isinstance(x, dict) and x.get("event_type") == "last_trade_price"
                                                      and float(x.get("size") or 0) <= 1e-9
                                                      and x.get("transaction_hash") not in self.markers)]
                         raw = orjson.dumps(new if isinstance(obj, list) or len(new) != 1 else new[0]).decode()
-                    w.append(raw, tw=tw, tm=rec.get("tm"), meta=rec.get("meta"))
+                    if writer is not None:
+                        writer.append(raw, tw=tw, tm=rec.get("tm"), meta=rec.get("meta"))
                 self.pre_tw = max(self.pre_tw, tw)
                 self.decide(tw)
         finally:
-            w.close()
+            if writer is not None:
+                writer.close()
         self.stats["resting_size_left_at_end"] = round(sum(v for v in self.rest.values() if v > 0))
         for o in self.orders:
             if o.status == "live":   # still resting at the end of the pass (STOP_S should prevent it)
@@ -1168,12 +1173,13 @@ def documented_no_draft(report: dict) -> bool:
 
 
 def run_tools(pub: Path, out: Path, wallet: str, t_from: int, split: int, t_to: int, *,
-              slice_s: int | None = None) -> dict:
+              slice_s: int | None = None, book_cache: Path | None = None) -> dict:
     """The five tools on ``pub`` only. Returns their parsed outputs, exit codes and peak RSS.
     ``slice_s`` is passed to both ordermatch runs as ``--slice-s`` (None: ordermatch's default)."""
     tape, orders = str(pub / "tape"), str(pub / "orders.jsonl")
     span = ["--from", str(t_from), "--to", str(t_to)]
     sl = [] if slice_s is None else ["--slice-s", str(slice_s)]
+    cache = [] if book_cache is None else ["--book-cache", str(book_cache)]
     om = out / "ordermatch"
     info: dict = {"exit": {}, "rss_mb": {}}
 
@@ -1185,15 +1191,15 @@ def run_tools(pub: Path, out: Path, wallet: str, t_from: int, split: int, t_to: 
         if rc and not (mod == "rulefit" and rc == 1):
             raise ValueError(f"{step} exited {rc}, see {out / (step + '.log')}")
 
-    go("ordermatch", ["--data", tape, "--orders", orders, "--wallet", wallet, *span, *sl, "--out", str(om)])
-    go("orderreplay", ["--data", tape, "--ordermatch-dir", str(om), *span, "--orders", orders,
+    go("ordermatch", ["--data", tape, "--orders", orders, "--wallet", wallet, *span, *sl, *cache, "--out", str(om)])
+    go("orderreplay", ["--data", tape, "--ordermatch-dir", str(om), *span, "--orders", orders, *cache,
                        "--out", str(out / "orderreplay")])
     go("profile", ["--orders", orders, "--ordermatch", str(om / "ordermatch.json"), "--wallet", wallet,
                    "--out", str(out / "profile")])
     train_om = out / "ordermatch-train"
     train_orders = str(pub / "train-orders.jsonl")
     go("ordermatch", ["--data", tape, "--orders", train_orders, "--wallet", wallet, "--from", str(t_from),
-                      "--to", str(split), *sl, "--out", str(train_om)], name="ordermatch-train")
+                      "--to", str(split), *sl, *cache, "--out", str(train_om)], name="ordermatch-train")
     brti = ["--brti-lab", tape] if (pub / "tape" / "ref_brti_raw").exists() else []
     go("rulefit", ["--data", tape, "--ordermatch-dir", str(train_om), "--orders", train_orders, "--wallet", wallet,
                    "--from", str(t_from), "--to", str(split), "--tokens", str(pub / "lab" / "tokens.jsonl"),
@@ -1260,9 +1266,8 @@ def pipeline_checks(sim: Sim, tools: dict, tdir: Path | None = None) -> dict:
 
 
 # ---------------------------------------------------------------- driver
-def run_strategy(key: str, root: Path, tokens: Path, stream: str, t_from: int, split: int, t_to: int,
-                 out: Path, seed: int, params: dict | None = None, tools: bool = True, *,
-                 slice_s: int | None = None) -> dict:
+def _make_sim(key: str, root: Path, tokens: Path, stream: str, t_from: int, t_to: int,
+              seed: int, params: dict | None) -> Sim:
     cls = POLICIES[key]
     pol = cls(seed)
     pol.params = dict(cls.params) | (params or {})
@@ -1273,7 +1278,34 @@ def run_strategy(key: str, root: Path, tokens: Path, stream: str, t_from: int, s
     if pol.name == "fair_maker":
         from .rulefit import Fair
         fair = Fair(root, t_from, t_to)
-    sim = Sim(pol, wallet, wins, fair, seed)
+    return Sim(pol, wallet, wins, fair, seed)
+
+
+def _training_maker_orders(sim: Sim, split: int) -> int:
+    return sum(o.kind == "maker" and any(math.ceil(fill[0] / 1000) + 1 < split for fill in o.fills)
+               for o in sim.orders)
+
+
+def midpoint_training_orders(root: Path, tokens: Path, stream: str, t_from: int, split: int, t_to: int,
+                             seed: int, params: dict | None = None) -> int:
+    """Reproduce the serial decoy input while omitting the midpoint maker's tape writes and tools."""
+    sim = _make_sim("a", root, tokens, stream, t_from, t_to, seed, params)
+    sim.run(root, stream, None, t_from, t_to)
+    return _training_maker_orders(sim, split)
+
+
+def _materialize_public(tape: Path, stream: str, cache: Path, materializer: Path) -> None:
+    for segment in sorted((tape / stream).glob("*/*.dtape.zst")):
+        target = cache / stream / segment.parent.name / (segment.name.removesuffix(".dtape.zst") + ".parquet")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run([str(materializer), "materialize", str(segment), str(target)], check=True)
+
+
+def run_strategy(key: str, root: Path, tokens: Path, stream: str, t_from: int, split: int, t_to: int,
+                 out: Path, seed: int, params: dict | None = None, tools: bool = True, *,
+                 slice_s: int | None = None, materializer: Path | None = None) -> dict:
+    sim = _make_sim(key, root, tokens, stream, t_from, t_to, seed, params)
+    pol, wallet = sim.pol, sim.wallet
     d = out / pol.name
     d.mkdir(parents=True, exist_ok=False)
     pub = d / "public"
@@ -1294,13 +1326,15 @@ def run_strategy(key: str, root: Path, tokens: Path, stream: str, t_from: int, s
         {"policy": pol.name, "params": pol.params, "wallet": wallet, "summary": truth, "sim_stats": dict(sim.stats),
          "hidden_signal_by_up_token": signal}, option=orjson.OPT_INDENT_2))
     res: dict = {"policy": pol.name, "params": pol.params, "wallet": wallet, "truth": truth, "sim_s": sim_s,
-                 "train_visible_maker_orders": sum(o.kind == "maker" and any(math.ceil(f[0] / 1000) + 1 < split
-                                                      for f in o.fills) for o in sim.orders),
+                 "train_visible_maker_orders": _training_maker_orders(sim, split),
                  "sim_cpu_s": round(time.process_time() - c0, 1), "rss_mb_after_sim": rss_sim}
     if tools:
         if not truth["fills"]:
             raise ValueError(f"{pol.name} produced zero fills; the trial cannot score this subject")
-        tl = run_tools(pub, d / "tools", wallet, t_from, split, t_to, slice_s=slice_s)
+        cache = d / "book-cache" if materializer is not None else None
+        if materializer is not None and cache is not None:
+            _materialize_public(pub / "tape", stream, cache, materializer)
+        tl = run_tools(pub, d / "tools", wallet, t_from, split, t_to, slice_s=slice_s, book_cache=cache)
         res["tools"] = {k: tl[k] for k in ("exit", "rss_mb")}
         res["cells"] = score(pol.name, truth, tl)
         res["pipeline"] = pipeline_checks(sim, tl, d / "tools")

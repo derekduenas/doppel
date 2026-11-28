@@ -1,0 +1,150 @@
+name: Layer 5a cached replay comparison
+
+on:
+  workflow_dispatch:
+    inputs:
+      brti_manifest_sha256:
+        description: Verified SHA-256 of archived ref_brti_raw/manifest.jsonl
+        required: true
+        type: string
+      prices_manifest_sha256:
+        description: Verified SHA-256 of archived ref_prices/manifest.jsonl
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12.13"
+  UV_VERSION: "0.11.2"
+  RUSTUP_TOOLCHAIN: "1.99.1"
+  OPENBLAS_NUM_THREADS: "1"
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+
+jobs:
+  materializer:
+    name: Build offline materializer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build the locked Rust CLI
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          cargo build --release --locked -p doppel-tape --features materialize --bin doppel-tape
+          dest="$RUNNER_TEMP/materializer"
+          install -D -m 0755 target/release/doppel-tape "$dest/doppel-tape"
+          cd "$dest"
+          sha256sum doppel-tape > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exam-materializer
+          path: ${{ runner.temp }}/materializer
+          if-no-files-found: error
+          retention-days: 1
+
+  subject:
+    name: Seed ${{ matrix.seed }} / trader ${{ matrix.trader }}
+    needs: materializer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [1, 2, 3]
+        trader: [0, 1, 2, 3, 4, 5]
+    env:
+      EXAM_SEED_SLOT: ${{ matrix.seed }}
+      EXAM_TRADER_SLOT: ${{ matrix.trader }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install locked dependencies
+        run: uv sync --locked --python "$PYTHON_VERSION"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: exam-materializer
+          path: ${{ runner.temp }}/materializer
+      - name: Verify the materializer artifact
+        working-directory: ${{ runner.temp }}/materializer
+        run: |
+          sha256sum --check SHA256SUMS
+          chmod 0755 doppel-tape
+      - name: Download and verify the six sealed hours from R2
+        env:
+          EXAM_R2_ACCOUNT_ID: ${{ secrets.EXAM_R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.EXAM_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.EXAM_R2_SECRET_ACCESS_KEY }}
+          AWS_CONFIG_FILE: /dev/null
+          AWS_SHARED_CREDENTIALS_FILE: /dev/null
+          AWS_EC2_METADATA_DISABLED: "true"
+          EXAM_BRTI_MANIFEST_SHA256: ${{ inputs.brti_manifest_sha256 }}
+          EXAM_PRICES_MANIFEST_SHA256: ${{ inputs.prices_manifest_sha256 }}
+        run: |
+          uv run --no-sync python -m doppel.lab.exam_matrix fetch --out "$RUNNER_TEMP/tape" \
+            --brti-manifest-sha256 "$EXAM_BRTI_MANIFEST_SHA256" \
+            --prices-manifest-sha256 "$EXAM_PRICES_MANIFEST_SHA256"
+      - name: Run one scripted trader
+        run: |
+          uv run --no-sync python -m doppel.lab.exam_matrix run --data "$RUNNER_TEMP/tape" \
+            --out "$RUNNER_TEMP/exam" --receipts "$RUNNER_TEMP/receipt" \
+            --materializer "$RUNNER_TEMP/materializer/doppel-tape" \
+            --seed-slot "$EXAM_SEED_SLOT" --trader-slot "$EXAM_TRADER_SLOT" --commit "$GITHUB_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exam-seed-${{ matrix.seed }}-trader-${{ matrix.trader }}
+          path: ${{ runner.temp }}/receipt
+          if-no-files-found: error
+          retention-days: 14
+
+  summary:
+    name: Verify and summarize the 18 receipts
+    if: ${{ always() && !cancelled() }}
+    needs: subject
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install locked dependencies
+        run: uv sync --locked --python "$PYTHON_VERSION"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          pattern: exam-seed-*-trader-*
+          path: ${{ runner.temp }}/receipts
+      - name: Verify scope, closure and hashes
+        run: |
+          result=0
+          uv run --no-sync python -m doppel.lab.exam_matrix aggregate \
+            --receipts "$RUNNER_TEMP/receipts" --out "$RUNNER_TEMP/summary" --commit "$GITHUB_SHA" || result=$?
+          if [[ -f "$RUNNER_TEMP/summary/summary.md" ]]; then
+            cat "$RUNNER_TEMP/summary/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$result"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: layer5a-matrix-summary
+          path: ${{ runner.temp }}/summary
+          if-no-files-found: warn
+          retention-days: 14

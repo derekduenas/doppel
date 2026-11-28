@@ -260,7 +260,8 @@ def to_book(levels: dict[tuple[float, str], float], t: int) -> Book:
 def replay_stream(root: Path, stream: str, t_from: int, t_to: int, pending: dict[tuple, list[Spec]],
                   wanted: dict[tuple[str, str], list[Spec]], stats: Counter,
                   quotes: dict[QuoteKey, list[tuple]], done: Callable[[Spec], object],
-                  allocations: dict[str, Allocation | str] | None = None) -> None:
+                  allocations: dict[str, Allocation | str] | None = None, *,
+                  book_cache: Path | None = None) -> None:
     """Drive the quotes placed on this stream. Mutates the specs (``sims``, ``queue0``, ...).
     A fingerprint candidate becomes a Spec at its placement event and is handed to ``done`` when
     its replay is over (cancelled at its end, cut by a reset, or the stream ended)."""
@@ -300,7 +301,7 @@ def replay_stream(root: Path, stream: str, t_from: int, t_to: int, pending: dict
             del active[asset]
         return ready
 
-    for record_no, items in replay_messages(root, stream, t_from, t_to, book):
+    for record_no, items in replay_messages(root, stream, t_from, t_to, book, book_cache=book_cache):
         receipt_high_water = max(receipt_high_water, items[0].tw_ns)
         evs = [it for it in items if not isinstance(it, Reset)]
         if len(evs) < len(items):  # book state lost: nothing more is known about live quotes
@@ -636,7 +637,8 @@ def nf_doc(tally: dict[str, Any]) -> dict | None:
 
 
 def run(root: Path, match_dir: Path, t_from: int, t_to: int, streams: list[str] | None = None,
-        reduce_quotes: bool = False, *, orders: Path | None = None) -> tuple[dict, list[dict]]:
+        reduce_quotes: bool = False, *, orders: Path | None = None,
+        book_cache: Path | None = None) -> tuple[dict, list[dict]]:
     """Returns (summary doc, per-quote rows: orders first, then fingerprint candidates). With
     ``reduce_quotes`` candidates are counted and dropped as they finish: no candidate rows, and
     the doc carries ``never_filled_by_wallet`` (flat counts per wallet and mode)."""
@@ -660,7 +662,8 @@ def run(root: Path, match_dir: Path, t_from: int, t_to: int, streams: list[str] 
     streams = streams or sorted(d.name for d in Path(root).iterdir() if d.name.startswith("clob_"))
     allocations = load_allocations(orders) if orders is not None else None
     for st in streams:
-        replay_stream(root, st, t_from, t_to, pending, wanted, stats, quotes, done, allocations)
+        replay_stream(root, st, t_from, t_to, pending, wanted, stats, quotes, done, allocations,
+                      book_cache=book_cache)
     stats["placement_not_found"] = sum(not s.sims for s in specs) + sum(len(v) for v in quotes.values())
     rows = [result(s) for s in specs if s.sims] + [result(s) for s in kept]
     doc = {"params": {"from": t_from, "to": t_to, "streams": streams, "tol_shares": TOL,
@@ -711,6 +714,7 @@ def card(doc: dict) -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="doppel-orderreplay")
     ap.add_argument("--data", type=Path, required=True, help="tape root")
+    ap.add_argument("--book-cache", type=Path, help="verified lossless CLOB Parquet cache root")
     ap.add_argument("--ordermatch-dir", type=Path, required=True,
                     help="doppel-ordermatch output: orders.jsonl[, quotes.jsonl]")
     ap.add_argument("--from", dest="t_from", type=_ts, required=True, help="unix s or ISO UTC")
@@ -718,7 +722,7 @@ def main(argv=None) -> int:
     ap.add_argument("--out", type=Path, required=True, help="directory")
     ap.add_argument("--orders", type=Path, help="decoded ordertape for retrospective price-level allocation")
     a = ap.parse_args(argv)
-    doc, rows = run(a.data, a.ordermatch_dir, a.t_from, a.t_to, orders=a.orders)
+    doc, rows = run(a.data, a.ordermatch_dir, a.t_from, a.t_to, orders=a.orders, book_cache=a.book_cache)
     a.out.mkdir(parents=True, exist_ok=True)
     (a.out / "orderreplay.json").write_bytes(orjson.dumps(doc, option=orjson.OPT_INDENT_2))
     with open(a.out / "orderreplay.jsonl", "wb") as f:

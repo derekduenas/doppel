@@ -294,7 +294,16 @@ pub fn read_segment(path: &Path, verify: bool) -> io::Result<Vec<Value>> {
 /// [`read_segment`] as a stream, one record at a time in file order (memory: one line). After a
 /// CRC error (with `verify`) the stream ends.
 pub fn segment_records(path: &Path, verify: bool) -> io::Result<impl Iterator<Item = io::Result<Value>>> {
-    let mut rd = BufReader::with_capacity(1 << 16, zstd::stream::read::Decoder::new(File::open(path)?)?);
+    segment_records_with_policy(File::open(path)?, path, verify, false)
+}
+
+/// Verify all bytes of a closed segment, including the zstd tail and final complete record.
+pub fn sealed_segment_records(file: File, path: &Path) -> io::Result<impl Iterator<Item = io::Result<Value>>> {
+    segment_records_with_policy(file, path, true, true)
+}
+
+fn segment_records_with_policy(file: File, path: &Path, verify: bool, strict: bool) -> io::Result<impl Iterator<Item = io::Result<Value>>> {
+    let mut rd = BufReader::with_capacity(1 << 16, zstd::stream::read::Decoder::new(file)?);
     let path = path.to_path_buf();
     let mut line = Vec::new();
     let mut done = false;
@@ -303,10 +312,25 @@ pub fn segment_records(path: &Path, verify: bool) -> io::Result<impl Iterator<It
             line.clear();
             match rd.read_until(b'\n', &mut line) {
                 Ok(0) => return None,
+                Ok(_) if strict && !line.ends_with(b"\n") => {
+                    done = true;
+                    return Some(Err(io::Error::new(io::ErrorKind::UnexpectedEof, format!("unterminated record in {}", path.display()))));
+                }
                 Ok(_) => {}
+                Err(e) if strict => {
+                    done = true;
+                    return Some(Err(e));
+                }
                 Err(_) => done = true, // a truncated tail frame from a crash: keep what decoded
             }
-            let Ok(rec) = serde_json::from_slice::<Value>(line.strip_suffix(b"\n").unwrap_or(&line)) else { continue };
+            let rec = match serde_json::from_slice::<Value>(line.strip_suffix(b"\n").unwrap_or(&line)) {
+                Ok(rec) => rec,
+                Err(e) if strict => {
+                    done = true;
+                    return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e)));
+                }
+                Err(_) => continue,
+            };
             if verify {
                 let raw = rec.get("raw").and_then(Value::as_str).unwrap_or("");
                 if Some(u64::from(crc32fast::hash(raw.as_bytes()))) != rec.get("crc").and_then(Value::as_u64) {

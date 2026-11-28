@@ -192,6 +192,37 @@ jobs:
           cargo test --workspace --locked
           cargo clippy --workspace --locked --all-targets -- -D warnings
 
+  book-cache:
+    name: Book cache / native parity, benchmark and workflow syntax
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install locked tools
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          uv sync --locked --python "$PYTHON_VERSION"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.1
+        with:
+          key: book-cache
+      - name: Validate manual exam workflow
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 .github/workflows/exam-cache-matrix.yml
+      - name: Verify native materializer
+        run: |
+          cargo test --locked -p doppel-tape --features materialize --test materialize
+          cargo build --locked -p doppel-tape --features materialize --bin doppel-tape
+      - name: Verify cross-language parity and time the cached projection
+        env:
+          DOPPEL_MATERIALIZER: ${{ github.workspace }}/target/debug/doppel-tape
+        run: uv run --no-sync pytest -q -s tests/test_book_materializer_ci.py
+
   recorder-release:
     name: Linux recorder release
     runs-on: ubuntu-24.04

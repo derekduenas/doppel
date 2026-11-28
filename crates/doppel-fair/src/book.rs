@@ -92,9 +92,14 @@ impl L2Book {
 
     /// Snapshot for the replica: bids descending, asks ascending, stamped `last_update_ns`.
     pub fn snapshot(&self) -> BookSnapshot {
+        self.snapshot_depth(usize::MAX)
+    }
+
+    /// The first `depth` levels of each side, in the same order as a full snapshot.
+    pub fn snapshot_depth(&self, depth: usize) -> BookSnapshot {
         BookSnapshot {
-            bids: self.bids.iter().rev().map(|(k, &s)| (k.price(), s)).collect(),
-            asks: self.asks.iter().map(|(k, &s)| (k.price(), s)).collect(),
+            bids: self.bids.iter().rev().take(depth).map(|(k, &s)| (k.price(), s)).collect(),
+            asks: self.asks.iter().take(depth).map(|(k, &s)| (k.price(), s)).collect(),
             retrieved_ns: self.last_update_ns,
         }
     }

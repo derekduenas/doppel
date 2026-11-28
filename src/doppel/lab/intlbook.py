@@ -30,7 +30,7 @@ already applied, so a twin adapter can drive ``IntlBook.feed`` live without look
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 import math
 from pathlib import Path
@@ -87,6 +87,18 @@ class BookObservation:
 
 
 Item = LevelEvent | Print | Reset
+_SnapshotKey = tuple[object, int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _CachedSnapshot:
+    """A complete snapshot with an optional patch from a specific earlier snapshot."""
+
+    message: dict
+    key: _SnapshotKey
+    previous: _SnapshotKey | None
+    delta: list[dict] | None
+    load_levels: Callable[[], tuple[list, list]]
 
 
 def px(x: object) -> float:
@@ -104,6 +116,7 @@ class IntlBook:
         self.dropped = 0  # price_change rows for assets with unknown state
         self.strict_clocks = strict_clocks
         self.clock_counts: Counter = Counter()
+        self._snapshot_anchors: dict[str, _SnapshotKey] = {}
 
     def known(self, asset: str) -> bool:
         return asset in self.levels
@@ -115,6 +128,7 @@ class IntlBook:
 
     def reset(self) -> None:
         self.levels.clear()
+        self._snapshot_anchors.clear()
 
     def _seen(self, asset: str, ms: int) -> None:
         span = self.spans[asset][-1]
@@ -123,6 +137,7 @@ class IntlBook:
     def _check_depth_time(self, asset: str, ms: int) -> None:
         if self.strict_clocks and asset in self.levels and ms < self.spans[asset][-1][1]:
             del self.levels[asset]
+            self._snapshot_anchors.pop(asset, None)
             self.clock_counts["reset:asset_venue_time_reversal"] += 1
 
     def _level(self, row: dict, side: str) -> tuple[tuple[float, str], float]:
@@ -151,6 +166,7 @@ class IntlBook:
         out: list[LevelEvent | Print] = []
         if et == "book":
             a = m["asset_id"]
+            self._snapshot_anchors.pop(a, None)
             self._check_depth_time(a, ms)
             if self.strict_clocks and (not a or not isinstance(m.get("bids"), list) or not isinstance(m.get("asks"), list)):
                 raise ValueError("incomplete book snapshot")
@@ -177,6 +193,7 @@ class IntlBook:
                 a = ch.get("asset_id")
                 if self.strict_clocks and not a:
                     raise ValueError("missing changed token")
+                self._snapshot_anchors.pop(a, None)
                 self._check_depth_time(a, ms)
                 lv = self.levels.get(a)
                 if lv is None:
@@ -204,26 +221,82 @@ class IntlBook:
                              str(m.get("transaction_hash") or ""), mk))
         return out
 
-    def feed_messages(self, rec: dict) -> Iterator[tuple[dict, Sequence[Item]]]:
+    def _patch_snapshot(self, snapshot: _CachedSnapshot, tw_ns: int) -> list[LevelEvent | Print] | None:
+        msg = snapshot.message
+        asset, ms = msg["asset_id"], msg["timestamp"]
+        if (snapshot.delta is None or snapshot.previous is None or not asset
+                or self._snapshot_anchors.get(asset) != snapshot.previous
+                or type(ms) is not int or ms <= 0 or asset not in self.levels
+                or (self.strict_clocks and ms < self.spans[asset][-1][1])):
+            return None
+        old = self.levels[asset]
+        new = old.copy()
+        market = str(msg.get("market") or "")
+        last = None
+        events: list[LevelEvent | Print] = []
+        for row in snapshot.delta:
+            price, size, side = row.get("price"), row.get("size"), row.get("side")
+            if (not isinstance(price, (int, float)) or isinstance(price, bool)
+                    or not 0 <= price <= 1 or px(price) != price
+                    or not isinstance(size, (int, float)) or isinstance(size, bool)
+                    or not math.isfinite(size) or size < 0
+                    or side not in ("BUY", "SELL")):
+                return None
+            key = (price, side)
+            if last is not None and key <= last:
+                return None
+            last = key
+            before = old.get(key, 0.0)
+            if before == size:
+                return None
+            if size > 0:
+                new[key] = size
+            else:
+                new.pop(key, None)
+            events.append(LevelEvent(ms, tw_ns, asset, price, side, before, size, "book", market))
+        self.levels[asset] = new
+        self.market_of[asset] = market
+        self._seen(asset, ms)
+        return events
+
+    def _apply_cached_snapshot(self, snapshot: _CachedSnapshot, tw_ns: int) -> list[LevelEvent | Print]:
+        events = self._patch_snapshot(snapshot, tw_ns)
+        if events is None:
+            bids, asks = snapshot.load_levels()
+            events = self.apply({**snapshot.message, "bids": bids, "asks": asks}, tw_ns)
+        asset = snapshot.message["asset_id"]
+        if asset in self.levels:
+            self._snapshot_anchors[asset] = snapshot.key
+        return events
+
+    def feed_messages(self, rec: dict, *, cached: bool = False) -> Iterator[tuple[dict, Sequence[Item]]]:
         """Apply one embedded message at a time, exposing its own book state before the next."""
         ctl = (rec.get("meta") or {}).get("ctl")
         if ctl is not None:
+            self._snapshot_anchors.clear()
             if ctl == "subscribe_add" or (not self.strict_clocks and ctl in NO_RESET_CTL):
                 return
             self.reset()
             yield {}, [Reset(int(rec["tw"]), str(ctl))]
             return
-        raw = rec.get("raw") or ""
-        if raw in ("", "PING", "PONG") or (not self.strict_clocks and raw[0] not in "[{"):
-            return  # PONG
-        try:
-            obj = orjson.loads(raw)
-        except orjson.JSONDecodeError:
-            if self.strict_clocks:
-                self.reset()
-                yield {}, [Reset(int(rec["tw"]), "malformed_message")]
-            return
-        for m in obj if isinstance(obj, list) else [obj]:
+        if cached and "_book_messages" in rec:
+            obj = rec["_book_messages"]
+        else:
+            if cached and rec.get("_book_cache_barrier"):
+                self._snapshot_anchors.clear()
+            raw = rec.get("raw") or ""
+            if raw in ("", "PING", "PONG") or (not self.strict_clocks and raw[0] not in "[{"):
+                return  # PONG
+            try:
+                obj = orjson.loads(raw)
+            except orjson.JSONDecodeError:
+                if self.strict_clocks:
+                    self.reset()
+                    yield {}, [Reset(int(rec["tw"]), "malformed_message")]
+                return
+        for obj_message in obj if isinstance(obj, list) else [obj]:
+            snapshot = obj_message if cached and isinstance(obj_message, _CachedSnapshot) else None
+            m = snapshot.message if snapshot is not None else obj_message
             if self.strict_clocks and (not isinstance(m, dict) or m.get("event_type") not in
                     ("book", "price_change", "last_trade_price", "tick_size_change", "best_bid_ask",
                      "new_market", "market_resolved")):
@@ -231,7 +304,9 @@ class IntlBook:
                 yield {}, [Reset(int(rec["tw"]), "unknown_message")]
             elif isinstance(m, dict):
                 try:
-                    items = self.apply(m, int(rec["tw"]))
+                    tw_ns = int(rec["tw"])
+                    items = (self.apply(m, tw_ns) if snapshot is None else
+                             self._apply_cached_snapshot(snapshot, tw_ns))
                 except (KeyError, ValueError, TypeError, OverflowError, AttributeError):
                     if not self.strict_clocks:
                         raise
@@ -244,9 +319,9 @@ class IntlBook:
                 else:
                     yield m, items
 
-    def feed(self, rec: dict) -> list[Item]:
+    def feed(self, rec: dict, *, cached: bool = False) -> list[Item]:
         """One tape record (data frame or ctl). Returns what it produced, in order."""
-        return [item for _, items in self.feed_messages(rec) for item in items]
+        return [item for _, items in self.feed_messages(rec, cached=cached) for item in items]
 
     def mates(self) -> dict[str, str]:
         """asset -> the other asset of its market (binary markets seen with both assets)."""
@@ -257,15 +332,25 @@ class IntlBook:
         return {a: b for pair in by.values() if len(pair) == 2 for a, b in (pair, pair[::-1])}
 
 
-def _records(root: Path, stream: str, t_from: int, t_to: int, *, strict: bool = False) -> Iterator[dict]:
+def _records(root: Path, stream: str, t_from: int, t_to: int, *, strict: bool = False,
+             book_cache: Path | None = None) -> Iterator[dict]:
+    cache = None
+    if book_cache is not None:
+        from .book_cache import BookCache
+
+        cache = BookCache(book_cache)
     prev_seq = prev_tw = None
     for hour in range(t_from - t_from % 3600, t_to, 3600):
         path = segment_path(Path(root), stream, hour * NS)
         if not path.exists():
+            if cache is not None and cache.path(path, stream).exists():
+                raise ValueError(f"book cache source hour is missing: {path}")
             prev_seq = prev_tw = None
             yield {"tw": max(hour, t_from) * NS, "meta": {"ctl": "missing_segment"}}
             continue
-        for rec in read_segment(path, verify=True, strict=strict):
+        source = (read_segment(path, verify=True, strict=strict) if cache is None else
+                  cache.records(path, stream, hour * NS, t_from * NS, t_to * NS))
+        for rec in source:
             if strict:
                 tw, seq = rec["tw"], rec["seq"]
                 if (rec.get("stream") != stream or type(seq) is not int or seq < 1 or type(tw) is not int
@@ -280,23 +365,31 @@ def _records(root: Path, stream: str, t_from: int, t_to: int, *, strict: bool = 
                 yield rec
 
 
-def replay(root: Path, stream: str, t_from: int, t_to: int, book: IntlBook, *, strict: bool = False) -> Iterator[list[Item]]:
+def replay(root: Path, stream: str, t_from: int, t_to: int, book: IntlBook, *, strict: bool = False,
+           book_cache: Path | None = None) -> Iterator[list[Item]]:
     """Yield events grouped by captured record in [t_from, t_to). Missing segments reset the book."""
-    for rec in _records(root, stream, t_from, t_to, strict=strict):
-        items = book.feed(rec)
+    for rec in _records(root, stream, t_from, t_to, strict=strict, book_cache=book_cache):
+        items = book.feed(rec, cached=book_cache is not None)
         if items:
             yield items
 
 
-def replay_messages(root: Path, stream: str, t_from: int, t_to: int,
-                    book: IntlBook) -> Iterator[tuple[int, list[Item | BookObservation]]]:
+def replay_messages(root: Path, stream: str, t_from: int, t_to: int, book: IntlBook, *,
+                    book_cache: Path | None = None) -> Iterator[tuple[int, list[Item | BookObservation]]]:
     """Yield each message with the ordinal of its parent record, preserving intermediate book states."""
-    for record_no, rec in enumerate(_records(root, stream, t_from, t_to)):
+    for record_no, rec in enumerate(_records(root, stream, t_from, t_to, book_cache=book_cache)):
         tw = int(rec["tw"])
-        for msg, items in book.feed_messages(rec):
+        for msg, items in book.feed_messages(rec, cached=book_cache is not None):
             events: list[Item | BookObservation] = list(items)
             kind = msg.get("event_type")
-            if kind in ("book", "price_change"):
+            if book_cache is not None and kind == "book":
+                # A snapshot can only touch its own asset. The batch has no further
+                # asset membership work when the snapshot already emitted a level change.
+                if not events:
+                    ts = msg.get("timestamp")
+                    ms = int(ts) if ts not in (None, "") else tw // 1_000_000
+                    events.append(BookObservation(ms, tw, msg["asset_id"]))
+            elif kind in ("book", "price_change"):
                 touched = ({msg["asset_id"]} if kind == "book" else
                            {c["asset_id"] for c in msg.get("price_changes") or [] if c.get("asset_id")})
                 changed = {e.asset for e in items if isinstance(e, LevelEvent)}

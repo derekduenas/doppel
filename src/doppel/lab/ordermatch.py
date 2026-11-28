@@ -315,14 +315,15 @@ def _kept(batches: Iterable[list[Item]], tokens: set[str], fp_sizes: list[float]
 
 
 def build_tape(root: Path, streams: list[str], t_from: int, t_to: int, tokens: set[str],
-               fp_sizes: list[float], p: Params) -> LevelTape:
+               fp_sizes: list[float], p: Params, *, book_cache: Path | None = None) -> LevelTape:
     """Replay the streams. Every level event is kept for the markets of ``tokens``; elsewhere
     only bid increases of a fingerprint size (the base-rate counts), to bound memory."""
     tape = LevelTape()
     markets: set[str] = set()
     for s in streams:
         book = IntlBook(strict_clocks=True)
-        for it in _kept(replay(root, s, t_from, t_to, book, strict=True), tokens, fp_sizes, p, markets, tape.counts):
+        batches = replay(root, s, t_from, t_to, book, strict=True, book_cache=book_cache)
+        for it in _kept(batches, tokens, fp_sizes, p, markets, tape.counts):
             tape.add_print(it) if isinstance(it, Print) else tape.add(it)
         tape.counts["price_change_unknown_state"] += book.dropped
         tape.counts.update(book.clock_counts)
@@ -798,7 +799,8 @@ def summarize(name: str, orders: list[Order], candidates: dict, placebo: dict, r
 def run(root: Path, orders_path: Path, t_from: int, t_to: int, wallets: list[str] | None = None,
         p: Params = Params(), streams: list[str] | None = None, min_orders: int = 30, *,
         min_fp_orders: int = 0, focus: bool = False,
-        quote_sink: Callable[[dict], object] | None = None) -> tuple[dict, list[dict], list[dict]]:
+        quote_sink: Callable[[dict], object] | None = None,
+        book_cache: Path | None = None) -> tuple[dict, list[dict], list[dict]]:
     """Returns (doc, per-order rows, fingerprint-candidate rows).
 
     Memory controls for a cohort run (defaults keep the tool's behaviour):
@@ -811,7 +813,8 @@ def run(root: Path, orders_path: Path, t_from: int, t_to: int, wallets: list[str
     orders, active, stats = load_orders(orders_path, t_from, t_to)
     by_maker, chosen, fps = _chosen(orders, wallets, min_orders, min_fp_orders)
     streams = streams or _streams(root)
-    tape = build_tape(root, streams, t_from, t_to, _tokens(active, chosen, focus), _fp_sizes(fps), p)
+    tape = build_tape(root, streams, t_from, t_to, _tokens(active, chosen, focus), _fp_sizes(fps), p,
+                      book_cache=book_cache)
     if not orders_path.is_dir() or (orders_path / STATE_DIR).is_dir():
         tape.allocations = load_allocations(orders_path, {tx for o in orders for tx in o.fills})
     prints = {o.order_id: _fill_prints(o, tape) for o in orders}
@@ -954,12 +957,13 @@ def _slicer(t_from: int, slice_s: int) -> Callable[[int], int]:
 
 
 def _survey(root: Path, stream: str, t_from: int, t_to: int, tokens: set[str], fp_sizes: list[float], p: Params,
-            txs: set[str], slice_s: int) -> _SlicedTape:
+            txs: set[str], slice_s: int, *, book_cache: Path | None = None) -> _SlicedTape:
     tape = _SlicedTape(-(-(t_to - t_from) // slice_s))
     book = IntlBook(strict_clocks=True)
     at = _slicer(t_from, slice_s)
     keys: set[Key] = set()
-    for it in _kept(replay(root, stream, t_from, t_to, book, strict=True), tokens, fp_sizes, p, set(), tape.counts):
+    batches = replay(root, stream, t_from, t_to, book, strict=True, book_cache=book_cache)
+    for it in _kept(batches, tokens, fp_sizes, p, set(), tape.counts):
         b = at(it.tw_ns)
         if isinstance(it, Print):
             tape.n_prints += 1
@@ -1276,7 +1280,8 @@ def _attribute_sliced(wallets: list[tuple[str, list[float], set[str]]], orders: 
 def run_sliced(root: Path, orders_path: Path, t_from: int, t_to: int, wallets: list[str] | None = None,
                p: Params = Params(), streams: list[str] | None = None, min_orders: int = 30, *,
                slice_s: int = 1800, min_fp_orders: int = 0, focus: bool = False,
-               quote_sink: Callable[[dict], object] | None = None) -> tuple[dict, list[dict], list[dict]]:
+               quote_sink: Callable[[dict], object] | None = None,
+               book_cache: Path | None = None) -> tuple[dict, list[dict], list[dict]]:
     """``run`` with level events held one slice at a time (see the comment above ``_Window``).
     Same doc and rows. Fingerprint rows are returned in ``run``'s order; with ``quote_sink`` they
     go to it in the order their follow ends (the same rows)."""
@@ -1286,17 +1291,18 @@ def run_sliced(root: Path, orders_path: Path, t_from: int, t_to: int, wallets: l
     if len(streams) != 1:
         print(f"doppel-ordermatch: {len(streams)} streams; slicing needs one, running unsliced", file=sys.stderr)
         return run(root, orders_path, t_from, t_to, wallets, p, streams, min_orders, min_fp_orders=min_fp_orders,
-                   focus=focus, quote_sink=quote_sink)
+                   focus=focus, quote_sink=quote_sink, book_cache=book_cache)
     orders, active, stats = load_orders(orders_path, t_from, t_to)
     by_maker, chosen, fps = _chosen(orders, wallets, min_orders, min_fp_orders)
     tokens, fp_sizes = _tokens(active, chosen, focus), _fp_sizes(fps)
 
     def events() -> Iterator[LevelEvent | Print]:
         book = IntlBook(strict_clocks=True)
-        return _kept(replay(root, streams[0], t_from, t_to, book, strict=True), tokens, fp_sizes, p, set(), Counter())
+        batches = replay(root, streams[0], t_from, t_to, book, strict=True, book_cache=book_cache)
+        return _kept(batches, tokens, fp_sizes, p, set(), Counter())
 
     tape = _survey(root, streams[0], t_from, t_to, tokens, fp_sizes, p, {tx for o in orders for tx in o.fills},
-                   slice_s)
+                   slice_s, book_cache=book_cache)
     if not orders_path.is_dir() or (orders_path / STATE_DIR).is_dir():
         tape.allocations = load_allocations(orders_path, {tx for o in orders for tx in o.fills})
     prints = {o.order_id: _fill_prints(o, tape) for o in orders}
@@ -1353,6 +1359,7 @@ def card(doc: dict) -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="doppel-ordermatch")
     ap.add_argument("--data", type=Path, required=True, help="tape root")
+    ap.add_argument("--book-cache", type=Path, help="verified lossless CLOB Parquet cache root")
     ap.add_argument("--orders", type=Path, required=True,
                     help="doppel-ordertape output: JSONL sample, or the cohort parquet directory "
                          "(verified rows only)")
@@ -1379,9 +1386,10 @@ def main(argv=None) -> int:
             qf.write(orjson.dumps(r) + b"\n")
         if a.slice_s:
             doc, rows, _ = run_sliced(a.data, a.orders, a.t_from, a.t_to, a.wallet, p, min_orders=a.min_orders,
-                                      slice_s=a.slice_s, quote_sink=sink)
+                                      slice_s=a.slice_s, quote_sink=sink, book_cache=a.book_cache)
         else:
-            doc, rows, quotes = run(a.data, a.orders, a.t_from, a.t_to, a.wallet, p, min_orders=a.min_orders)
+            doc, rows, quotes = run(a.data, a.orders, a.t_from, a.t_to, a.wallet, p, min_orders=a.min_orders,
+                                    book_cache=a.book_cache)
             for r in quotes:
                 sink(r)
     (a.out / "ordermatch.json").write_bytes(orjson.dumps(doc, option=orjson.OPT_INDENT_2))
