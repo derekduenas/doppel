@@ -52,10 +52,10 @@ def _depth(book_state, token, side):
                          if s == side), reverse=side == "BUY"))
 
 
-def _witness(tape, cache=None):
+def _witness(tape, cache=None, *, start=T0, end=T0 + 3605):
     state = IntlBook()
     rows = []
-    for seq, events in replay_messages(tape, STREAM, T0, T0 + 3605, state, book_cache=cache):
+    for seq, events in replay_messages(tape, STREAM, start, end, state, book_cache=cache):
         levels = [_depth(state, "A", side) for side in ("BUY", "SELL")]
         sweeps = [[walk_cost(depth, size) for size in (25, 100, 500)] for depth in levels]
         rows.append([seq, [[type(ev).__name__, asdict(ev)] for ev in events], levels, sweeps])
@@ -78,12 +78,17 @@ def test_deep_queue_fills_receipt_order_bbo_and_sweep_match(tmp_path, materializ
     writer.append("", meta={"ctl": "disconnect"}, tw=(T0 + 13) * NS)
     append_received(writer, 14 * NS, pc(14_000, "A", 0.46, 19, "BUY"))
     append_received(writer, 15 * NS, book(15_000, "A", [(0.48, 500)], deep))
+    changed = [*deep[:5], (0.66, 199), deep[-1]]
+    append_received(writer, 16 * NS, book(16_000, "A", [(0.48, 500)], changed))
     append_received(writer, 3601 * NS, pc(3_601_000, "A", 0.66, 199, "SELL"))
     writer.close()
     outputs = materializer(tape, cache)
     raw, observations = _witness(tape)
     cached, _ = _witness(tape, cache)
     assert cached == raw
+    # The slice starts on a changed snapshot without its Parquet predecessor.
+    # Replaying the cached snapshot alone must still seed the complete book.
+    assert _witness(tape, cache, start=T0 + 16)[0] == _witness(tape, start=T0 + 16)[0]
     events = [event for row in observations for event in row[1]]
     assert any(name == Reset.__name__ and item["why"] == "disconnect" for name, item in events)
     assert any(name == BookObservation.__name__ for name, _ in events)

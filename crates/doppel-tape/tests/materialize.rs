@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::path::Path;
 use std::process::Command;
 
-use arrow_array::{Array, FixedSizeListArray, Float64Array, Int32Array, Int64Array, ListArray, RecordBatch, StringArray};
+use arrow_array::{Array, FixedSizeListArray, Float64Array, Int32Array, Int64Array, ListArray, RecordBatch, StringArray, StructArray};
 use doppel_tape::materialize::{materialize, replay_path};
 use doppel_tape::segment::{encode_record, segment_path, SegmentWriter};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -140,4 +140,70 @@ fn invalid_tail_scope_and_crc_refuse_without_publishing() {
     fs::write(&input, truncated).unwrap();
     assert!(materialize(&input, &output).is_err());
     assert!(!output.exists() && !replay_path(&output).exists());
+}
+
+#[test]
+fn patches_link_strict_snapshots_and_keep_original_levels() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let mut writer = SegmentWriter::new(root, STREAM, 1).unwrap();
+    let first = snapshot("a", "a-yes");
+    let second = snapshot("b", "b-yes");
+    let mut changed = first.clone();
+    changed["bids"][0]["size"] = json!("9");
+    changed["bids"][5]["size"] = json!("-0");
+    changed["asks"][0]["size"] = json!("10");
+    let mut off_grid = first.clone();
+    off_grid["bids"][0]["price"] = json!("0.490009");
+    let mut duplicate = first.clone();
+    duplicate["bids"][1]["price"] = json!("0.49");
+    let mut reversed = first.clone();
+    reversed["timestamp"] = json!(1_699_999_999_999_i64);
+    let frames = [
+        first.to_string(),
+        second.to_string(),
+        json!([trade("1", "marker"), changed, changed]).to_string(),
+        String::new(),
+        first.to_string(),
+        change("0.49", "17").to_string(),
+        first.to_string(),
+        off_grid.to_string(),
+        first.to_string(),
+        duplicate.to_string(),
+        first.to_string(),
+        reversed.to_string(),
+        first.to_string(),
+        json!({"event_type":"tick_size_change"}).to_string(),
+        first.to_string(),
+    ];
+    let meta = json!({"ctl":"subscribe_add"});
+    for (i, raw) in frames.iter().enumerate() {
+        writer.append(raw, T + i as i64 * 1_000_000, 0, (i == 3).then_some(&meta)).unwrap();
+    }
+    writer.close().unwrap();
+    let output = root.join("cache.parquet");
+    materialize(&segment_path(root, STREAM, T), &output).unwrap();
+    let lossless = read(&replay_path(&output));
+    assert_eq!(lossless.num_rows(), 17);
+    let recorded = col::<Int64Array>(&lossless, "snapshot_prev_record_no");
+    let children = col::<Int32Array>(&lossless, "snapshot_prev_message_no");
+    let deltas = col::<ListArray>(&lossless, "snapshot_delta");
+    for row in [0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16] {
+        assert!(recorded.is_null(row) && children.is_null(row) && deltas.is_null(row), "row {row}");
+    }
+    assert_eq!((recorded.value(3), children.value(3)), (0, 0));
+    assert_eq!((recorded.value(4), children.value(4)), (2, 1));
+    assert_eq!((recorded.value(14), children.value(14)), (11, 0));
+    let delta = deltas.value(3);
+    let delta = delta.as_any().downcast_ref::<StructArray>().unwrap();
+    let numbers = |i| delta.column(i).as_any().downcast_ref::<Float64Array>().unwrap().values().as_ref();
+    assert_eq!(numbers(0), [0.44, 0.49, 0.55]);
+    assert_eq!(numbers(1), [0.0, 9.0, 10.0]);
+    assert!(numbers(1)[0].is_sign_positive());
+    let sides = delta.column(2).as_any().downcast_ref::<StringArray>().unwrap();
+    assert_eq!(sides.iter().map(Option::unwrap).collect::<Vec<_>>(), ["BUY", "BUY", "SELL"]);
+    assert!(!deltas.is_null(4) && deltas.value(4).is_empty());
+    assert_eq!(col::<ListArray>(&lossless, "bids").value(3).len(), 6);
+    assert_eq!(col::<ListArray>(&lossless, "asks").value(3).len(), 1);
+    assert!(!deltas.is_null(14) && deltas.value(14).is_empty());
 }

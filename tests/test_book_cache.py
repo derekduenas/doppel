@@ -1,6 +1,7 @@
 """Replay-side cache validation and edge cases independent of the Rust writer."""
 
 import hashlib
+from dataclasses import replace
 
 import orjson
 import pyarrow as pa
@@ -19,7 +20,7 @@ MARKET = "0xmarket"
 TOKEN = "77"
 
 
-def build_fixture(tmp_path):
+def build_fixture(tmp_path, *, patched=False):
     root, cache = tmp_path / "raw", tmp_path / "cache"
     w = SegmentWriter(root, STREAM)
     rows = []
@@ -59,6 +60,15 @@ def build_fixture(tmp_path):
     record(5, raw_change | {"timestamp": str(ms + 5_000)},
            [cached_change | {"venue_ms": ms + 5_000}])
     record(6, raw_book | {"timestamp": str(ms + 6_000)}, [cached_book | {"venue_ms": ms + 6_000}])
+    if patched:
+        new_asks = [row for row in ask if row["price"] != 0.57] + [{"price": 0.62, "size": 450.0}]
+        delta = [{"price": 0.57, "size": 0.0, "side": "SELL"}, {"price": 0.62, "size": 450.0, "side": "SELL"}]
+        for no, shifts in ((7, delta), (8, [])):
+            venue = ms + no * 1000
+            record(no, raw_book | {"timestamp": str(venue), "asks": new_asks}, [
+                cached_book | {"venue_ms": venue, "asks": new_asks, "snapshot_prev_record_no": no - 1,
+                               "snapshot_prev_message_no": 0, "snapshot_delta": shifts},
+            ])
     w.close()
 
     source = segment_path(root, STREAM, START * NS)
@@ -73,6 +83,10 @@ def build_fixture(tmp_path):
               ("asset_id", pa.string()), ("bids", levels), ("asks", levels), ("changes", delta),
               ("trade_px", pa.float64()), ("trade_sz", pa.float64()), ("trade_side", pa.string()), ("tx", pa.string()),
               ("ctl", pa.string()), ("fallback_raw", pa.string())]
+    if patched:
+        patches = pa.list_(pa.struct([("price", pa.float64()), ("size", pa.float64()), ("side", pa.string())]))
+        fields += [("snapshot_prev_record_no", pa.int64()), ("snapshot_prev_message_no", pa.int32()),
+                   ("snapshot_delta", patches)]
     raw = source.read_bytes()
     schema = pa.schema(fields, metadata={bc.SCHEMA: b"1", bc.SOURCE_HASH: hashlib.sha256(raw).hexdigest().encode(),
                                        bc.SOURCE_BYTES: str(len(raw)).encode(), bc.SOURCE_STREAM: STREAM.encode(),
@@ -80,6 +94,10 @@ def build_fixture(tmp_path):
                                        bc.SOURCE_RECORDS: str(record.count).encode()})
     pq.write_table(pa.Table.from_pylist(rows, schema=schema), path, row_group_size=3, compression="zstd")
     return root, cache, source, path
+
+
+def _observable(book):
+    return {key: value for key, value in vars(book).items() if not key.startswith("_")}
 
 
 @pytest.mark.parametrize("offset,until", [(0, 8), (1, 5), (3, 7), (0, 3603)])
@@ -90,11 +108,11 @@ def test_cache_preserves_capture_offsets_book_state_and_clocks(tmp_path, offset,
         a, b = IntlBook(strict_clocks=strict), IntlBook(strict_clocks=strict)
         assert list(replay(root, STREAM, lo, hi, a, strict=strict)) == list(
             replay(root, STREAM, lo, hi, b, strict=strict, book_cache=cache))
-        assert vars(a) == vars(b)
+        assert _observable(a) == _observable(b)
     a, b = IntlBook(), IntlBook()
     assert list(replay_messages(root, STREAM, lo, hi, a)) == list(
         replay_messages(root, STREAM, lo, hi, b, book_cache=cache))
-    assert vars(a) == vars(b)
+    assert _observable(a) == _observable(b)
 
 
 def test_selected_cache_refuses_missing_or_stale_source(tmp_path):
@@ -118,3 +136,29 @@ def test_cache_refuses_whole_record_truncation(tmp_path):
     pq.write_table(table.slice(0, table.num_rows - 1), path, compression="zstd")
     with pytest.raises(ValueError, match="source record count differs"):
         list(replay(root, STREAM, START, START + 8, IntlBook(), book_cache=cache))
+
+
+@pytest.mark.parametrize("offset,full", [(6, [6]), (7, [7])])
+@pytest.mark.parametrize("strict", [True, False])
+def test_snapshot_patch_preserves_full_depth_and_slice_boundary(tmp_path, monkeypatch, offset, full, strict):
+    root, cache, _, _ = build_fixture(tmp_path, patched=True)
+    snapshot = bc._snapshot
+    decoded = []
+
+    def watch(*args, **kwargs):
+        frame = snapshot(*args, **kwargs)
+
+        def load():
+            decoded.append(frame.key[1])
+            return frame.load_levels()
+
+        return replace(frame, load_levels=load)
+
+    monkeypatch.setattr(bc, "_snapshot", watch)
+    a, b = IntlBook(strict_clocks=strict), IntlBook(strict_clocks=strict)
+    lo, hi = START + offset, START + 9
+    assert list(replay(root, STREAM, lo, hi, a, strict=strict)) == list(
+        replay(root, STREAM, lo, hi, b, strict=strict, book_cache=cache))
+    assert decoded == full
+    assert _observable(a) == _observable(b)
+    assert b.size(TOKEN, 0.57, "SELL") == 0.0 and b.size(TOKEN, 0.62, "SELL") == 450.0

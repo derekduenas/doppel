@@ -5,8 +5,10 @@
 //! capture order and keeps full snapshots, deep updates, control rows and empty observations.
 //! Times, source ordinals, and embedded-message order allow independent slices to see the same
 //! state transitions as the raw reader. A rare unsupported wire frame keeps its exact raw text.
+//! Repeated, strictly valid snapshots also carry a patch against their named predecessor, so
+//! continuous playback can skip rebuilding the full snapshot. A slice can always use the original.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{self, Seek};
 use std::path::{Path, PathBuf};
@@ -64,11 +66,12 @@ struct Frame {
     venue_ms: Option<i64>,
     market: Option<String>,
     event: Event,
+    snapshot_patch: Option<SnapshotPatch>,
 }
 
 impl Frame {
     fn singleton(capture: Capture, event: Event) -> Self {
-        Self { capture, message_no: 0, venue_ms: None, market: None, event }
+        Self { capture, message_no: 0, venue_ms: None, market: None, event, snapshot_patch: None }
     }
 
     fn kind(&self) -> &'static str {
@@ -159,7 +162,7 @@ fn normalize(value: &Value, capture: Capture, message_no: i32) -> Option<Frame> 
         },
         _ => return None,
     };
-    Some(Frame { capture, message_no, venue_ms, market, event })
+    Some(Frame { capture, message_no, venue_ms, market, event, snapshot_patch: None })
 }
 
 #[derive(Clone, Default, PartialEq)]
@@ -213,6 +216,81 @@ fn tick(price: f64) -> f64 {
         return scale.round() / 10_000.0;
     }
     format!("{price:.4}").parse().expect("a formatted finite price")
+}
+
+/// The key order matches `IntlBook`: price ascending, BUY before SELL at a shared price.
+type LevelKey = (u16, bool);
+
+struct SnapshotPatch {
+    previous: (i64, i32),
+    levels: Vec<(LevelKey, f64)>,
+}
+
+struct SnapshotAnchor {
+    ordinal: (i64, i32),
+    venue_ms: i64,
+    levels: BTreeMap<LevelKey, f64>,
+}
+
+#[derive(Default)]
+struct SnapshotPatches(HashMap<String, SnapshotAnchor>);
+
+fn patchable_levels(bids: &[Level], asks: &[Level]) -> Option<BTreeMap<LevelKey, f64>> {
+    let mut levels = BTreeMap::new();
+    for (ask, side) in [(false, bids), (true, asks)] {
+        for &(price, size) in side {
+            // The typed decoder already rejected nonfinite fields. Signed zero cannot be
+            // represented by the integer key without changing the serialized price.
+            if price.is_sign_negative() || price > 1.0 || tick(price) != price || size < 0.0 {
+                return None;
+            }
+            let key = ((price * 10_000.0).round() as u16, ask);
+            // Python drops all zero-size snapshot entries and emits positive zero on removal.
+            let size = if size == 0.0 { 0.0 } else { size };
+            if levels.insert(key, size).is_some() {
+                return None;
+            }
+        }
+    }
+    Some(levels)
+}
+
+impl SnapshotPatches {
+    fn observe(&mut self, frame: &mut Frame) {
+        match &frame.event {
+            Event::Book { asset, bids, asks } => {
+                let previous = self.0.remove(asset);
+                let (Some(venue_ms), Some(levels)) =
+                    (frame.venue_ms.filter(|&ts| ts > 0 && !asset.is_empty()), patchable_levels(bids, asks))
+                else {
+                    return;
+                };
+                let ordinal = (frame.capture.record_no, frame.message_no);
+                if let Some(from) = previous.filter(|from| from.venue_ms <= venue_ms) {
+                    let keys: BTreeSet<_> = from.levels.keys().chain(levels.keys()).copied().collect();
+                    let delta = keys
+                        .into_iter()
+                        .filter_map(|key| {
+                            let old = from.levels.get(&key).copied().unwrap_or_default();
+                            let new = levels.get(&key).copied().unwrap_or_default();
+                            (old != new).then_some((key, new))
+                        })
+                        .collect();
+                    frame.snapshot_patch = Some(SnapshotPatch { previous: from.ordinal, levels: delta });
+                }
+                self.0.insert(asset.clone(), SnapshotAnchor { ordinal, venue_ms, levels });
+            }
+            Event::Change(changes) => {
+                for change in changes {
+                    if let Some(asset) = &change.asset {
+                        self.0.remove(asset);
+                    }
+                }
+            }
+            Event::Control(_) | Event::Fallback(_) => self.0.clear(),
+            Event::Trade { .. } | Event::Skip => {}
+        }
+    }
 }
 
 impl Projection {
@@ -343,6 +421,11 @@ fn list_field(changes: bool) -> Arc<Field> {
     Arc::new(field("item", DataType::Struct(level_fields(changes))))
 }
 
+fn patch_field() -> Arc<Field> {
+    let fields = vec![field("price", DataType::Float64), field("size", DataType::Float64), field("side", DataType::Utf8)].into();
+    Arc::new(field("item", DataType::Struct(fields)))
+}
+
 fn replay_schema(metadata: HashMap<String, String>) -> Arc<Schema> {
     Arc::new(Schema::new_with_metadata(
         vec![
@@ -363,6 +446,9 @@ fn replay_schema(metadata: HashMap<String, String>) -> Arc<Schema> {
             field("tx", DataType::Utf8),
             field("ctl", DataType::Utf8),
             field("fallback_raw", DataType::Utf8),
+            field("snapshot_prev_record_no", DataType::Int64),
+            field("snapshot_prev_message_no", DataType::Int32),
+            field("snapshot_delta", DataType::List(patch_field())),
         ],
         metadata,
     ))
@@ -401,6 +487,26 @@ fn changes_list(frames: &[Frame]) -> ArrayRef {
                 level_value(values, change.price, change.size);
                 values.field_builder::<StringBuilder>(2).expect("asset").append_option(change.asset.as_deref());
                 values.field_builder::<StringBuilder>(3).expect("side").append_value(&change.side);
+                values.append(true);
+            }
+            output.append(true);
+        } else {
+            output.append(false);
+        }
+    }
+    Arc::new(output.finish())
+}
+
+fn snapshot_deltas(frames: &[Frame]) -> ArrayRef {
+    let item = patch_field();
+    let DataType::Struct(fields) = item.data_type() else { unreachable!("snapshot patch item is a struct") };
+    let mut output = ListBuilder::new(StructBuilder::from_fields(fields.clone(), BATCH)).with_field(item.clone());
+    for frame in frames {
+        if let Some(patch) = &frame.snapshot_patch {
+            for &((price, ask), size) in &patch.levels {
+                let values = output.values();
+                level_value(values, f64::from(price) / 10_000.0, size);
+                values.field_builder::<StringBuilder>(2).expect("side").append_value(if ask { "SELL" } else { "BUY" });
                 values.append(true);
             }
             output.append(true);
@@ -462,6 +568,9 @@ fn replay_batch(schema: Arc<Schema>, frames: &[Frame]) -> Result<RecordBatch> {
             Arc::new(tx),
             Arc::new(ctl),
             Arc::new(fallback),
+            Arc::new(Int64Array::from_iter(frames.iter().map(|f| f.snapshot_patch.as_ref().map(|p| p.previous.0)))),
+            Arc::new(Int32Array::from_iter(frames.iter().map(|f| f.snapshot_patch.as_ref().map(|p| p.previous.1)))),
+            snapshot_deltas(frames),
         ],
     )?)
 }
@@ -606,12 +715,14 @@ pub fn materialize(input: &Path, output: &Path) -> Result<()> {
     let schema = replay_schema(source.metadata("replay"));
     let mut writer = parq(&mut side_tmp, schema.clone())?;
     let mut projection = Projection::default();
+    let mut patches = SnapshotPatches::default();
     let mut frames = Vec::with_capacity(BATCH);
     let mut source_records = 0_u64;
     for (record_no, record) in std::iter::once(Ok(first)).chain(input_rows).enumerate() {
         let record = record?;
         let capture = source.capture(&record, record_no)?;
-        for frame in parse_frames(&record, capture, &mut projection)? {
+        for mut frame in parse_frames(&record, capture, &mut projection)? {
+            patches.observe(&mut frame);
             frames.push(frame);
             if frames.len() == BATCH {
                 writer.write(&replay_batch(schema.clone(), &frames)?)?;

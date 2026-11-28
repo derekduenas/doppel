@@ -11,6 +11,8 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from .intlbook import _CachedSnapshot
+
 SCHEMA = b"doppel.book-replay.schema"
 SOURCE_HASH = b"doppel.book-replay.source-sha256"
 SOURCE_BYTES = b"doppel.book-replay.source-bytes"
@@ -20,6 +22,7 @@ SOURCE_RECORDS = b"doppel.book-replay.source-records"
 _HEADER = ("record_no", "message_no", "seq", "ts_ns")
 _MESSAGE = ("event_type", "venue_ms", "market_id", "asset_id", "bids", "asks", "changes",
             "trade_px", "trade_sz", "trade_side", "tx", "ctl", "fallback_raw")
+_SNAPSHOT = ("snapshot_prev_record_no", "snapshot_prev_message_no", "snapshot_delta")
 
 
 def _stamp(path: Path) -> tuple[int, int, int, int, int]:
@@ -41,14 +44,29 @@ def _message(columns: dict[str, list], i: int, event: str) -> dict:
         return columns[name][i]
 
     base = {"event_type": event, "timestamp": at("venue_ms"), "market": at("market_id")}
-    if event == "book":
-        return {**base, "asset_id": at("asset_id"), "bids": at("bids"), "asks": at("asks")}
     if event == "price_change":
         return {**base, "price_changes": at("changes")}
     if event == "last_trade_price":
         return {**base, "asset_id": at("asset_id"), "price": at("trade_px"), "size": at("trade_sz"),
                 "side": at("trade_side"), "transaction_hash": at("tx")}
     raise ValueError(f"invalid cached CLOB event type: {event}")
+
+
+def _snapshot(values: dict[str, list], i: int, batch_row: int, scope: object, record: int, message: int,
+              bids: pa.Array, asks: pa.Array) -> _CachedSnapshot:
+    header = {"event_type": "book", "timestamp": values["venue_ms"][i],
+              "asset_id": values["asset_id"][i], "market": values["market_id"][i]}
+    previous = delta = None
+    if "snapshot_delta" in values:
+        prev_record, prev_message = values["snapshot_prev_record_no"][i], values["snapshot_prev_message_no"][i]
+        if prev_record is not None and prev_message is not None:
+            previous = (scope, prev_record, prev_message)
+            delta = values["snapshot_delta"][i]
+
+    def load_levels() -> tuple[list, list]:
+        return bids[batch_row].as_py(), asks[batch_row].as_py()
+
+    return _CachedSnapshot(header, (scope, record, message), previous, delta, load_levels)
 
 
 class BookCache:
@@ -81,26 +99,33 @@ class BookCache:
 
             current: dict | None = None
             ordinal, next_message = -1, 0
-            for batch in f.iter_batches(batch_size=16_384, columns=[*_HEADER, *_MESSAGE], use_threads=True):
+            scope = object()
+            patch_columns = [name for name in _SNAPSHOT if name in schema.names]
+            if patch_columns and len(patch_columns) != len(_SNAPSHOT):
+                raise ValueError(f"incomplete book cache snapshot patch schema: {path}")
+            payload_columns = [name for name in _MESSAGE if name not in ("bids", "asks")] + patch_columns
+            for batch in f.iter_batches(batch_size=16_384, columns=[*_HEADER, *_MESSAGE, *patch_columns],
+                                        use_threads=True):
                 columns = dict(zip(batch.schema.names, batch.columns, strict=True))
                 header = [columns[name].to_numpy(zero_copy_only=False) for name in _HEADER]
                 numbers, messages, seqs, times = header
                 if any(values.dtype.kind != "i" for values in header):
                     raise ValueError(f"invalid book cache capture header: {path}")
-                selected = np.flatnonzero((times >= lo_ns) & (times < hi_ns))
-                payload = batch.select(list(_MESSAGE))
+                selected = np.flatnonzero((times >= lo_ns) & (times < hi_ns)).tolist()
+                payload = batch.select(payload_columns)
                 if len(selected) != batch.num_rows:
-                    payload = payload.take(pa.array(selected))
+                    payload = payload.take(pa.array(selected, type=pa.int64()))
                 values = payload.to_pydict()
                 use = 0
-                for i, (number, message, seq, tw) in enumerate(zip(numbers, messages, seqs, times, strict=True)):
+                captures = zip(*(values.tolist() for values in (numbers, messages, seqs, times)), strict=True)
+                for i, (number, message, seq, tw) in enumerate(captures):
                     if number != ordinal:
                         if number != ordinal + 1:
                             raise ValueError(f"book cache record ordinal gap: {path}")
                         if current is not None:
                             yield current
-                        ordinal, next_message = int(number), 0
-                        current = {"seq": int(seq), "stream": stream, "tw": int(tw), "_book_messages": []}
+                        ordinal, next_message = number, 0
+                        current = {"seq": seq, "stream": stream, "tw": tw, "_book_messages": []}
                     assert current is not None
                     if message != next_message or seq != current["seq"] or tw != current["tw"]:
                         raise ValueError(f"book cache message order or capture clock mismatch: {path}")
@@ -127,6 +152,10 @@ class BookCache:
                             raise ValueError(f"invalid book cache fallback payload: {path}")
                         current.pop("_book_messages", None)
                         current["raw"] = raw
+                        current["_book_cache_barrier"] = True
+                    elif event == "book":
+                        current["_book_messages"].append(_snapshot(
+                            values, use, i, scope, ordinal, message, columns["bids"], columns["asks"]))
                     else:
                         current["_book_messages"].append(_message(values, use, event))
                     use += 1
