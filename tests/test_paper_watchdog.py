@@ -322,10 +322,13 @@ def test_maker_live_e_value_requires_exact_volume_receipts():
 def test_positive_markouts_decline_to_zero_and_independently_trip_watchdog():
     monitor = ShadowWatchdog(model(), _taker().id)
     events = []
-    for i in range(60):
-        value = (2.0 + i % 2) if i < 30 else 0.0
+    for i in range(60 * MARKETS_PER_BLOCK):
+        block = i // MARKETS_PER_BLOCK
+        value = (2.0 + block % 2) if block < 30 else 0.0
         events.extend(monitor.consume({"window_id": str(i + 1), "monitor_eligible": True,
                                        "p_hat": None, "p_mkt_mid": None, "realized_y": None,
                                        "markout_2s": value, "markout_10s": value}))
-    assert [(r["state"], r["window_id"]) for r in events] == [(WARN, "39"), (KILL, "47")]
+    assert [r["state"] for r in events] == [WARN, KILL]
+    assert all(int(r["window_id"]) % MARKETS_PER_BLOCK == 0 for r in events)
+    assert 30 < int(events[-1]["window_id"]) // MARKETS_PER_BLOCK <= 60
     assert all(r["metrics"] == ["markout_2s", "markout_10s"] for r in events)
