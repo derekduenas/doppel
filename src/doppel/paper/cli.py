@@ -21,8 +21,10 @@ import orjson
 
 from ..twin.cli import parse_ts
 from ..twin.engine import SimConfig
+from ..strategy.shadow_admission import AdmissionRejected
 from .journal import JournalError, iter_records
 from .runtime import PaperRuntime, RecoveryError, Settings, check_binding, check_genome, load_genome
+from .shadow import RELEASE_ROOT
 from .tail import TapeError
 
 
@@ -33,17 +35,23 @@ def _run(a) -> int:
         print("genome not runnable on paper: " + "; ".join(errs), file=sys.stderr)
         return 2
     cfg = SimConfig(latency_ms=a.latency_ms, opening=a.opening)
-    errs = check_binding(g, cfg, a.registry)
+    if a.shadow_bundle is not None and a.t_from is not None:
+        print("refused: shadow requires --from-now or an existing approved journal", file=sys.stderr)
+        return 2
+    errs = check_binding(g, cfg, RELEASE_ROOT if a.shadow_bundle is not None else a.registry)
     if errs:
         print("refused: " + "; ".join(errs), file=sys.stderr)
         return 2
     settings = Settings(grace_s=a.grace_s, max_loss_usd=a.max_loss_usd,
                         kill_files=tuple(str(p) for p in a.kill_file) or (str(a.journal / "KILL"),),
                         perelman_src=str(a.perelman) if a.perelman else None)
-    rt = PaperRuntime(g, a.data, a.journal, cfg, settings)
+    rt = PaperRuntime(g, a.data, a.journal, cfg, settings, shadow_bundle=a.shadow_bundle)
     from_s = int(time.time()) if a.from_now else a.t_from
     try:
         rt.start(from_s)
+    except AdmissionRejected as exc:
+        print(f"shadow refused: {exc.code}", file=sys.stderr)
+        return 2
     except (RecoveryError, JournalError, ValueError) as exc:
         print(f"cannot start: {exc}", file=sys.stderr)
         return 3
@@ -81,6 +89,8 @@ def main(argv=None) -> int:
                    help="opening-price rule (required; must equal the genome's bound evaluation protocol)")
     r.add_argument("--registry", type=Path, default=Path("."),
                    help="repo root holding registry/genomes.jsonl (protocol bindings are enforced)")
+    r.add_argument("--shadow-bundle", type=Path,
+                   help="signed evidence bundle for shadow. Ordinary runs are RESEARCH_OBSERVE")
     r.add_argument("--perelman", type=Path,
                    help="raw BRTI rows: doppel-brti-relay's output directory (or PERELMAN's stream dir), read only")
     r.add_argument("--grace-s", type=float, default=Settings().grace_s)

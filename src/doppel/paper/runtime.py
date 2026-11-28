@@ -62,6 +62,7 @@ from ..twin.tape import NS, PRE_S
 from ..tape.universe import HORIZONS
 from .inputs import LiveWindow, RefLive, route_ws
 from .journal import Journal, iter_records, strip
+from .shadow import ShadowSession, authorize
 from .tail import PerelmanTail, StreamTail, TapeError
 
 REF_STREAMS = ("ref_brti_live", "ref_prices")
@@ -185,7 +186,7 @@ class State:
 
 class PaperRuntime:
     def __init__(self, g: Genome, data: Path, journal_dir: Path, cfg: SimConfig = SimConfig(),
-                 settings: Settings = Settings(), clock=time.time_ns):
+                 settings: Settings = Settings(), clock=time.time_ns, *, shadow_bundle: Path | None = None):
         errs = check_genome(g)
         if errs:
             raise ValueError("genome not runnable on paper: " + "; ".join(errs))
@@ -194,6 +195,8 @@ class PaperRuntime:
         self.streams = tuple(f"pmus_ws_{h}" for h in g.universe.horizons) + REF_STREAMS
         self.max_loss = settings.max_loss_usd if settings.max_loss_usd is not None else g.risk.max_loss_per_day
         self.kill_files = tuple(Path(p) for p in settings.kill_files) or (Path(journal_dir) / "KILL",)
+        self._shadow_bundle = shadow_bundle
+        self._shadow: ShadowSession | None = None
         self.st: State | None = None
         self._batch: list[dict] = []
         self._capture: list[dict] | None = None   # replay: regenerated records go here
@@ -206,6 +209,18 @@ class PaperRuntime:
 
     # ================================================================== start / resume
     def start(self, from_s: int | None) -> None:
+        if self._shadow_bundle is not None:
+            if not math.isfinite(self.max_loss) or not 0 < self.max_loss <= self.g.risk.max_loss_per_day:
+                raise ValueError("shadow max loss must stay within the sealed risk limit")
+            if from_s is not None and abs(from_s - self.clock() // NS) > 1:
+                raise ValueError("shadow must start at the current clock or resume its approved journal")
+            self._shadow = authorize(self.g, self._shadow_bundle, self.data, self.journal.dir,
+                                     self.settings.perelman_src, self.cfg)
+            if self._shadow.stop_reason(self.clock()) is not None:
+                raise RecoveryError("shadow approval changed or expired during validation")
+            if from_s is not None:
+                from_s = self.clock() // NS
+            self.kill_files = (*self.kill_files, self.journal.dir / "KILL", self.journal.dir.parent / "KILL")
         head = self.journal.open()
         if head is not None:
             self._recover(head)
@@ -220,7 +235,11 @@ class PaperRuntime:
         self.journal.append([{"k": "run", "t": from_s * NS, "wall": self.clock(), "genome": to_dict(self.g),
                               "genome_id": self.g.id, "cfg": asdict(self.cfg), "settings": asdict(self.settings),
                               "first_start": first, "from_s": from_s, "data": str(self.data),
+                              "admission": self._admission_binding(),
                               "code_sha256": paper_code_sha256()}], t_ns=from_s * NS)
+
+    def _admission_binding(self) -> dict:
+        return self._shadow.journal_binding() if self._shadow is not None else {"state": "RESEARCH_OBSERVE"}
 
     def _fresh_state(self, first_start: int) -> State:
         back = (self.g.fair.vol_window_s + 120 + PRE_S + 60) * NS
@@ -258,12 +277,17 @@ class PaperRuntime:
         if rows:
             for sec in st.ref.on_perelman(rows, now):
                 self._brti_to_windows(sec)
-        kill = bool(marker.get("kill")) if marker is not None else any(p.exists() for p in self.kill_files)
-        kill_new = kill and st.halted is None
+        if marker is not None:
+            stop_reason = marker.get("stop_reason", "kill_switch") if marker.get("kill") else None
+        else:
+            stop_reason = self._shadow.stop_reason(now) if self._shadow is not None else None
+            if stop_reason is None and any(p.exists() for p in self.kill_files):
+                stop_reason = "kill_switch"
+        kill_new = stop_reason is not None and st.halted is None
         late0 = st.late_records + sum(w.late for w in st.windows.values())
         n0 = len(self._batch)
-        if kill_new:
-            self._halt(c0 + 1, "kill_switch")
+        if stop_reason is not None and kill_new:
+            self._halt(c0 + 1, stop_reason)
         if W > c0:
             self._ingest(W, None)
             self._ensure_windows(W)
@@ -274,7 +298,7 @@ class PaperRuntime:
         late = st.late_records + sum(w.late for w in st.windows.values()) - late0
         hb = W - st.last_commit_w >= self.settings.heartbeat_s * NS
         if not replay and (len(self._batch) > n0 or late or kill_new or hb or rows):
-            self._commit(W, now, c0, kill_new)
+            self._commit(W, now, c0, stop_reason if kill_new else None)
         return W
 
     def _poll_tape(self, now: int, limits: bool) -> None:
@@ -505,14 +529,16 @@ class PaperRuntime:
         else:
             self._batch.append({**rec, "wall": self.clock()})
 
-    def _commit(self, W: int, now: int, c0: int, kill: bool) -> None:
+    def _commit(self, W: int, now: int, c0: int, stop_reason: str | None) -> None:
         st = self.st
         assert st is not None
         offsets = {s: d for s, t in st.tails.items() if (d := t.take_dirty())}
         if st.perelman is not None and (d := st.perelman.take_dirty()):
             offsets[PERELMAN] = d
-        marker: dict = {"k": "cycle", "t": W, "W": W, "c0": c0, "now": now, "wall": self.clock(), "kill": kill,
+        marker: dict = {"k": "cycle", "t": W, "W": W, "c0": c0, "now": now, "wall": self.clock(), "kill": stop_reason is not None,
                         "offsets": offsets, "open": len(st.windows), "halted": st.halted}
+        if stop_reason not in (None, "kill_switch"):
+            marker["stop_reason"] = stop_reason
         st.last_commit_w = W
         if W - st.last_ckpt_w >= self.settings.checkpoint_s * NS:
             st.last_ckpt_w = W
@@ -551,6 +577,8 @@ class PaperRuntime:
     def _recover(self, head: dict) -> None:
         if head.get("k") != "run" or head.get("genome_id") != self.g.id:
             raise RecoveryError("journal belongs to another genome")
+        if head.get("admission", {"state": "RESEARCH_OBSERVE"}) != self._admission_binding():
+            raise RecoveryError("restart must retain the journal's shadow admission and operating mode")
         if head.get("cfg") != _json(asdict(self.cfg)) or head.get("settings") != _json(asdict(self.settings)):
             raise RecoveryError("restart must use the journal's own settings (see the run record)")
         if head.get("code_sha256") != paper_code_sha256():
