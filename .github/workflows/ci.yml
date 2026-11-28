@@ -84,7 +84,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: layer5b-synthetic-${{ matrix.shard }}
-          path: ${{ runner.temp }}/fixtures-${{ matrix.shard }}/pytest/test_synthetic*/layer5b-synthetic-score.json
+          path: ${{ runner.temp }}/fixtures-${{ matrix.shard }}/pytest/test_synthetic*0/layer5b-synthetic-score.json
           if-no-files-found: ignore
       - name: Check Python types and deployment package
         if: matrix.shard == 4
