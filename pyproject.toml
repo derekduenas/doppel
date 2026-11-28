@@ -61,6 +61,9 @@ doppel-promotion = "doppel.lab.promotion:main"
 doppel-absorb-cohort = "doppel.lab.absorb_cohort:main"
 doppel-census-absorbed = "doppel.lab.absorb_cohort:census_main"
 doppel-leadlag = "doppel.lab.leadlag:main"
+doppel-markout = "doppel.lab.markout:main"
+doppel-skilldecay = "doppel.lab.skilldecay:main"
+doppel-mechanisms = "doppel.lab.mechanisms:main"
 
 [dependency-groups]
 dev = [
