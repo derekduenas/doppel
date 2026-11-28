@@ -215,6 +215,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "doppel-exec"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "futures-util",
+ "hex",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+ "toml",
+]
+
+[[package]]
 name = "doppel-fair"
 version = "0.1.0"
 dependencies = [
