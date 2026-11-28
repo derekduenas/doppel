@@ -18,3 +18,9 @@ The rules, code (9eac081), inputs, seeds and pass thresholds of `2026-11-28-laye
 
 **Scoring**
 - The pooled 3 seeds × 6 subjects scorecard is assembled from the 18 job scorecards with answerkey's own `totals` function.
+
+## Update, 2026-11-28 ~18:50 UTC (still before any exam result)
+- Owner rule: zero extra spend, so GitHub Actions must stay inside the free minutes.
+- Seed 271031 (all six subjects plus the cross-host hash check) runs in GitHub Actions.
+- Seeds 271067 and 271091 run sequentially on Apex with the original command, after the cohort v2 freeze and the exploratory studies finish.
+- The first matrix run (46175984503, all three seeds) was cancelled before any job finished. Nothing from it is used.

@@ -8,6 +8,10 @@ name: Exam matrix
 
 on:
   workflow_dispatch:
+    inputs:
+      seeds:
+        description: JSON list of exam seeds to run here (the rest run sequentially on Apex)
+        default: '["271031"]'
 
 permissions:
   contents: read
@@ -31,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        seed: [271031, 271067, 271091]
+        seed: ${{ fromJSON(inputs.seeds) }}
         subject: [a]
     steps: &steps
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -115,7 +119,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        seed: [271031, 271067, 271091]
+        seed: ${{ fromJSON(inputs.seeds) }}
         subject: [b, c, d, f]
     steps: *steps
 
@@ -128,6 +132,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        seed: [271031, 271067, 271091]
+        seed: ${{ fromJSON(inputs.seeds) }}
         subject: [e]
     steps: *steps
