@@ -1,6 +1,6 @@
 # DOPPEL storage policy: where every kind of data lives.
-# Read by ops/storage.py (copy + audit). Deletion is never done by storage.py; local pruning is the
-# janitor's job and it may only prune an hour that this audit shows verified in R2.
+# Read by ops/storage.py (copy, audit, verify). The janitor uses a size-audit
+# shortlist and checks the native seal and exact remote bytes before any prune.
 #
 # Homes:
 #   do    = Apex (DigitalOcean droplet + volume): hot working copy, releases, scratch, secrets
@@ -20,7 +20,8 @@ name = "tape"
 why = "Python recorder of record: hourly sealed segments + receipts; cannot be re-recorded"
 local = "/mnt/volume_nyc1_1793485122853/doppel/tape"
 r2 = "apex/tape"
-include = ["**/*.dtape.zst", "goldsky_activity/*.jsonl"]
+include = ["**/*.dtape.zst"]
+uploader = "archive_tape"
 min_age = "2h"            # never upload an hour still being written
 local_days = 14           # janitor target once R2 is verified; protected days kept regardless
 
@@ -34,11 +35,21 @@ min_age = "0s"
 local_days = 0
 
 [[class]]
+name = "tape-goldsky-activity"
+why = "Goldsky activity exports stored beside the recorder streams"
+local = "/mnt/volume_nyc1_1793485122853/doppel/tape"
+r2 = "apex/tape"
+include = ["goldsky_activity/*.jsonl"]
+min_age = "2h"
+local_days = 0
+
+[[class]]
 name = "tape-rust"
 why = "Rust shadow recorder segments"
 local = "/mnt/volume_nyc1_1793485122853/doppel/tape-rust"
 r2 = "apex/tape-rust"
 include = ["**/*.dtape.zst"]
+uploader = "archive_tape"
 min_age = "2h"
 local_days = 14
 
@@ -47,6 +58,24 @@ name = "tape-rust-index"
 why = "Rust recorder manifests"
 local = "/mnt/volume_nyc1_1793485122853/doppel/tape-rust"
 r2 = "apex/tape-rust"
+include = ["**/manifest.jsonl"]
+min_age = "0s"
+local_days = 0
+
+[[class]]
+name = "tape-lead"
+why = "Rust lead and BRTI constituent recorder segments"
+local = "/mnt/volume_nyc1_1793485122853/doppel/tape-lead"
+r2 = "apex/tape-lead"
+include = ["**/*.dtape.zst"]
+min_age = "2h"
+local_days = 14
+
+[[class]]
+name = "tape-lead-index"
+why = "Rust lead recorder segment manifests"
+local = "/mnt/volume_nyc1_1793485122853/doppel/tape-lead"
+r2 = "apex/tape-lead"
 include = ["**/manifest.jsonl"]
 min_age = "0s"
 local_days = 0
@@ -93,7 +122,7 @@ name = "perelman-offshore-hold-20261128"
 why = "PERELMAN's historical public offshore market data (storage only; recording decision D3 is separate)"
 local = "/var/backups/doppel-perelman-offshore-hold-20261128"
 r2 = "sealed/doppel-perelman-offshore-hold-20261128"
-include = ["**"]
+include = ["*.jsonl.gz"]
 min_age = "0s"
 local_days = 0
 

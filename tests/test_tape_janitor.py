@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 import json
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -143,7 +144,67 @@ def test_cold_retention_has_no_fallback_and_local_policy_protects_registered_day
     (root / "janitor-protect.txt").write_text("20261001\n")
     older = write_segment(root, "clob_btc_5m", "20260930")
     ran = subprocess.run(["sh", str(OPS / "doppel-janitor.sh"), str(root), "1000000"], capture_output=True)
+    assert ran.returncode == 1 and older.exists()
+    ran = subprocess.run([sys.executable, str(OPS / "tape_janitor.py"), "--local-floor",
+                          str(root), "1000000"], capture_output=True)
     assert ran.returncode == 0
     assert path.is_file() and not older.exists()
     with pytest.raises(ValueError, match="7 to 14"):
         janitor.prune(root, 12, retain_days=6)
+
+
+def test_policy_requires_fresh_audit_and_protects_days_and_corrupt_objects(tmp_path, monkeypatch):
+    root = tmp_path / "tape"
+    clean = write_segment(root, "clob_btc_5m", "20261001", data=b"old")
+    corrupt = write_segment(root, "clob_btc_5m", "20261002", data=b"new")
+    protected = write_segment(root, "clob_btc_5m", "20261003")
+    unlisted = write_segment(root, "clob_btc_5m", "20261004")
+    recent = write_segment(root, "clob_btc_5m", "20261125")
+    (root / "janitor-protect.txt").write_text("20261003\n")
+    cls = {"name": "tape", "local": str(root), "local_days": 14}
+    policy = {"class": [cls], "audit": {"grace": "3h"}}
+    listed = [f.relative_to(root).as_posix() for f in (clean, corrupt, protected, recent)]
+    audit = {"schema": janitor.storage.AUDIT_SCHEMA, "policy_sha256": janitor.storage.policy_sha256(policy),
+             "t": int(NOW.timestamp()) - 3600, "unclassified": [],
+             "classes": {"tape": {"verified": len(listed), "verified_paths": listed, "local_days": 14}}}
+    path = tmp_path / "audit.json"
+    path.write_text(json.dumps(audit))
+    monkeypatch.setattr(janitor.storage, "remote_digest", lambda *_: cold.sha(b"old"))
+    preview = janitor.policy_prune(policy, path, 0, dry_run=True, now=NOW)
+    assert len(preview["ready"]) == 2 and clean.exists()
+    result = janitor.policy_prune(policy, path, 0, now=NOW)
+    assert result["deleted"] == [f"tape/{listed[0]}"] and not clean.exists()
+    assert result["issues"] == [f"SHA-256 mismatch: tape/{listed[1]}"]
+    assert all(f.exists() for f in (corrupt, protected, unlisted, recent))
+    audit["t"] -= 4 * 3600
+    path.write_text(json.dumps(audit))
+    with pytest.raises(ValueError, match="stale"):
+        janitor.policy_prune(policy, path, 0, now=NOW)
+    assert corrupt.exists()
+
+
+def test_archive_cutover_keeps_flat_only_hours_and_checks_immutable_manifest(tmp_path, monkeypatch):
+    root = tmp_path / "tape"
+    flat = write_segment(root, "clob_btc_5m", "20261001", data=b"flat")
+    active = write_segment(root, "clob_btc_5m", "20261002", data=b"immutable")
+    target, state = MemoryArchive(), tmp_path / "state"
+    assert cold.offload(root, target, state, ["auto"], None, NOW)["archived"] == 2
+    flat_key, active_key = [p.relative_to(root).as_posix() for p in (flat, active)]
+    immutable = cold.data_key(active_key, cold.sha(b"immutable"))
+    cls = {"name": "tape", "local": str(root), "local_days": 14, "uploader": "archive_tape"}
+    policy = {"class": [cls], "audit": {"grace": "3h"}}
+    audit = {"schema": janitor.storage.AUDIT_SCHEMA, "policy_sha256": janitor.storage.policy_sha256(policy),
+             "t": int(NOW.timestamp()), "unclassified": [], "classes": {"tape": {
+                 "verified": 2, "verified_paths": [flat_key, active_key], "local_days": 14,
+                 "remote_keys": {flat_key: flat_key, active_key: immutable}}}}
+    audit_path = tmp_path / "audit.json"
+    audit_path.write_text(json.dumps(audit))
+
+    def digest(_, cls, key, size):
+        payload = target.objects[key]
+        assert len(payload) == size
+        return cold.sha(payload)
+
+    monkeypatch.setattr(janitor.storage, "remote_digest", digest)
+    assert janitor.policy_prune(policy, audit_path, 0, now=NOW)["deleted"] == [f"tape/{active_key}"]
+    assert flat.exists() and not active.exists()

@@ -9,4 +9,4 @@ IOSchedulingClass=idle
 MemoryMax=600M
 OOMScoreAdjust=800
 ExecStart=/usr/bin/python3 /opt/doppel-storage/storage.py copy
-ExecStart=/bin/sh -c '/usr/bin/python3 /opt/doppel-storage/storage.py audit --json > /var/tmp/doppel-storage-audit.json.tmp; rc=$?; mv /var/tmp/doppel-storage-audit.json.tmp /var/tmp/doppel-storage-audit.json; exit $rc'
+ExecStart=/bin/sh -c 'tmp=$$(mktemp /var/tmp/doppel-storage-audit.XXXXXX) || exit 1; /usr/bin/python3 /opt/doppel-storage/storage.py audit --json > "$$tmp"; rc=$$?; mv -T "$$tmp" /var/tmp/doppel-storage-audit.json || exit 1; exit "$$rc"'

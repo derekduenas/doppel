@@ -5,13 +5,16 @@ import fcntl
 import hashlib
 import json
 import os
+import tomllib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from shutil import disk_usage
 
 if __package__:
+    from . import storage
     from .cold_tape import ObjectStore, offload
 else:
+    import storage
     from cold_tape import ObjectStore, offload
 
 
@@ -210,10 +213,12 @@ def archive_locked(source, destination, streams, through, reserve, *, start=None
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, required=True)
+    parser.add_argument("--source", type=Path)
     destinations = parser.add_mutually_exclusive_group(required=True)
     destinations.add_argument("--destination", type=Path)
     destinations.add_argument("--remote", help="named rclone bucket and prefix, e.g. r2:research/apex/tape")
+    destinations.add_argument("--storage-class", help="tape class assigned to this writer by the canonical policy")
+    parser.add_argument("--policy", type=Path, default=storage.POLICY)
     parser.add_argument("--state", type=Path, help="private directory for upload proofs in object mode")
     parser.add_argument("--dry-run", action="store_true", help="list pending bytes in object mode without writing")
     parser.add_argument("--historical-paths", type=Path,
@@ -225,11 +230,33 @@ def main():
     parser.add_argument("--streams", nargs="+", help="tape streams, or auto for every manifested stream in object mode")
     parser.add_argument("--reserve-gib", type=int, default=35)
     args = parser.parse_args()
-    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    at = datetime.now(UTC)
+    now = at.replace(minute=0, second=0, microsecond=0)
     through = segment_hour(f"{args.through}.dtape.zst", "dtape.zst") if args.through else now
     start = segment_hour(f"{args.start}.dtape.zst", "dtape.zst") if args.start else None
     if through > now or (start is not None and start >= through) or args.reserve_gib < 0:
         parser.error("use a closed UTC hour boundary and a nonnegative reserve")
+    if args.storage_class:
+        if not args.state or args.source or args.historical_paths or args.require_receipts or args.streams:
+            parser.error("policy mode requires --state and fixes the source, remote, and streams")
+        try:
+            policy = tomllib.loads(args.policy.read_text())
+            cls = storage.classes(policy, args.storage_class)[0]
+            if not storage.archive_owns(cls):
+                raise ValueError(f"class is not assigned to archive_tape: {args.storage_class}")
+            r2 = policy["r2"]
+            root = Path(cls["local"])
+            target = ObjectStore(f"{r2['remote']}/{cls['r2']}", binary=r2["rclone"], bwlimit=r2["bwlimit"],
+                                 config=r2["config"])
+            cutoff = at - timedelta(seconds=storage.seconds(cls["min_age"]))
+            result = offload(root, target, args.state, ["auto"], start, through, dry_run=args.dry_run,
+                             modified_before_ns=int(cutoff.timestamp()) * 1_000_000_000)
+        except (OSError, ValueError) as exc:
+            parser.exit(1, f"{exc}\n")
+        print(json.dumps({"class": args.storage_class, **result}, sort_keys=True))
+        return int(bool(result["issues"]))
+    if args.source is None:
+        parser.error("--source is required for explicit destination mode")
     if args.remote:
         if args.state is None or args.require_receipts or (args.historical_paths and (args.streams or start)):
             parser.error("object mode requires --state, and historical paths cannot be mixed with stream ranges")

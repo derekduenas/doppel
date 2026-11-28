@@ -93,16 +93,22 @@ def publish_proof(path, proof):
 
 
 class ObjectStore:
-    def __init__(self, remote):
+    def __init__(self, remote, *, binary="rclone", bwlimit=None, config=None):
         name, sep, prefix = remote.rstrip("/").partition(":")
         if not sep or not SAFE.fullmatch(name):
             raise ValueError("archive destination must be a named rclone remote with a bucket")
         self.remote = f"{name}:{relative(prefix)}"
         self.verified = set()
+        self.binary = binary
+        self.options = []
+        if bwlimit is not None:
+            self.options += ["--bwlimit", bwlimit]
+        if config is not None:
+            self.options += ["--config", config]
 
     def call(self, *args):
-        return ["rclone", *args, "--contimeout=10s", "--timeout=60s", "--retries=1", "--transfers=1",
-                "--s3-no-check-bucket", "--s3-upload-concurrency=1", "--b2-chunk-size=16Mi"]
+        return [self.binary, *args, "--contimeout=10s", "--timeout=60s", "--retries=1", "--transfers=1",
+                "--s3-no-check-bucket", "--s3-upload-concurrency=1", "--b2-chunk-size=16Mi", *self.options]
 
     def object_size(self, key):
         proc = subprocess.run(self.call("lsjson", "--stat", f"{self.remote}/{key}"),
@@ -229,10 +235,14 @@ def describe_file(root, name, history, handle, stamp, *, legacy, dry_run):
     return identity, raw_receipt, can_prune
 
 
+def data_key(name, checksum):
+    return f"data/{name}/{checksum}"
+
+
 def manifest_objects(identity, raw_receipt):
     name, checksum = identity["path"], identity["sha256"]
-    data_key = f"data/{name}/{checksum}"
-    objects = {data_key: identity["bytes"]}
+    key = data_key(name, checksum)
+    objects = {key: identity["bytes"]}
     receipt_key = None
     if raw_receipt is not None:
         _, day, file = name.split("/")
@@ -241,10 +251,10 @@ def manifest_objects(identity, raw_receipt):
     record = json_bytes({"schema": 1, **identity, "objects": objects})
     record_key = f"checksums/{name}/{sha(record)}.json"
     objects[record_key] = len(record)
-    return data_key, receipt_key, record_key, record, objects
+    return key, receipt_key, record_key, record, objects
 
 
-def offload(root, target, state, streams, start, through, *, dry_run=False, historical=None):
+def offload(root, target, state, streams, start, through, *, dry_run=False, historical=None, modified_before_ns=None):
     result = {"archived": 0, "verified": 0, "pending": 0, "bytes": 0, "issues": [], "dry_run": dry_run}
     if not root.is_dir() or root.is_symlink() or state.is_symlink():
         raise ValueError("archive source and proof state must be real directories")
@@ -257,6 +267,8 @@ def offload(root, target, state, streams, start, through, *, dry_run=False, hist
             try:
                 with open_file(root, name) as (handle, parent_fd, leaf):
                     stamp = file_stamp(os.fstat(handle.fileno()))
+                    if modified_before_ns is not None and stamp[3] > modified_before_ns:
+                        continue
                     if legacy and stamp[3] >= int(through.timestamp()) * 1_000_000_000:
                         raise ValueError(f"historical file is too recent for the supplied closed cutoff: {name}")
                     identity, raw_receipt, prune = describe_file(root, name, history, handle, stamp,
@@ -274,8 +286,8 @@ def offload(root, target, state, streams, start, through, *, dry_run=False, hist
                     handle.seek(0)
                     if not unchanged(handle, parent_fd, leaf, stamp):
                         raise ValueError(f"source changed while verifying: {name}")
-                    data_key, receipt_key, record_key, record, objects = manifest_objects(identity, raw_receipt)
-                    target.ensure(data_key, handle, stamp[2], checksum)
+                    key, receipt_key, record_key, record, objects = manifest_objects(identity, raw_receipt)
+                    target.ensure(key, handle, stamp[2], checksum)
                     if raw_receipt is not None:
                         target.ensure(receipt_key, raw_receipt, len(raw_receipt), identity["receipt_sha256"])
                     target.ensure(record_key, record, len(record), sha(record))
