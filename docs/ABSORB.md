@@ -19,18 +19,32 @@ The audit's three faults and the fix for each:
 
 ```
 doppel-absorb --store LAB/fills --wallets 0x... 0x... --from T0 --to T1 --out DIR \
-  [--rpc URL ...] [--log-rpc URL ...] [--state-rpc URL ...] [--max-requests N] [--rate R] [--chunk-blocks B] \
+  [--rpc URL ...] [--logs-rpc URL ...] [--state-rpc URL ...] [--max-requests N] [--rate R] [--chunk-blocks B] \
   [--pages TAPE/goldsky_activity/pagination.jsonl] [--tokens LAB/tokens.jsonl] [--orders LAB/orders/...]
 ```
 
 - **Window.** `--from`/`--to` are unix seconds. The window is the block range `[first block with ts ≥ from, last block with ts < to]`. `--from-block`/`--to-block` set it in blocks directly.
 - **Outputs.** `DIR/wallet-<addr>.json` per wallet, `DIR/cohort.tsv` and `DIR/cohort.json` with the cohort table and RPC statistics.
 - **Cache.** Historical reads are reusable from `DIR/_chain/rpc-cache.jsonl`. A UTC run reads the current chain head again. A run stopped by a request limit can resume with the same historical cache. The scanner checks the block range, contract, topics, ABI and conflicting log positions on replay.
-- **Endpoint roles.** By default logs go to publicnode and historical balance/code reads to drpc. Use `--rpc` to override all roles, or `--log-rpc` and `--state-rpc` for role-specific overrides. All routes share the same per-run request budget and per-endpoint rate state.
-- **Block span.** `--chunk-blocks` is the `eth_getLogs` span. 1rpc.io allows 50 blocks. Find the largest span publicnode or drpc accept on Apex before a large run.
-- **Pagination file.** Without `--pages`, Goldsky counts as incomplete and no wallet can be `reconciled`.
-- **Token pairs.** `--tokens` supplies token, condition and outcome index. A wallet-attributed binary CTF operation with an unambiguous batch and partition can supply both siblings. Contradictory cache mappings fail validation. Whole-wallet pairing fractions require a reconciled ledger and both outcomes for every observed position. The report lists missing siblings and counts event blocks whose timing was interpolated.
-- **Signers.** `--orders` accepts committed order-tape parts. Signer attribution requires a verified decoded order matching the account, transaction, block, order hash, token and side of a chain fill. `identity.signer_coverage` counts distinct order observations, including conflicts. The cohort file lists verified keys seen across multiple accounts. Funding, transaction submission and beneficial ownership are distinct from order signing.
+- **Endpoint roles.** Measured on Apex on Nov 27: publicnode serves `eth_getLogs` up to 10,000-block spans but refuses archive state ("Archive requests require a personal token"); drpc serves `eth_call` at past blocks but limits `eth_getLogs` to 100 blocks on the free plan. By default logs go to publicnode and historical balance/code reads to drpc. Use `--rpc` to override all roles, or `--logs-rpc` (alias `--log-rpc`) and `--state-rpc` for role-specific overrides. All routes share the same per-run request budget and per-endpoint rate state.
+- **Refusals.** A node's archive or span refusal is a capability answer, not a failure. It uses no retry and never benches the node. The pool stops offering that node the method (archive) or that span and wider (span), and moves the request to another routed node. When no routed node can serve a log span, the scan halves its span and retries the same blocks. A transport error on `eth_getLogs` also halves the span. When no routed node serves archive state, the wallet gets the cause `state_archive_unavailable` beside `balances_unavailable`.
+- **Block span.** `--chunk-blocks` is the `eth_getLogs` span, default 10,000 (publicnode's limit). A Polygon day is about 43,200 blocks, so one wallet-day costs 5 filters × 5 chunks = 25 log requests.
+
+## Cohort runs (`doppel-absorb-cohort`)
+
+```
+doppel-absorb-cohort --store LAB/fills --cohort COHORT.json --from T0 --to T1 --out DIR \
+  [--max-requests N] [--wallet-batch N] [--pages ...] [--tokens ...] [--orders ...] \
+  [--rpc ...] [--logs-rpc ...] [--state-rpc ...] [--rate R] [--chunk-blocks B] [--plan [--max-rows-per-wallet M]]
+```
+
+- **Members.** Every candidate and control of the cohort file, over the half-open UTC window `[T0, T1)`.
+- **Resume.** `DIR/run.json` fixes the cohort hash, the window and its resolved blocks. A resume with another cohort or window exits 2. Each wallet has its own RPC cache in `DIR/_chain/`, so memory holds one wallet's chain data and a retried wallet repeats no request. `--wallet-batch` bounds how many wallets' fills are loaded at once (default 10).
+- **Completed wallets.** A wallet is done when its absorption ended without a transport failure. Its status, `reconciled` or `not_reconciled` with named causes, is then a property of the data, and it is never fetched again. `DIR/done.jsonl` binds each done wallet to a hash of its Goldsky pagination records, the fill-store `state.json`, the token map and the order-tape part list. When any of them changes (a re-pull, a compaction, a larger token map), the wallet is recomputed from its cache.
+- **Pending wallets.** A transport failure (budget, endpoints down, timeouts, a refusal with no capable node) keeps the wallet pending, with the attempt in `wallet-<addr>.attempt.json`. Budget exhaustion, all endpoints down, or no archive-capable state node stops the run. Exit 0 means every wallet is done, 3 means wallets remain (rerun the same command), 4 means another run holds `DIR/.lock`.
+- **Table.** `DIR/cohort.tsv` and `DIR/cohort.json` list every member with role, `state` (done, pending, not_started), status, causes and the last transport error, plus cause counts and RPC statistics. They are rewritten after every wallet batch.
+- **Plan.** `--plan` makes no network request. It prints the blocks (from `run.json`, otherwise at a nominal 2 s per block), the RPC requests per wallet (5 `eth_getLogs` per chunk, 6 balance calls, 1 `eth_getCode`), a receipt floor of 0 and an empirical range of 0.12–0.15 receipts per stored fill (the Nov 26 reconciled day), and at most 113 window-search reads on a fresh run. Goldsky rows are 0 for a wallet whose terminal, trade-bound records cover the window. A wallet covered only by records without a trade binding is counted as `needs_reattestation`: it costs no rows, but its sealed pages must be re-attested with `goldsky_proof` (below), because `doppel-goldsky cohort` skips an exact interval that is already terminal. Otherwise the estimate is the wallet's row density in its longest terminal record times the window, else its stored fills, capped at `--max-rows-per-wallet`. It prints the matching fixed-end `doppel-goldsky cohort` command. That command bills every wallet without a terminal record for exactly `(T0, T1)`, so its count can exceed the wallets that are missing.
+- **Census input.** `doppel-census-absorbed --census CENSUS.json --absorb DIR --out NEW.json` keeps census wallets that `DIR/cohort.json` lists as done and whose absorption has `not_reconciled: false`. A census for another cohort is refused. It adds each wallet's share split (`complete_set_buy_shares`, `directional_buy_shares`, sells as `derisk`/`unpair`, pairing coverage) and recomputes `by_label` and `selfcheck` over the survivors. `census.py` is unchanged.
 
 ## Contracts and events (Polygon 137)
 
