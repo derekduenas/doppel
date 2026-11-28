@@ -1,0 +1,9 @@
+[Unit]
+Description=Hourly DOPPEL storage copy + audit (after the hour's segments seal)
+
+[Timer]
+OnCalendar=*-*-* *:20:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

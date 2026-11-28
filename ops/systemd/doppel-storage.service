@@ -1,0 +1,12 @@
+[Unit]
+Description=DOPPEL storage: copy R2 classes per ops/storage-policy.toml, then audit
+After=network-online.target
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=600M
+OOMScoreAdjust=800
+ExecStart=/usr/bin/python3 /opt/doppel-storage/storage.py copy
+ExecStart=/bin/sh -c '/usr/bin/python3 /opt/doppel-storage/storage.py audit --json > /var/tmp/doppel-storage-audit.json.tmp; rc=$?; mv /var/tmp/doppel-storage-audit.json.tmp /var/tmp/doppel-storage-audit.json; exit $rc'

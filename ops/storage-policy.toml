@@ -1,0 +1,124 @@
+# DOPPEL storage policy: where every kind of data lives.
+# Read by ops/storage.py (copy + audit). Deletion is never done by storage.py; local pruning is the
+# janitor's job and it may only prune an hour that this audit shows verified in R2.
+#
+# Homes:
+#   do    = Apex (DigitalOcean droplet + volume): hot working copy, releases, scratch, secrets
+#   r2    = Cloudflare R2 bucket `doppel-tape`: permanent copy of everything that cannot be regenerated
+#   git   = GitHub + Apex mirror: code, registry, docs, evidence/prereg (never data blobs, never secrets)
+#   never = must not leave Apex (credentials, logs that may hold hostnames/keys)
+
+[r2]
+remote = "r2:doppel-tape"
+rclone = "/usr/local/bin/rclone-r2"   # apt rclone 1.60 fails against R2 (NotImplemented)
+config = "/etc/doppel/rclone.conf"
+bwlimit = "25M"
+
+# ---- copied to R2 (and kept on Apex for local_days) -------------------------------------------
+[[class]]
+name = "tape"
+why = "Python recorder of record: hourly sealed segments + receipts; cannot be re-recorded"
+local = "/mnt/volume_nyc1_1793485122853/doppel/tape"
+r2 = "apex/tape"
+include = ["**/*.dtape.zst", "goldsky_activity/*.jsonl"]
+min_age = "2h"            # never upload an hour still being written
+local_days = 14           # janitor target once R2 is verified; protected days kept regardless
+
+[[class]]
+name = "tape-index"
+why = "per-stream manifests (segment hashes), receipts, import watermarks: appended hourly, so copied every run"
+local = "/mnt/volume_nyc1_1793485122853/doppel/tape"
+r2 = "apex/tape"
+include = ["**/manifest.jsonl", "receipts/**", "**/import-watermark.json"]
+min_age = "0s"
+local_days = 0
+
+[[class]]
+name = "tape-rust"
+why = "Rust shadow recorder segments"
+local = "/mnt/volume_nyc1_1793485122853/doppel/tape-rust"
+r2 = "apex/tape-rust"
+include = ["**/*.dtape.zst"]
+min_age = "2h"
+local_days = 14
+
+[[class]]
+name = "tape-rust-index"
+why = "Rust recorder manifests"
+local = "/mnt/volume_nyc1_1793485122853/doppel/tape-rust"
+r2 = "apex/tape-rust"
+include = ["**/manifest.jsonl"]
+min_age = "0s"
+local_days = 0
+
+[[class]]
+name = "lab"
+why = "derived research data; fills/ and tokens.jsonl cost Goldsky credit to rebuild; cohorts are frozen preregistrations"
+local = "/mnt/volume_nyc1_1793485122853/doppel/lab"
+r2 = "apex/lab"
+include = ["**"]
+min_age = "1h"
+local_days = 0            # 0 = keep on Apex indefinitely
+
+[[class]]
+name = "goldsky"
+why = "Goldsky pull state and manifests"
+local = "/mnt/volume_nyc1_1793485122853/doppel/goldsky"
+r2 = "apex/goldsky"
+include = ["**"]
+min_age = "1h"
+local_days = 0
+
+# ---- sealed archives: immutable, copied once, deletable on Apex only by the owner -------------
+[[class]]
+name = "sealed-20261126"
+why = "sealed tape archive; Layer 5 exam input"
+local = "/var/backups/doppel-sealed-20261126"
+r2 = "sealed/doppel-sealed-20261126"
+include = ["**"]
+min_age = "0s"
+local_days = 0
+
+[[class]]
+name = "tape-rust-moved-20261127"
+why = "Rust shadow tape moved off the volume on 2026-11-27"
+local = "/var/backups/doppel-tape-rust-moved-20261127"
+r2 = "sealed/doppel-tape-rust-moved-20261127"
+include = ["**"]
+min_age = "0s"
+local_days = 0
+
+[[class]]
+name = "perelman-offshore-hold-20261128"
+why = "PERELMAN's historical public offshore market data (storage only; recording decision D3 is separate)"
+local = "/var/backups/doppel-perelman-offshore-hold-20261128"
+r2 = "sealed/doppel-perelman-offshore-hold-20261128"
+include = ["**"]
+min_age = "0s"
+local_days = 0
+
+[[class]]
+name = "sim-bundle"
+why = "simulator reference table, calibration and dev-seed results"
+local = "/var/backups/doppel-sim"
+r2 = "sealed/doppel-sim"
+include = ["**"]
+min_age = "0s"
+local_days = 0
+
+# ---- stays on Apex only (never uploaded) -----------------------------------------------------
+[do_only]
+paths = [
+  "/opt/doppel", "/opt/doppel.old", "/opt/doppel-bin", "/opt/doppel-rust", "/opt/doppel-testenv",   # releases/venvs: rebuilt from git
+  "/var/tmp",                                                                                         # scratch, CI checkouts, exam outputs (results go to git/evidence)
+  "/srv/git/doppel.git",                                                                              # mirror of GitHub
+]
+skip_names = ["status.json", "janitor.log", "janitor-protect.txt", "*.lock", "*.tmp", "*.partial"]
+
+[never]
+paths = ["/etc/doppel", "/etc/credstore", "/etc/credstore.encrypted", "/etc/edge-engine"]
+
+# ---- the volume's top level must be fully classified ------------------------------------------
+[audit]
+classified_roots = ["/mnt/volume_nyc1_1793485122853/doppel"]
+grace = "3h"              # an eligible file missing from R2 for longer than this is an error
