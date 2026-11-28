@@ -14,6 +14,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use base64::Engine;
 use doppel_tape::kalshi::{KalshiBrti, KalshiWs, SigningKey};
+use doppel_tape::lead::LeadFeed;
 use doppel_tape::pmus::{fetch_signed_headers, PmusMarketsWs};
 use doppel_tape::recorder::{spawn_writer, Recorder, WriterThread};
 use doppel_tape::segment::read_segment;
@@ -65,6 +66,101 @@ fn sock_path() -> (tempfile::TempDir, PathBuf) {
     let d = tempfile::Builder::new().prefix("dp").tempdir_in("/tmp").unwrap();
     let p = d.path().join("m.sock");
     (d, p)
+}
+
+#[tokio::test]
+async fn lead_feeds_record_native_depth_and_trade_payloads() {
+    let fixtures = [
+        (
+            "lead_binance_spot_l2",
+            "wss://data-stream.binance.vision/ws/btcusdt@depth20@100ms",
+            None,
+            r#"{"lastUpdateId":160,"bids":[["50100.00","1.2"]],"asks":[["50101.00","2.3"]]}"#,
+        ),
+        (
+            "lead_binance_spot_trades",
+            "wss://data-stream.binance.vision/ws/btcusdt@trade",
+            None,
+            r#"{"e":"trade","E":1000,"s":"BTCUSDT","t":123,"p":"50100.00","q":"0.20","T":999,"m":true}"#,
+        ),
+        (
+            "lead_binance_perp_l2",
+            "wss://fstream.binance.com/public/ws/btcusdt@depth20@100ms",
+            None,
+            r#"{"e":"depthUpdate","E":1000,"T":999,"s":"BTCUSDT","U":156,"u":160,"pu":155,"b":[["50100.00","1.2"]],"a":[["50101.00","2.3"]],"st":1}"#,
+        ),
+        (
+            "lead_binance_perp_trades",
+            "wss://fstream.binance.com/market/ws/btcusdt@aggTrade",
+            None,
+            r#"{"e":"aggTrade","E":1000,"s":"BTCUSDT","a":321,"p":"50100.00","q":"0.20","f":101,"l":102,"T":999,"m":false,"st":1}"#,
+        ),
+        (
+            "lead_hyperliquid_l2",
+            "wss://api.hyperliquid.xyz/ws",
+            Some("l2Book"),
+            r#"{"channel":"l2Book","data":{"coin":"BTC","time":999,"levels":[[{"px":"50100.0","sz":"1.2","n":2}],[{"px":"50101.0","sz":"2.3","n":3}]]}}"#,
+        ),
+        (
+            "lead_hyperliquid_trades",
+            "wss://api.hyperliquid.xyz/ws",
+            Some("trades"),
+            r#"{"channel":"trades","data":[{"coin":"BTC","side":"A","px":"50100.0","sz":"0.2","time":999,"tid":100,"hash":"0x01"}]}"#,
+        ),
+    ];
+    let d = setup();
+    for (name, url, subscription, raw) in fixtures {
+        let mut venue = LeadFeed::new(name).unwrap();
+        assert_eq!(venue.url(), url);
+        assert!(!venue.keepalives_are_liveness());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        venue.url = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            if let Some(ch) = subscription {
+                let sub = ws.next().await.unwrap().unwrap().into_text().unwrap();
+                assert_eq!(
+                    serde_json::from_str::<Value>(&sub).unwrap(),
+                    json!({"method":"subscribe","subscription":{"type":ch,"coin":"BTC"}})
+                );
+            }
+            for frame in [
+                r#"{"channel":"subscriptionResponse","data":{"method":"subscribe"}}"#,
+                r#"{"channel":"pong"}"#,
+                r#"{"e":"aggTrade","s":"BTCUSDT","a":321,"p":"50100","q":".2","T":999,"m":false,"st":2}"#,
+                raw,
+            ] {
+                ws.send(Message::Text(frame.into())).await.unwrap();
+            }
+            while let Some(Ok(frame)) = ws.next().await {
+                if frame.is_close() {
+                    break;
+                }
+            }
+        });
+        let (rec, writer) = writer(d.path(), name);
+        let stats = rec.stats.clone();
+        let (stop, rx) = watch::channel(false);
+        let client = tokio::spawn(run_ws(venue, rec, rx, fast()));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while stats.msgs.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            stop.send(true).unwrap();
+            client.await.unwrap();
+            server.await.unwrap();
+        })
+        .await
+        .unwrap();
+        writer.join();
+        let all = tape(d.path(), name);
+        let data: Vec<_> = all.iter().filter(|r| r.get("meta").is_none()).collect();
+        assert_eq!(data.len(), 1, "{name}: {all:?}");
+        assert_eq!(data[0]["raw"], raw);
+        assert!(data[0]["tw"].as_i64().unwrap() > 0);
+        assert!(data[0]["tm"].as_i64().unwrap() > 0);
+    }
 }
 
 // ------------------------------------------------------------------------------------------------

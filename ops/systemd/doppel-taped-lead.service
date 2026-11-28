@@ -1,0 +1,22 @@
+[Unit]
+Description=DOPPEL Rust lead feeds and BRTI constituent recording
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=doppel
+Environment=DOPPEL_LEAD_STREAMS=spot_l2
+EnvironmentFile=/etc/doppel-lead.env
+ExecStart=/opt/doppel-bin/doppel-taped run --data ${DOPPEL_LEAD_ROOT} --only ${DOPPEL_LEAD_STREAMS}
+Restart=always
+RestartSec=3
+MemoryHigh=512M
+MemoryMax=768M
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

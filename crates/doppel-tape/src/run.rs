@@ -13,6 +13,7 @@ use crate::clock::wall_ns;
 use crate::http::RateLimiter;
 use crate::kalshi::{KalshiBooks, KalshiBrti, KalshiWs};
 use crate::l2::{RestL2, SpotL2, L2_REST_VENUES, L2_VENUES};
+use crate::lead::{self, LeadFeed};
 use crate::perps::{KalshiPerpWs, PerpRest};
 use crate::pmus::PmusMarketsWs;
 use crate::recorder::{spawn_writer, stats_map, Recorder, Stats, WriterThread, DEFAULT_QUEUE};
@@ -47,12 +48,14 @@ pub fn perp_streams() -> Vec<String> {
 }
 
 /// Resolve `--only` names: `clob_intl` = every CLOB shard, `kalshi_brti` = `ref_brti_live`
-/// (the Python key), `spot_l2` = every spot L2 book stream, `perps` = every perp stream. `pmus_books` is deliberately not
+/// (the Python key), `spot_l2` = every BRTI spot L2 book stream, `perps` = every perp stream, `lead_feeds` = every public
+/// Binance and Hyperliquid lead stream. All three groups are opt-in. `pmus_books` is deliberately not
 /// ported (the PM US REST book is CDN-stale).
 pub fn resolve_streams(only: &[String]) -> Result<Vec<String>, String> {
     let all = all_streams();
     let l2 = l2_streams();
     let perps = perp_streams();
+    let leads: Vec<_> = lead::stream_names().map(str::to_owned).collect();
     let mut want = BTreeSet::new();
     for raw in only {
         let n = raw.trim();
@@ -65,14 +68,15 @@ pub fn resolve_streams(only: &[String]) -> Result<Vec<String>, String> {
             }
             "spot_l2" => want.extend(l2.iter().cloned()),
             "perps" => want.extend(perps.iter().cloned()),
+            "lead_feeds" => want.extend(leads.iter().cloned()),
             "pmus_books" => return Err("pmus_books is not ported (PM US REST book is CDN-stale)".into()),
-            n if all.iter().chain(&l2).chain(&perps).any(|s| s == n) => {
+            n if all.iter().chain(&l2).chain(&perps).chain(&leads).any(|s| s == n) => {
                 want.insert(n.to_string());
             }
             n => return Err(format!("unknown stream: {n}")),
         }
     }
-    Ok(all.into_iter().chain(l2).chain(perps).filter(|s| want.contains(s)).collect())
+    Ok(all.into_iter().chain(l2).chain(perps).chain(leads).filter(|s| want.contains(s)).collect())
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -144,6 +148,10 @@ fn spawn_source(name: &str, rec: Recorder, stop: watch::Receiver<bool>, kalshi_l
         "perp_kalshi_btc_rest" => tokio::spawn(PerpRest::kalshi_btc().run(rec, stop)),
         "perp_cbde_btc" => tokio::spawn(run_ws(SpotL2::cbde_btc(), rec, stop, o())),
         "perp_cbde_btc_rest" => tokio::spawn(PerpRest::cbde_btc().run(rec, stop)),
+        n if n.starts_with("lead_") => {
+            let feed = LeadFeed::new(n).unwrap_or_else(|| panic!("no source for {n}"));
+            tokio::spawn(run_ws(feed, rec, stop, WsOpts { backoff_max_s: 120.0, ..o() }))
+        }
         n if n.starts_with("spot_l2_") => {
             let venue = &n["spot_l2_".len()..];
             if let Some(r) = RestL2::new(venue) {
@@ -182,7 +190,7 @@ pub async fn run(cfg: Config) -> std::io::Result<()> {
     let mut stats: Vec<(String, Arc<Stats>)> = Vec::new();
     let mut tasks = Vec::new();
     for name in &cfg.streams {
-        let level = if name.starts_with("clob_") { 3 } else { 6 };
+        let level = if name.starts_with("clob_") || name.starts_with("lead_") { 3 } else { 6 };
         let (rec, wt) = spawn_writer(cfg.data.clone(), name, level, cfg.queue)?;
         stats.push((name.clone(), rec.stats.clone()));
         writers.push(wt);
@@ -251,6 +259,9 @@ mod tests {
         assert!(resolve_streams(&s(&["all", "spot_l2"])).unwrap().iter().all(|n| !n.starts_with("perp_")));
         assert_eq!(resolve_streams(&s(&["perps"])).unwrap(), perp_streams());
         assert_eq!(resolve_streams(&s(&["perp_cbde_btc", "spot_l2_coinbase"])).unwrap(), s(&["spot_l2_coinbase", "perp_cbde_btc"]));
+        assert_eq!(resolve_streams(&s(&["lead_feeds", "lead_binance_perp_trades"])).unwrap(), lead::stream_names().collect::<Vec<_>>());
+        assert_eq!(resolve_streams(&s(&["all", "spot_l2", "lead_feeds"])).unwrap().len(), 18 + 7 + 6);
+        assert!(resolve_streams(&s(&["all"])).unwrap().iter().all(|n| !n.starts_with("lead_")));
     }
 
     #[test]

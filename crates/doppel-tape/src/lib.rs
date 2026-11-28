@@ -5,6 +5,7 @@ pub mod clock;
 pub mod http;
 pub mod kalshi;
 pub mod l2;
+pub mod lead;
 pub mod perps;
 pub mod pmus;
 pub mod recorder;

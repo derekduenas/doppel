@@ -1,0 +1,23 @@
+[Unit]
+Description=Verify closed DOPPEL tape in cold object storage
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=doppel
+EnvironmentFile=/etc/doppel-archive.env
+LoadCredential=rclone.conf:/etc/doppel/rclone.conf
+Environment=RCLONE_CONFIG=%d/rclone.conf
+StateDirectory=doppel-cold
+StateDirectoryMode=0700
+ExecStart=/bin/sh /opt/doppel/ops/doppel-cold-tape.sh archive
+Nice=15
+CPUWeight=10
+IOWeight=10
+IOSchedulingClass=idle
+MemoryMax=384M
+TimeoutStartSec=50min
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true

@@ -1,5 +1,16 @@
 # Claude Code handoff
 
+## DOPPEL sprint v3 · Platform and evidence review
+
+Sprint v3 supersedes the original PR sequence. Use `sprint/pr-1-protect-apex` for
+[platform operations and evidence](SPRINT-V2-PR1.md) and the [independent evidence review](handoffs/CODEX-V3-REVIEW-20261128.md).
+Hosted CI passed for `0e1251d` in 5m08s. The isolated Apex Rust capture verified 13
+streams and the archive dry run inventoried 1,088 segments. The branch defaults to
+journal alerts, protected local retention and offshore feeds disabled. Opus owns the
+merge queue, live research and deployment. The cohort-v2 timer had been stopped under
+v2 and was still absent at 00:12 UTC on Nov 28 after Opus resumed the exam. Preserve the
+registered freeze time and the exact evaluator hash.
+
 ## Wallet-by-wallet audit · Layer 4
 
 Resume on `review/wallet-rivals-20261127` in `/Users/derekduenas/doppel-wallet-rivals-20261127`.
