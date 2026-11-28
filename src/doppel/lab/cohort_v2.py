@@ -60,6 +60,7 @@ import argparse
 import hashlib
 import heapq
 import math
+import os
 import random
 import statistics as st
 import sys
@@ -72,7 +73,7 @@ import orjson
 
 from ..tape.segment import atomic_write, segment_path
 from .flow import EMBARGO_S, RTDS_STREAMS, iter_rtds, tape_hours
-from .intlbook import IntlBook, Print, Reset, replay_messages
+from .intlbook import IntlBook, LevelEvent, Print, Reset, replay_messages
 from .markout import Fill, MarketPath, marks
 from .scan import scan_digest
 
@@ -179,6 +180,52 @@ def load_outcomes(path: Path) -> dict[str, int | None]:
     return out
 
 
+
+def full_best(lv: dict) -> tuple[float | None, float | None]:
+    """Best bid and ask by a full scan of one asset's levels."""
+    bids = [px for (px, s), q in lv.items() if s == "BUY" and q > 0]
+    asks = [px for (px, s), q in lv.items() if s == "SELL" and q > 0]
+    return (max(bids) if bids else None), (min(asks) if asks else None)
+
+
+class BestQuotes:
+    """Best bid/ask per asset, kept from LevelEvents instead of rescanning every level on every touch.
+
+    Exactly equal to ``full_best``: an entry is trusted only while the asset's level dict is the same
+    object it was computed from (a snapshot or reset replaces it), and it is dropped when the best level
+    itself is removed. ``DOPPEL_CHECK_BEST=1`` compares every answer with a full scan."""
+
+    def __init__(self) -> None:
+        self._c: dict[str, list] = {}  # asset -> [level dict, best bid, best ask]
+        self.check = os.environ.get("DOPPEL_CHECK_BEST") == "1"
+
+    def event(self, e: LevelEvent, lv: dict | None) -> None:
+        c = self._c.get(e.asset)
+        if c is None:
+            return
+        if c[0] is not lv:
+            del self._c[e.asset]
+            return
+        i = 1 if e.side == "BUY" else 2
+        cur = c[i]
+        if e.new_size > 0:
+            if cur is None or (e.price > cur if i == 1 else e.price < cur):
+                c[i] = e.price
+        elif e.price == cur:
+            del self._c[e.asset]  # the best level went away: rescan on the next touch
+
+    def best(self, a: str, lv: dict) -> tuple[float | None, float | None]:
+        c = self._c.get(a)
+        if c is None or c[0] is not lv:
+            bb, ba = full_best(lv)
+            self._c[a] = [lv, bb, ba]
+        else:
+            bb, ba = c[1], c[2]
+        if self.check and (bb, ba) != full_best(lv):
+            raise AssertionError(f"best quote mismatch on {a}: {(bb, ba)} != {full_best(lv)}")
+        return bb, ba
+
+
 def stream_marks(root: Path, stream: str, t_from: int, freeze_s: int, fills: dict[str, list],
                  outcomes: dict[str, int | None]):
     """Streaming ``markout.intl_paths`` over [t_from, freeze): a token's ``MarketPath`` is built from the
@@ -192,6 +239,7 @@ def stream_marks(root: Path, stream: str, t_from: int, freeze_s: int, fills: dic
         last = max(r[0].t_ns for r in rows)
         heapq.heappush(due, (max(end * NS, last + 60 * NS) + FINALIZE_LAG_S * NS, tok))
     book = IntlBook()
+    quotes = BestQuotes()
     paths: dict[str, MarketPath] = {}
     last_frame: dict[str, int] = {}
 
@@ -230,6 +278,8 @@ def stream_marks(root: Path, stream: str, t_from: int, freeze_s: int, fills: dic
             last_frame[it.asset] = it.tw_ns
             if isinstance(it, Print):
                 continue
+            if isinstance(it, LevelEvent):
+                quotes.event(it, book.levels.get(it.asset))
             touched.add((it.asset, it.tw_ns))
         for a, tw in sorted(touched):
             lv = book.levels.get(a)
@@ -239,11 +289,10 @@ def stream_marks(root: Path, stream: str, t_from: int, freeze_s: int, fills: dic
             if p is None:
                 r0 = fills[a][0]
                 p = paths[a] = MarketPath(key=a, start=r0[3], end=r0[4], outcome=None)
-            bids = [px for (px, s), q in lv.items() if s == "BUY" and q > 0]
-            asks = [px for (px, s), q in lv.items() if s == "SELL" and q > 0]
+            bb, ba = quotes.best(a, lv)
             p.tws.append(tw)
-            p.bids.append(max(bids) if bids else None)
-            p.asks.append(min(asks) if asks else None)
+            p.bids.append(bb)
+            p.asks.append(ba)
         while due and due[0][0] < now:
             yield from close(heapq.heappop(due)[1])
     while due:
