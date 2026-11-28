@@ -204,6 +204,41 @@ def pbo(matrix, s: int = PBO_S) -> dict:
                       "hist_edges": [_r(float(e)) for e in edges], "hist_counts": [int(c) for c in counts]}}
 
 
+def canonical_trial_statistics(values) -> tuple[float, dict, list[dict]]:
+    """Compute full-precision statistics for the same aligned trial family at report and admission."""
+    from ..twin.evaluate import VERDICT_OPTIONS
+
+    rows = np.asarray(values, dtype=float)
+    if rows.ndim != 2 or rows.shape[0] < 2:
+        raise ValueError("canonical statistics require at least two aligned trials")
+    n, size = rows.shape
+    trial_moments = [moments(row) for row in rows]
+    if any(m is None or not all(math.isfinite(x) for x in m) for m in trial_moments):
+        raise ValueError("a planned trial lacks estimable return moments")
+    usable = [m for m in trial_moments if m is not None]
+    sharpes = np.asarray([m / sd for m, sd, _, _ in usable])
+    variance = float(sharpes.var(ddof=1))
+    sr_star = expected_max_sr(n, max(variance, 1 / (size - 1)))
+    overfit = pbo(rows.T)
+    boot = [block_bootstrap_p(row, VERDICT_OPTIONS["block"], VERDICT_OPTIONS["n_boot"], VERDICT_OPTIONS["seed"])
+            for row in rows]
+    if any(p is None or not math.isfinite(p) for p in boot):
+        raise ValueError("trial p-values are unavailable")
+    q, keep = bh([p for p in boot if p is not None])
+    stats = []
+    for i, (row, (mean, _, skew, kurt)) in enumerate(zip(rows, usable, strict=True)):
+        dsr = psr(float(sharpes[i]), sr_star, size, skew, kurt)
+        bw, _ = andrews_bandwidth(row)
+        long_var = hac_var(row, bw)
+        t = mean / math.sqrt(long_var / size) if long_var > 0 else float("nan")
+        if not all(math.isfinite(x) for x in (dsr, t)):
+            raise ValueError("a required statistic is undefined")
+        stats.append({"dsr": dsr, "pbo": overfit["pbo"], "fdr_q": q[i], "hac_t": t,
+                      "hac_p": math.erfc(t / math.sqrt(2)) / 2, "bootstrap_p": boot[i],
+                      "bh_survives": keep[i], "trial_count": n})
+    return variance, overfit, stats
+
+
 def load_variants(doc: dict) -> tuple[list[str], np.ndarray]:
     """``{"variants": [{"id": ..., "net_c": [...]}, ...]}``: every variant over the same windows in time order."""
     vs = doc.get("variants")
@@ -257,7 +292,8 @@ def decide(c: dict) -> tuple[str, str | None, list[str]]:
 
 
 def promote(results: list[tuple[str, dict]], trials_doc: dict, sources: dict | None = None,
-            variants: dict | None = None, s: int = PBO_S) -> dict:
+            variants: dict | None = None, s: int = PBO_S, *,
+            canonical_stats: dict | None = None, canonical_pbo: dict | None = None) -> dict:
     """Decision record from (name, doc) inputs, the trials ledger and the variants matrix (for PBO).
     Twin docs (with ``windows``) are candidates; ``doppel-genome ledger --json`` docs (with ``rows``)
     only add p-values to the family."""
@@ -271,7 +307,7 @@ def promote(results: list[tuple[str, dict]], trials_doc: dict, sources: dict | N
         if len(ids) > tr["n_trials"]:
             raise ValueError(f"variants matrix has {len(ids)} variants but n_trials = {tr['n_trials']}: "
                              "the trials ledger must count every variant tried")
-        pb = pbo(X, s) | {"variant_ids": ids}
+        pb = (canonical_pbo if canonical_pbo is not None else pbo(X, s)) | {"variant_ids": ids}
         if len(ids) < tr["n_trials"]:
             pb["note"] = f"matrix covers {len(ids)} of {tr['n_trials']} trials"
     cands, family = [], []
@@ -297,18 +333,35 @@ def promote(results: list[tuple[str, dict]], trials_doc: dict, sources: dict | N
             if len(x) > 1 else None
         ci = block_bootstrap_ci(x, None, bs.get("block_windows", 12), bs.get("n_boot", 2000), bs.get("seed", 0)) \
             if len(x) > 1 else (None, None)
-        rows.append({"input": name, "genome": doc.get("genome"), "range": doc.get("range"),
+        genome = doc.get("genome")
+        scope = doc.get("range")
+        if doc.get("schema") == "doppel.shadow-replay/v1":
+            genome, scope = {"id": doc["genome_id"]}, v["evaluation"]["range"]
+        stats = (canonical_stats or {}).get((genome or {}).get("id"))
+        dsr = deflated_sharpe(x, tr["n_trials"], tr["sr_variance"])
+        hac = newey_west(x)
+        if stats is not None:
+            p = stats["bootstrap_p"]
+            dsr["dsr"] = stats["dsr"]
+            hac.update(t=stats["hac_t"], p_one_sided=stats["hac_p"])
+        rows.append({"input": name, "genome": genome, "range": scope,
                      "base_decision": "DIAGNOSTIC" if diag else v.get("decision"),
                      "base_reason": v.get("reason"), "base_p_value": v.get("p_value"), "windows": len(x),
-                     "dsr": deflated_sharpe(x, tr["n_trials"], tr["sr_variance"]), "pbo": pb,
-                     "hac": newey_west(x),
-                     "bootstrap": {"mean": _r(float(np.mean(x))) if x else None, "p_one_sided": _r(p, 6),
+                     "dsr": dsr, "pbo": pb, "hac": hac,
+                     "bootstrap": {"mean": _r(float(np.mean(x))) if x else None,
+                                   "p_one_sided": p if stats is not None else _r(p, 6),
                                    "ci95": [_r(ci[0]), _r(ci[1])], "block": bs.get("block_windows", 12)}})
     ids = {(r["genome"] or {}).get("id") for r in rows}
-    # the larger of the time-ordered bootstrap p and the verdict's own p (the registry's p): conservative
-    fam = [(f"candidate:{r['input']}", max(p for p in (r["bootstrap"]["p_one_sided"], r["base_p_value"], 0.0)
-                                           if p is not None) if r["bootstrap"]["p_one_sided"] is not None else 1.0)
-           for r in rows]
+    def family_p(row):
+        p = row["bootstrap"]["p_one_sided"]
+        if p is None:
+            return 1.0
+        if canonical_stats is not None:
+            return p
+        # Keep the existing conservative convention for legacy, noncanonical reports.
+        return max(p, row["base_p_value"] or 0.0)
+
+    fam = [(f"candidate:{row['input']}", family_p(row)) for row in rows]
     for t in tr["trials"]:   # a listed trial that is one of the candidates is not counted twice
         if t.get("id") in ids:
             continue
@@ -323,6 +376,9 @@ def promote(results: list[tuple[str, dict]], trials_doc: dict, sources: dict | N
     for i, r in enumerate(rows):
         r["fdr"] = {"p": ps[i], "bh_q": _r(q[i], 6), "bh_survives": keep[i], "holm_p": _r(hq[i], 6),
                     "holm_survives": hq[i] <= ALPHA}
+        stats = (canonical_stats or {}).get((r["genome"] or {}).get("id"))
+        if stats is not None:
+            r["fdr"].update(bh_q=stats["fdr_q"], bh_survives=stats["bh_survives"])
         r["decision"], r["binding"], r["failures"] = decide(r)
     return {"code_sha256": code_sha256(), "sources": sources or {},
             "params": {"dsr_min": DSR_MIN, "pbo_max": PBO_MAX, "pbo_s": s, "fdr_q": FDR_Q, "alpha": ALPHA},
@@ -345,11 +401,42 @@ def _r(x, nd: int = 6):
     return None if x is None else round(float(x), nd)
 
 
+def _canonical_trial_inputs(ledger, results):
+    trials = ledger["trials"]
+    selected = {}
+    for _, replay in results:
+        if replay.get("schema") != "doppel.shadow-replay/v1":
+            continue
+        gid = replay["genome_id"]
+        eligible = series(replay)
+        matches = [row["trial_id"] for row in trials if row["genome_id"] == gid and row["returns_c"] == eligible
+                   and ("trial_id" not in replay or replay["trial_id"] == row["trial_id"])]
+        if len(matches) != 1 or gid in selected.values():
+            raise ValueError("canonical ledger does not uniquely identify each scored candidate")
+        selected[matches[0]] = gid
+    if not selected:
+        raise ValueError("canonical ledger requires a canonical replay candidate")
+    if len(selected) != len(results):
+        raise ValueError("a canonical family accepts only canonical replay candidates")
+    variance, overfit, stats = canonical_trial_statistics([row["returns_c"] for row in trials])
+    summary = {"n_trials": len(trials), "sr_variance": variance, "trials": [
+        {"id": selected.get(row["trial_id"], row["trial_id"]), "p_value": stat["bootstrap_p"]}
+        for row, stat in zip(trials, stats, strict=True)]}
+    candidates = {selected[row["trial_id"]]: stat for row, stat in zip(trials, stats, strict=True)
+                  if row["trial_id"] in selected}
+    variants = {"variants": [{"id": row["trial_id"], "net_c": row["returns_c"]} for row in trials]}
+    return summary, variants, candidates, overfit
+
+
 def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "bundle":
+        from .shadow_bundle import main as bundle_main
+        return bundle_main(argv[1:])
     ap = argparse.ArgumentParser(prog="doppel-promotion")
     ap.add_argument("--results", type=Path, nargs="+", required=True,
                     help="doppel-twin output JSON(s); doppel-genome ledger --json files add p-values only")
-    ap.add_argument("--trials", type=Path, help="trials ledger JSON: {n_trials, trials: [{id, p_value}], sr_variance?}")
+    ap.add_argument("--trials", type=Path, help="canonical Shadow trial ledger or legacy research summary")
     ap.add_argument("--variants", type=Path,
                     help="PBO input: {variants: [{id, net_c: [...]}]}, every variant tried over the same windows")
     ap.add_argument("--pbo-s", type=int, default=PBO_S, help="CSCV partitions (even)")
@@ -360,9 +447,16 @@ def main(argv=None) -> int:
             raise ValueError("--trials is required: the number of trials in the search must be recorded")
         raws = {p: p.read_bytes() for p in [*a.results, a.trials, *([a.variants] if a.variants else [])]}
         srcs = {str(p): hashlib.sha256(b).hexdigest() for p, b in raws.items()}
-        doc = promote([(str(p), orjson.loads(raws[p])) for p in a.results], orjson.loads(raws[a.trials]), srcs,
-                      orjson.loads(raws[a.variants]) if a.variants else None, a.pbo_s)
-    except (OSError, ValueError, KeyError, orjson.JSONDecodeError) as e:
+        results = [(str(p), orjson.loads(raws[p])) for p in a.results]
+        trials = orjson.loads(raws[a.trials])
+        variants = orjson.loads(raws[a.variants]) if a.variants else None
+        stats = overfit = None
+        if trials.get("schema") == "doppel.shadow-trial-ledger/v1":
+            if variants is not None or a.pbo_s != PBO_S:
+                raise ValueError("canonical Shadow promotion takes its complete variants and PBO defaults from the ledger")
+            trials, variants, stats, overfit = _canonical_trial_inputs(trials, results)
+        doc = promote(results, trials, srcs, variants, a.pbo_s, canonical_stats=stats, canonical_pbo=overfit)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         print(f"REFUSED {e}", file=sys.stderr)
         return 2
     a.out.mkdir(parents=True, exist_ok=True)

@@ -1,16 +1,20 @@
 from dataclasses import replace
 import hashlib
+import os
 import time
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import orjson
 import pytest
 
-from doppel.strategy.genome import Condition, Genome, MakerRule, Source, TakerRule, Universe
+from doppel import cli
+from doppel.lab import promotion
+from doppel.lab.shadow_bundle import _local_signature, build_shadow_bundle
+from doppel.strategy.genome import Condition, Genome, MakerRule, Source, TakerRule, Universe, to_dict
 from doppel.strategy.registry import Registry
 from doppel.strategy.shadow_admission import (
-    AdmissionRejected, AdmissionTrust, EVIDENCE_FILES, FEE_GRID, GATES, SIGNATURE_DOMAIN, SIZES,
-    admit_shadow, simulation_digest,
+    COMMON_GATES, MAKER_GATES, AdmissionRejected, AdmissionTrust, FEE_GRID, SIGNATURE_DOMAIN, SIZES,
+    _statistics, admit_shadow, simulation_digest,
 )
 from doppel.twin.engine import SimConfig
 from doppel.twin.evaluate import RECEIVED_RAW_OPENING, VERDICT_OPTIONS, protocol, protocol_binding
@@ -36,7 +40,7 @@ def write(path, doc):
 
 
 class Bundle:
-    def __init__(self, root, taker=False):
+    def __init__(self, root, taker=False, maker_kind="maker", offshore_guard=False):
         self.root = root
         self.bundle = root / "bundle"
         self.bundle.mkdir()
@@ -48,7 +52,9 @@ class Bundle:
         clock = [self.start - 60]
         reg = Registry(root / "registry-root", now=lambda: clock[0], code={"sha": self.commit, "dirty": False})
         kwargs = {"taker": (TakerRule(side="up", when=(Condition("edge_buy_up_c", ">", 1),), size=25),),
-                  "evidence": {"taker_trigger_source": "fair"}} if taker else {"maker": MakerRule(half_spread_c=1)}
+                  "evidence": {"taker_trigger_source": "fair"}} if taker else {
+                      "maker": MakerRule(half_spread_c=1),
+                      "evidence": {"archetype": maker_kind, **({"cancel_guard_sources": ["binance"]} if offshore_guard else {})}}
         self.genome = Genome(name="fixture candidate", universe=Universe(venue="pmus"), source=Source(kind="manual"),
                              mode="taker" if taker else "maker", **kwargs)
         other = Genome(name="fixture alternative", mode="maker", universe=Universe(venue="pmus"),
@@ -85,13 +91,39 @@ class Bundle:
             row = {**identity, "seq": seq, "previous_sha256": prev, "returns_c": values}
             row["sha256"] = prev = digest(encode(row))
             self.trials["trials"].append(row)
-        self.gates = {"schema": "doppel.shadow-gates/v1", "genome_id": self.genome.id,
-                      "gates": {name: {"status": "MEASURED"} for name in GATES}}
+        self.kind = "taker_fair" if taker else maker_kind
+        self.gates = {"schema": "doppel.shadow-gates/v2", "genome_id": self.genome.id, "archetype": self.kind,
+                      "gates": {name: {"status": "MEASURED_PASS"} for name in COMMON_GATES}}
+        self.maker = {"schema": "doppel.shadow-maker/v1", "genome_id": self.genome.id, "archetype": self.kind,
+                      "replay_sha256": digest(encode(self.replay)), "input_sha256": evaluation["input_sha256"],
+                      "queue": {"model": "pessimistic_l2_fifo", "source_sha256": label("native queue"),
+                                "windows": 48, "quote_observations": 100, "known_queue_observations": 95,
+                                "fills": 60, "verified_fills": 60, "fill_windows": 48, "feed_gap_windows": 0,
+                                "min_trade_coverage": .95, "max_inferred_share": .2, "max_unidentified_share": .1},
+                      "markouts": {h: {"value": .1, "observations": 48, "windows": 48,
+                                       "source_sha256": label("markout_" + h)} for h in ("2s", "10s")},
+                      "stress": {"method": "delayed_cancel", "source_sha256": label("delayed cancel replay"),
+                                 "plan_sha256": label("frozen stress plan"), "windows": 48,
+                                 "base_cancel_latency_ms": self.cfg.latency_ms, "extra_cancel_latency_ms": 200,
+                                 "net_c_per_window": .2, "ci_low_c_per_window": .05}}
+        self.offshore = {}
+        if taker:
+            streams = {"binance": "lead_binance_spot_l2", "hyperliquid": "lead_hyperliquid_l2"}
+            for role, stream in streams.items():
+                self.offshore[role + ".json"] = {
+                    "schema": "doppel.layer5b-source/v1", "role": role, "clock": "local_receive_ns",
+                    "segments": [{"stream": stream, "path": f"{stream}/20231114/22.dtape.zst",
+                                  "sha256": label(stream), "covered_range_ns": [self.start * 10**9, self.end * 10**9]}]}
+
         src = self.gates["gates"]
         for name in ("markout_2s", "markout_10s", "paper_replay_slippage"):
             src[name].update(value=0.1, observations=48, source_sha256=label(name))
         src["residual_correlation"].update(values={}, observations=0, source_sha256=label("verified empty roster"))
-        src["taker_timing"]["trigger_source"] = "fair"
+        na = {"status": "NOT_APPLICABLE_ARCHETYPE"}
+        src["taker_timing"] = {"status": "MEASURED_PASS", "trigger_source": "fair"} if taker else dict(na)
+        src["offshore_receipts"] = {"status": "MEASURED_PASS"} if taker else dict(na)
+        for name in MAKER_GATES:
+            src[name] = dict(na) if taker else {"status": "MEASURED_PASS"}
         self.timing = {"schema": "doppel.layer5b-score/v1", "source_kind": "recorded", "status": "MEASURED_PASS",
                        "software_status": "PASS", "plan_sha256": label("timing preregistration"),
                        "forecast_sha256": label("forecast"),
@@ -110,18 +142,51 @@ class Bundle:
             "zero_leakage": True,
         }
         now = time.time_ns()
-        self.approval = {"schema": "doppel.shadow-approval/v1", "commit_sha": self.commit, "genome_id": self.genome.id,
+        self.approval = {"schema": "doppel.shadow-approval/v2", "commit_sha": self.commit, "genome_id": self.genome.id,
+                         "archetype": self.kind, "statistics": _statistics(0, [returns, prices]),
                          "scoring_sha256": bound["code_sha256"], "registry_result_sha256": result["hash"],
                          "valid_from_ns": now - 10**9, "valid_until_ns": now + 60 * 10**9, "n_trials": 2,
                          "trial_head_sha256": prev, "candidate_trial_id": identities[0]["trial_id"]}
+        st = self.approval["statistics"]
+        self.report_statistics = {"dsr": {"dsr": st["dsr"]}, "pbo": {"pbo": st["pbo"]},
+                                  "fdr": {"bh_q": st["fdr_q"], "bh_survives": st["bh_survives"]},
+                                  "hac": {"t": st["hac_t"], "p_one_sided": st["hac_p"]},
+                                  "bootstrap": {"p_one_sided": st["bootstrap_p"]}}
         self.trust = AdmissionTrust(self.private.public_key().public_bytes_raw(), reg.root, self.commit, plan_sha, ())
         self.registry = reg
         self.seal()
 
     def seal(self):
-        self.gates["gates"]["taker_timing"]["source_sha256"] = digest(encode(self.timing))
-        self.approval["files"] = {name: write(self.bundle / name, obj) for name, obj in zip(
-            EVIDENCE_FILES, (self.plan, self.trials, self.replay, self.gates, self.timing), strict=True)}
+        src = self.gates["gates"]
+        replay_hash = digest(encode(self.replay))
+        report = {"sources": {"canonical.json": replay_hash, "trials.json": digest(encode(self.trials))},
+                  "trials": {"n_trials": 2},
+                  "candidates": [{"input": "canonical.json", "genome": {"id": self.genome.id},
+                                  "decision": "PROMOTE", "base_decision": "PASS", "windows": 48,
+                                  **self.report_statistics}]}
+        files = {"plan.json": self.plan, "trials.json": self.trials, "replay.json": self.replay,
+                 "gates.json": self.gates, "promotion.json": report, **self.offshore}
+        if self.genome.mode == "taker":
+            hashes = {role: digest(encode(doc)) for name, doc in self.offshore.items()
+                      for role in [name.removesuffix(".json")]}
+            self.timing["source_receipts_sha256"].update(hashes)
+            src["offshore_receipts"]["sources_sha256"] = hashes
+            src["taker_timing"]["source_sha256"] = digest(encode(self.timing))
+            files["layer5b.json"] = self.timing
+            names = ("markout_2s", "markout_10s", "paper_replay_slippage", "residual_correlation")
+            doc = {"schema": "doppel.shadow-taker-measurements/v1", "genome_id": self.genome.id,
+                   "replay_sha256": replay_hash,
+                   "measurements": {name: {k: v for k, v in src[name].items() if k not in ("status", "source_sha256")}
+                                    for name in names}}
+            for name in names:
+                src[name]["source_sha256"] = digest(encode(doc))
+            files["taker-measurements.json"] = doc
+        else:
+            self.maker["replay_sha256"] = replay_hash
+            for name in MAKER_GATES:
+                src[name]["source_sha256"] = digest(encode(self.maker))
+            files["maker.json"] = self.maker
+        self.approval["files"] = {name: write(self.bundle / name, obj) for name, obj in files.items()}
         self.sign()
 
     def sign(self):
@@ -231,14 +296,14 @@ def test_synthetic_timing_and_wrong_trigger_fail_closed(tmp_path):
     {"precision": 0.85, "recall": 0.85, "f1": 0.85, "matched": 17},
 ])
 def test_timing_pass_label_cannot_override_benchmark_denominators(tmp_path, changes):
-    b = Bundle(tmp_path)
+    b = Bundle(tmp_path, taker=True)
     b.timing["subjects"]["scripted_lead_taker"].update(changes)
     b.seal()
     b.reject("REJECT_UNMEASURED_GATE")
 
 
 def test_memory_pass_label_cannot_override_peak_rss_measurement(tmp_path):
-    b = Bundle(tmp_path)
+    b = Bundle(tmp_path, taker=True)
     b.timing["peak_rss_bytes"]["forecast"] = 1_500_000_000
     b.seal()
     b.reject("REJECT_UNMEASURED_GATE")
@@ -253,3 +318,128 @@ def test_active_set_expiry_and_no_short_horizon_edge(tmp_path):
     b.approval["valid_until_ns"] = 1
     b.sign()
     b.reject("REJECT_UNTRUSTED_APPROVAL")
+
+
+def test_taker_requires_actual_offshore_receipt_and_exact_benchmark_links(tmp_path):
+    b = Bundle(tmp_path, taker=True)
+    (b.bundle / "binance.json").unlink()
+    b.reject("REJECT_UNMEASURED_GATE")
+    b.seal()
+    b.timing["source_receipts_sha256"]["binance"] = label("different recorded Binance receipt")
+    write(b.bundle / "layer5b.json", b.timing)
+    b.approval["files"]["layer5b.json"] = digest(encode(b.timing))
+    b.gates["gates"]["taker_timing"]["source_sha256"] = b.approval["files"]["layer5b.json"]
+    b.approval["files"]["gates.json"] = write(b.bundle / "gates.json", b.gates)
+    b.sign()
+    b.reject("REJECT_UNMEASURED_GATE")
+
+
+def test_maker_guard_requires_offshore_and_structural_twap_uses_maker_gates(tmp_path):
+    guarded = tmp_path / "guarded"
+    guarded.mkdir()
+    Bundle(guarded, offshore_guard=True).reject("REJECT_UNMEASURED_GATE")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    result = Bundle(plain, maker_kind="structural_twap").admit()
+    assert result["archetype"] == "structural_twap"
+    assert result["gate_statuses"]["taker_timing"] == "NOT_APPLICABLE_ARCHETYPE"
+
+
+def test_explicit_failure_and_statistic_tampering_are_rejected(tmp_path):
+    b = Bundle(tmp_path)
+    b.gates["gates"]["dsr"]["status"] = "MEASURED_FAIL"
+    b.seal()
+    b.reject("REJECT_GATE_FAILED")
+    b.gates["gates"]["dsr"]["status"] = "MEASURED_PASS"
+    b.approval["statistics"]["dsr"] -= .01
+    b.seal()
+    b.reject("REJECT_INCOMPLETE_LEDGER")
+
+
+def test_promotion_cli_to_signed_maker_bundle_to_admission(tmp_path):
+    b = Bundle(tmp_path)
+    results = b.bundle
+    report = tmp_path / "promotion"
+    replay = results / "replay.json"
+    ledger = results / "trials.json"
+    # The reporting command consumes the same canonical replay later admitted.
+    assert promotion.main(["--results", str(replay), "--trials", str(ledger), "--out", str(report)]) == 0
+    (report / "plan.json").write_bytes((results / "plan.json").read_bytes())
+    cuts = (b.approval["valid_from_ns"], b.approval["valid_until_ns"])
+    product = build_shadow_bundle(report, replay, ledger, results / "gates.json",
+                                  genome=b.genome, trust=b.trust, validity_ns=cuts)
+    assert product == build_shadow_bundle(report, replay, ledger, results / "gates.json",
+                                          genome=b.genome, trust=b.trust, validity_ns=cuts)
+    assert product == replace(product, approval=encode(orjson.loads(product.approval)))
+    output = tmp_path / "signed"
+    genome = tmp_path / "candidate.json"
+    write(genome, to_dict(b.genome))
+    signature = tmp_path / "test-signature"
+    signature.write_bytes(b.private.sign(SIGNATURE_DOMAIN + product.approval))
+    signing = tmp_path / "non-root-signing.key"
+    signing.touch(mode=0o600)
+    signing.write_bytes(b.private.private_bytes_raw())
+    if os.getuid() == 0:
+        os.chown(signing, 65534, -1)
+    with pytest.raises(ValueError, match="root-owned"):
+        _local_signature(product, signing)
+    assert cli.main(["promote", "bundle", "--promotion-dir", str(report), "--replay-artifact", str(replay),
+                     "--trial-ledger", str(ledger), "--gate-results", str(results / "gates.json"), "--genome", str(genome),
+                     "--registry-root", str(b.trust.registry_root), "--out", str(output), "--commit-sha", b.commit,
+                     "--plan-sha256", b.trust.plan_sha256, "--public-key-hex", b.trust.public_key.hex(),
+                     "--valid-from-ns", str(cuts[0]), "--valid-until-ns", str(cuts[1]), "--signature", str(signature)]) == 0
+    assert (output / "approval.json").read_bytes() == product.approval
+    receipt = admit_shadow(b.genome, output, b.trust, tmp_path / "live-owned-receipt",
+                           simulation_sha256=simulation_digest(b.cfg))
+    assert receipt["state"] == "SHADOW_ACTIVE"
+    assert receipt["archetype"] == "maker" and receipt["n_trials"] == 2
+    assert receipt["gates"]["maker_queue_fill"]["verified_fills"] == 60
+    assert receipt["gate_statuses"]["taker_timing"] == "NOT_APPLICABLE_ARCHETYPE"
+    assert not (output / "layer5b.json").exists()
+
+
+@pytest.mark.parametrize("section,field", [
+    ("dsr", "dsr"), ("pbo", "pbo"), ("fdr", "bh_q"), ("hac", "t"),
+    ("hac", "p_one_sided"), ("bootstrap", "p_one_sided"),
+])
+def test_signed_report_with_drifting_statistics_is_rejected(tmp_path, section, field):
+    b = Bundle(tmp_path)
+    b.report_statistics[section][field] += .01
+    b.seal()
+    b.reject("REJECT_NONCANONICAL_REPLAY")
+
+
+def test_taker_gate_digests_and_values_bind_the_measurement_artifact(tmp_path):
+    b = Bundle(tmp_path, taker=True)
+    name = "taker-measurements.json"
+    path = b.bundle / name
+    measurements = orjson.loads(path.read_bytes())
+    path.unlink()
+    b.reject("REJECT_UNMEASURED_GATE")
+    write(path, measurements)
+    b.gates["gates"]["markout_2s"]["value"] += 0.01
+    b.approval["files"]["gates.json"] = write(b.bundle / "gates.json", b.gates)
+    b.sign()
+    b.reject("REJECT_UNMEASURED_GATE")
+
+
+def test_canonical_report_applies_cross_trial_dsr_penalty(tmp_path):
+    g, other = label("candidate"), label("alternative")
+    returns = [.55 + ((i * 37) % 17 - 8) / 4 for i in range(48)]
+    values = [returns, [r - .7 for r in returns]]
+    candidate = {"schema": "doppel.shadow-replay/v1", "genome_id": g,
+                 "windows": [{"eligible": True, "start": i, "end": i + 1, "net_c": v}
+                             for i, v in enumerate(returns)],
+                 "verdict": {"decision": "PASS", "p_value": .01, "evaluation": {"range": [0, 48]}}}
+    ledger = {"schema": "doppel.shadow-trial-ledger/v1",
+              "trials": [{"trial_id": label(f"trial-{i}"), "genome_id": gid, "returns_c": rows}
+                         for i, (gid, rows) in enumerate(zip((g, other), values, strict=True))]}
+    replay_path, trials_path, out = tmp_path / "replay", tmp_path / "ledger", tmp_path / "promotion"
+    write(replay_path, candidate)
+    write(trials_path, ledger)
+    assert promotion.main(["--results", str(replay_path), "--trials", str(trials_path), "--out", str(out)]) == 0
+    report = orjson.loads((out / "promotion.json").read_bytes())["candidates"][0]
+    expected = _statistics(0, values)
+    assert promotion.deflated_sharpe(returns, 2)["dsr"] > promotion.DSR_MIN > expected["dsr"]
+    assert report["dsr"]["dsr"] == expected["dsr"]
+    assert report["decision"] == "HOLD"
