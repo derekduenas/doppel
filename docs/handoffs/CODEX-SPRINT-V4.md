@@ -4,6 +4,8 @@ The code review baseline is `d610b69`. The isolated review branches include its 
 
 ## Review order
 
+The draft reviews are [V4.1](https://github.com/derekduenas/doppel/pull/3) and [V4.2](https://github.com/derekduenas/doppel/pull/4). Both target main. V4.2 depends on V4.1.
+
 1. `sprint/v4-shadow-bundle` connects canonical replay and a complete frozen trial ledger to the promotion report, deterministic approval bytes and `admit_shadow()`. Use the [evidence contract and commands](../SHADOW-ADMISSION-EVIDENCE.md). Maker and structural-TWAP admission require positive +2s/+10s fill markouts and canonical delayed-cancel stress evidence. A maker with an offshore cancel guard also needs both native receipt files. Both taker archetypes need the recorded Layer 5b scorecard and both exact offshore receipts.
 2. `sprint/v4-shadow-watchdog` builds on the bundle receipt. Prepare a sealed candidate probability model on development inputs ending before the binding replay starts. Include its JSON in the bundle before approval so the live paper runtime can bind its digest. Review the watchdog's time, restart and missing-input checks before the first controlled Shadow session.
 
@@ -17,4 +19,3 @@ Opus owns all live jobs, deployment, Apex feeds and R2 operations. The code PRs 
 - A per-wallet diagnosis and fix status for all 12 flagged ledgers. Verify V2 contract coverage, pagination and ERC-1155/CTF movements before ranking.
 - The Cohort V2 midnight UTC receipt, Layer 5a seed scorecards, recorded Layer 5b timing, and the three fee/depth exploratory tables.
 - Forward Cohort V1/V2 triage and top ten. For each candidate selected for Shadow, keep the complete ledger, canonical replay, signed bundle, admission receipt and active paper journal with forecast, settlement and watchdog evidence. A pivot requires an actual BTC 5m/15m screen.
-
