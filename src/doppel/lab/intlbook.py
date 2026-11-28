@@ -221,7 +221,7 @@ class IntlBook:
                              str(m.get("transaction_hash") or ""), mk))
         return out
 
-    def _patch_snapshot(self, snapshot: _CachedSnapshot, tw_ns: int) -> list[LevelEvent] | None:
+    def _patch_snapshot(self, snapshot: _CachedSnapshot, tw_ns: int) -> list[LevelEvent | Print] | None:
         msg = snapshot.message
         asset, ms = msg["asset_id"], msg["timestamp"]
         if (snapshot.delta is None or snapshot.previous is None or not asset
@@ -233,11 +233,13 @@ class IntlBook:
         new = old.copy()
         market = str(msg.get("market") or "")
         last = None
-        events = []
+        events: list[LevelEvent | Print] = []
         for row in snapshot.delta:
             price, size, side = row.get("price"), row.get("size"), row.get("side")
-            if (type(price) not in (int, float) or not 0 <= price <= 1 or px(price) != price
-                    or type(size) not in (int, float) or not math.isfinite(size) or size < 0
+            if (not isinstance(price, (int, float)) or isinstance(price, bool)
+                    or not 0 <= price <= 1 or px(price) != price
+                    or not isinstance(size, (int, float)) or isinstance(size, bool)
+                    or not math.isfinite(size) or size < 0
                     or side not in ("BUY", "SELL")):
                 return None
             key = (price, side)
@@ -261,13 +263,11 @@ class IntlBook:
         events = self._patch_snapshot(snapshot, tw_ns)
         if events is None:
             bids, asks = snapshot.load_levels()
-            result = self.apply({**snapshot.message, "bids": bids, "asks": asks}, tw_ns)
-        else:
-            result = list(events)
+            events = self.apply({**snapshot.message, "bids": bids, "asks": asks}, tw_ns)
         asset = snapshot.message["asset_id"]
         if asset in self.levels:
             self._snapshot_anchors[asset] = snapshot.key
-        return result
+        return events
 
     def feed_messages(self, rec: dict, *, cached: bool = False) -> Iterator[tuple[dict, Sequence[Item]]]:
         """Apply one embedded message at a time, exposing its own book state before the next."""
@@ -382,7 +382,14 @@ def replay_messages(root: Path, stream: str, t_from: int, t_to: int, book: IntlB
         for msg, items in book.feed_messages(rec, cached=book_cache is not None):
             events: list[Item | BookObservation] = list(items)
             kind = msg.get("event_type")
-            if kind in ("book", "price_change"):
+            if book_cache is not None and kind == "book":
+                # A snapshot can only touch its own asset. The batch has no further
+                # asset membership work when the snapshot already emitted a level change.
+                if not events:
+                    ts = msg.get("timestamp")
+                    ms = int(ts) if ts not in (None, "") else tw // 1_000_000
+                    events.append(BookObservation(ms, tw, msg["asset_id"]))
+            elif kind in ("book", "price_change"):
                 touched = ({msg["asset_id"]} if kind == "book" else
                            {c["asset_id"] for c in msg.get("price_changes") or [] if c.get("asset_id")})
                 changed = {e.asset for e in items if isinstance(e, LevelEvent)}

@@ -117,27 +117,34 @@ class BookCache:
                     payload = payload.take(pa.array(selected, type=pa.int64()))
                 values = payload.to_pydict()
                 use = 0
+                events = values["event_type"]
+                bids, asks = columns["bids"], columns["asks"]
+                all_selected = len(selected) == batch.num_rows
+                single_message = len(numbers) > 0 and numbers[0] == ordinal + 1 and bool(
+                    np.all(messages == 0) and np.all(np.diff(numbers) == 1))
                 captures = zip(*(values.tolist() for values in (numbers, messages, seqs, times)), strict=True)
                 for i, (number, message, seq, tw) in enumerate(captures):
-                    if number != ordinal:
-                        if number != ordinal + 1:
+                    if single_message or number != ordinal:
+                        if not single_message and number != ordinal + 1:
                             raise ValueError(f"book cache record ordinal gap: {path}")
                         if current is not None:
                             yield current
                         ordinal, next_message = number, 0
                         current = {"seq": seq, "stream": stream, "tw": tw, "_book_messages": []}
                     assert current is not None
-                    if message != next_message or seq != current["seq"] or tw != current["tw"]:
+                    if not single_message and (message != next_message or seq != current["seq"] or tw != current["tw"]):
                         raise ValueError(f"book cache message order or capture clock mismatch: {path}")
                     next_message += 1
-                    if use >= len(selected) or i != selected[use]:
+                    if not all_selected and (use >= len(selected) or i != selected[use]):
                         continue
-                    event = values["event_type"][use]
+                    event = events[use]
                     if message and "_book_messages" not in current:
                         raise ValueError(f"standalone book cache row has sibling messages: {path}")
                     if event in ("skip", "control", "fallback") and message:
                         raise ValueError(f"standalone book cache row is out of place: {path}")
-                    if event == "skip":
+                    if event == "book":
+                        current["_book_messages"].append(_snapshot(values, use, i, scope, ordinal, message, bids, asks))
+                    elif event == "skip":
                         current.pop("_book_messages", None)
                         current["raw"] = ""
                     elif event == "control":
@@ -153,9 +160,6 @@ class BookCache:
                         current.pop("_book_messages", None)
                         current["raw"] = raw
                         current["_book_cache_barrier"] = True
-                    elif event == "book":
-                        current["_book_messages"].append(_snapshot(
-                            values, use, i, scope, ordinal, message, columns["bids"], columns["asks"]))
                     else:
                         current["_book_messages"].append(_message(values, use, event))
                     use += 1
