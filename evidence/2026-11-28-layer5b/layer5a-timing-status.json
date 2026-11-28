@@ -1,0 +1,12 @@
+{
+  "schema": "doppel-layer5a-gate-status/1",
+  "gate": "taker_entry_timing_median_abs_le_1s",
+  "status": "UNMEASURED",
+  "eligible_recovered_taker_subjects": 0,
+  "evaluated_timing_pairs": 0,
+  "median_absolute_delta_ms": null,
+  "source_revision": "9eac081367fb837495e828e537df98a7f9d07052",
+  "source_scope": "Layer 5a scorecard schema, independent of run outcomes",
+  "reason": "The only scripted taker is the negative control. The fitter did not emit timestamped entry predictions.",
+  "replacement_proof": "Layer 5b uses separate scripted positive takers and a separately sealed holdout."
+}
