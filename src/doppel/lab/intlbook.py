@@ -204,7 +204,7 @@ class IntlBook:
                              str(m.get("transaction_hash") or ""), mk))
         return out
 
-    def feed_messages(self, rec: dict) -> Iterator[tuple[dict, Sequence[Item]]]:
+    def feed_messages(self, rec: dict, *, cached: bool = False) -> Iterator[tuple[dict, Sequence[Item]]]:
         """Apply one embedded message at a time, exposing its own book state before the next."""
         ctl = (rec.get("meta") or {}).get("ctl")
         if ctl is not None:
@@ -213,16 +213,19 @@ class IntlBook:
             self.reset()
             yield {}, [Reset(int(rec["tw"]), str(ctl))]
             return
-        raw = rec.get("raw") or ""
-        if raw in ("", "PING", "PONG") or (not self.strict_clocks and raw[0] not in "[{"):
-            return  # PONG
-        try:
-            obj = orjson.loads(raw)
-        except orjson.JSONDecodeError:
-            if self.strict_clocks:
-                self.reset()
-                yield {}, [Reset(int(rec["tw"]), "malformed_message")]
-            return
+        if cached and "_book_messages" in rec:
+            obj = rec["_book_messages"]
+        else:
+            raw = rec.get("raw") or ""
+            if raw in ("", "PING", "PONG") or (not self.strict_clocks and raw[0] not in "[{"):
+                return  # PONG
+            try:
+                obj = orjson.loads(raw)
+            except orjson.JSONDecodeError:
+                if self.strict_clocks:
+                    self.reset()
+                    yield {}, [Reset(int(rec["tw"]), "malformed_message")]
+                return
         for m in obj if isinstance(obj, list) else [obj]:
             if self.strict_clocks and (not isinstance(m, dict) or m.get("event_type") not in
                     ("book", "price_change", "last_trade_price", "tick_size_change", "best_bid_ask",
@@ -244,9 +247,9 @@ class IntlBook:
                 else:
                     yield m, items
 
-    def feed(self, rec: dict) -> list[Item]:
+    def feed(self, rec: dict, *, cached: bool = False) -> list[Item]:
         """One tape record (data frame or ctl). Returns what it produced, in order."""
-        return [item for _, items in self.feed_messages(rec) for item in items]
+        return [item for _, items in self.feed_messages(rec, cached=cached) for item in items]
 
     def mates(self) -> dict[str, str]:
         """asset -> the other asset of its market (binary markets seen with both assets)."""
@@ -257,15 +260,25 @@ class IntlBook:
         return {a: b for pair in by.values() if len(pair) == 2 for a, b in (pair, pair[::-1])}
 
 
-def _records(root: Path, stream: str, t_from: int, t_to: int, *, strict: bool = False) -> Iterator[dict]:
+def _records(root: Path, stream: str, t_from: int, t_to: int, *, strict: bool = False,
+             book_cache: Path | None = None) -> Iterator[dict]:
+    cache = None
+    if book_cache is not None:
+        from .book_cache import BookCache
+
+        cache = BookCache(book_cache)
     prev_seq = prev_tw = None
     for hour in range(t_from - t_from % 3600, t_to, 3600):
         path = segment_path(Path(root), stream, hour * NS)
         if not path.exists():
+            if cache is not None and cache.path(path, stream).exists():
+                raise ValueError(f"book cache source hour is missing: {path}")
             prev_seq = prev_tw = None
             yield {"tw": max(hour, t_from) * NS, "meta": {"ctl": "missing_segment"}}
             continue
-        for rec in read_segment(path, verify=True, strict=strict):
+        source = (read_segment(path, verify=True, strict=strict) if cache is None else
+                  cache.records(path, stream, hour * NS, t_from * NS, t_to * NS))
+        for rec in source:
             if strict:
                 tw, seq = rec["tw"], rec["seq"]
                 if (rec.get("stream") != stream or type(seq) is not int or seq < 1 or type(tw) is not int
@@ -280,20 +293,21 @@ def _records(root: Path, stream: str, t_from: int, t_to: int, *, strict: bool = 
                 yield rec
 
 
-def replay(root: Path, stream: str, t_from: int, t_to: int, book: IntlBook, *, strict: bool = False) -> Iterator[list[Item]]:
+def replay(root: Path, stream: str, t_from: int, t_to: int, book: IntlBook, *, strict: bool = False,
+           book_cache: Path | None = None) -> Iterator[list[Item]]:
     """Yield events grouped by captured record in [t_from, t_to). Missing segments reset the book."""
-    for rec in _records(root, stream, t_from, t_to, strict=strict):
-        items = book.feed(rec)
+    for rec in _records(root, stream, t_from, t_to, strict=strict, book_cache=book_cache):
+        items = book.feed(rec, cached=book_cache is not None)
         if items:
             yield items
 
 
-def replay_messages(root: Path, stream: str, t_from: int, t_to: int,
-                    book: IntlBook) -> Iterator[tuple[int, list[Item | BookObservation]]]:
+def replay_messages(root: Path, stream: str, t_from: int, t_to: int, book: IntlBook, *,
+                    book_cache: Path | None = None) -> Iterator[tuple[int, list[Item | BookObservation]]]:
     """Yield each message with the ordinal of its parent record, preserving intermediate book states."""
-    for record_no, rec in enumerate(_records(root, stream, t_from, t_to)):
+    for record_no, rec in enumerate(_records(root, stream, t_from, t_to, book_cache=book_cache)):
         tw = int(rec["tw"])
-        for msg, items in book.feed_messages(rec):
+        for msg, items in book.feed_messages(rec, cached=book_cache is not None):
             events: list[Item | BookObservation] = list(items)
             kind = msg.get("event_type")
             if kind in ("book", "price_change"):

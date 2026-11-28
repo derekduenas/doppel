@@ -13,6 +13,14 @@ path = "src/main.rs"
 name = "doppel-replica-replay"
 path = "src/bin/replica_replay.rs"
 
+[[bin]]
+name = "doppel-tape"
+path = "src/bin/materialize.rs"
+required-features = ["materialize"]
+
+[features]
+materialize = ["dep:arrow-array", "dep:arrow-schema", "dep:parquet", "dep:tempfile"]
+
 # Versions are pinned exactly; Cargo.lock is committed.
 [dependencies]
 tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
@@ -36,6 +44,10 @@ libc = "=0.2.191"
 toml = "=0.8.23"
 # replica + book decoders for doppel-replica-replay (doppel-fair depends on no tape code)
 doppel-fair = { path = "../doppel-fair" }
+arrow-array = { version = "=60.2.0", optional = true }
+arrow-schema = { version = "=60.2.0", optional = true }
+parquet = { version = "=60.2.0", default-features = false, features = ["arrow", "zstd"], optional = true }
+tempfile = { version = "=3.27.0", optional = true }
 
 [dev-dependencies]
 tempfile = "=3.27.0"

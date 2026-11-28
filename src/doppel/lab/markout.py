@@ -213,7 +213,8 @@ def pmus_paths(root: Path, assets, horizons, t_from: int, t_to: int, *, want: se
 
 
 def intl_paths(root: Path, stream: str, t_from: int, t_to: int, assets: set[str],
-               meta: dict[str, dict] | None = None) -> tuple[dict[str, MarketPath], dict[str, int]]:
+               meta: dict[str, dict] | None = None, *,
+               book_cache: Path | None = None) -> tuple[dict[str, MarketPath], dict[str, int]]:
     """Intl CLOB top of book per token from ``lab.intlbook`` replay, and transaction hash -> receive
     ns of its print. ``meta``: token -> {"outcome": 0|1, "end": unix s} (not on the tape). As in
     ``IntlBook.spans``, nothing is claimed about a token after its last frame (an unsubscribed
@@ -225,7 +226,7 @@ def intl_paths(root: Path, stream: str, t_from: int, t_to: int, assets: set[str]
                            outcome=(meta.get(a) or {}).get("outcome"), cluster=0) for a in assets}
     tx: dict[str, int] = {}
     last: dict[str, int] = {}
-    for _, items in replay_messages(root, stream, t_from, t_to, book):   # state as of each message
+    for _, items in replay_messages(root, stream, t_from, t_to, book, book_cache=book_cache):
         touched = set()
         for it in items:
             if isinstance(it, Reset):
@@ -519,6 +520,7 @@ def _pmus_key_meta(key: str) -> tuple[str, str] | None:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="doppel-markout", description="Signed markout curve of fills.")
     ap.add_argument("--data", type=Path, required=True, help="tape root")
+    ap.add_argument("--book-cache", type=Path, help="verified lossless Parquet cache root for --intl-stream")
     ap.add_argument("--fills", type=Path, required=True, nargs="+")
     ap.add_argument("--intl-stream", help="clob_<asset>_<hz> stream for intl (token-keyed) fills")
     ap.add_argument("--outcomes", type=Path, help="intl: JSON token -> {outcome, end}")
@@ -532,6 +534,8 @@ def main(argv=None) -> int:
         return 2
     pm = [f for f in fills if _pmus_key_meta(f.key)]
     other = [f for f in fills if not _pmus_key_meta(f.key)]
+    if a.book_cache is not None and not other:
+        ap.error("--book-cache requires international CLOB fills")
     paths: dict[str, MarketPath] = {}
     if pm:
         meta = {f.key: _pmus_key_meta(f.key) for f in pm}
@@ -548,7 +552,7 @@ def main(argv=None) -> int:
         meta = load_outcomes(a.outcomes) if a.outcomes else {}
         lo = min(f.t_ns for f in other) // NS - 300
         hi = max(f.t_ns for f in other) // NS + 600
-        ip, tx = intl_paths(a.data, a.intl_stream, lo, hi, {f.key for f in other}, meta)
+        ip, tx = intl_paths(a.data, a.intl_stream, lo, hi, {f.key for f in other}, meta, book_cache=a.book_cache)
         paths.update(ip)
         fills = pm + reanchor(other, tx)
     res = analyse(fills, paths, n_boot=a.boot, seed=a.seed)

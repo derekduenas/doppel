@@ -1,0 +1,138 @@
+"""Read Rust's lossless international CLOB projection in capture order."""
+
+from __future__ import annotations
+
+import hashlib
+from collections.abc import Iterator
+from functools import lru_cache
+from pathlib import Path
+
+import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+SCHEMA = b"doppel.book-replay.schema"
+SOURCE_HASH = b"doppel.book-replay.source-sha256"
+SOURCE_BYTES = b"doppel.book-replay.source-bytes"
+SOURCE_STREAM = b"doppel.book-replay.source-stream"
+SOURCE_HOUR = b"doppel.book-replay.source-hour-ns"
+SOURCE_RECORDS = b"doppel.book-replay.source-records"
+_HEADER = ("record_no", "message_no", "seq", "ts_ns")
+_MESSAGE = ("event_type", "venue_ms", "market_id", "asset_id", "bids", "asks", "changes",
+            "trade_px", "trade_sz", "trade_side", "tx", "ctl", "fallback_raw")
+
+
+def _stamp(path: Path) -> tuple[int, int, int, int, int]:
+    st = path.stat()
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+
+
+@lru_cache(maxsize=256)
+def _source_digest(path: Path, stamp: tuple[int, int, int, int, int]) -> str:
+    with path.open("rb") as source:
+        result = hashlib.file_digest(source, "sha256").hexdigest()
+    if _stamp(path) != stamp:
+        raise ValueError(f"book cache source changed during verification: {path}")
+    return result
+
+
+def _message(columns: dict[str, list], i: int, event: str) -> dict:
+    def at(name: str):
+        return columns[name][i]
+
+    base = {"event_type": event, "timestamp": at("venue_ms"), "market": at("market_id")}
+    if event == "book":
+        return {**base, "asset_id": at("asset_id"), "bids": at("bids"), "asks": at("asks")}
+    if event == "price_change":
+        return {**base, "price_changes": at("changes")}
+    if event == "last_trade_price":
+        return {**base, "asset_id": at("asset_id"), "price": at("trade_px"), "size": at("trade_sz"),
+                "side": at("trade_side"), "transaction_hash": at("tx")}
+    raise ValueError(f"invalid cached CLOB event type: {event}")
+
+
+class BookCache:
+    """Require the lossless sidecar for each source hour whenever the cache is selected."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        if not root.is_dir():
+            raise ValueError(f"book cache directory is unavailable: {root}")
+
+    def path(self, source: Path, stream: str) -> Path:
+        filename = source.name.removesuffix(".dtape.zst") + ".replay.parquet"
+        return self.root / stream / source.parent.name / filename
+
+    def records(self, source: Path, stream: str, hour_ns: int, lo_ns: int, hi_ns: int) -> Iterator[dict]:
+        """Yield record headers and decode messages on demand for the requested receive range."""
+        path = self.path(source, stream)
+        source_stamp = _stamp(source)
+        with pq.ParquetFile(path) as f:
+            schema = f.schema_arrow
+            metadata = (f.metadata.metadata or {}) | (schema.metadata or {})
+            record_count = metadata.get(SOURCE_RECORDS, b"")
+            if (metadata.get(SCHEMA) != b"1" or metadata.get(SOURCE_STREAM) != stream.encode()
+                    or metadata.get(SOURCE_HOUR) != str(hour_ns).encode()
+                    or metadata.get(SOURCE_BYTES) != str(source_stamp[2]).encode()
+                    or metadata.get(SOURCE_HASH) != _source_digest(source, source_stamp).encode()
+                    or not record_count.isdigit()
+                    or not set(_HEADER + _MESSAGE) <= set(schema.names)):
+                raise ValueError(f"book cache does not match its sealed source or schema: {path}")
+
+            current: dict | None = None
+            ordinal, next_message = -1, 0
+            for batch in f.iter_batches(batch_size=16_384, columns=[*_HEADER, *_MESSAGE], use_threads=True):
+                columns = dict(zip(batch.schema.names, batch.columns, strict=True))
+                header = [columns[name].to_numpy(zero_copy_only=False) for name in _HEADER]
+                numbers, messages, seqs, times = header
+                if any(values.dtype.kind != "i" for values in header):
+                    raise ValueError(f"invalid book cache capture header: {path}")
+                selected = np.flatnonzero((times >= lo_ns) & (times < hi_ns))
+                payload = batch.select(list(_MESSAGE))
+                if len(selected) != batch.num_rows:
+                    payload = payload.take(pa.array(selected))
+                values = payload.to_pydict()
+                use = 0
+                for i, (number, message, seq, tw) in enumerate(zip(numbers, messages, seqs, times, strict=True)):
+                    if number != ordinal:
+                        if number != ordinal + 1:
+                            raise ValueError(f"book cache record ordinal gap: {path}")
+                        if current is not None:
+                            yield current
+                        ordinal, next_message = int(number), 0
+                        current = {"seq": int(seq), "stream": stream, "tw": int(tw), "_book_messages": []}
+                    assert current is not None
+                    if message != next_message or seq != current["seq"] or tw != current["tw"]:
+                        raise ValueError(f"book cache message order or capture clock mismatch: {path}")
+                    next_message += 1
+                    if use >= len(selected) or i != selected[use]:
+                        continue
+                    event = values["event_type"][use]
+                    if message and "_book_messages" not in current:
+                        raise ValueError(f"standalone book cache row has sibling messages: {path}")
+                    if event in ("skip", "control", "fallback") and message:
+                        raise ValueError(f"standalone book cache row is out of place: {path}")
+                    if event == "skip":
+                        current.pop("_book_messages", None)
+                        current["raw"] = ""
+                    elif event == "control":
+                        ctl = values["ctl"][use]
+                        if not isinstance(ctl, str):
+                            raise ValueError(f"invalid book cache control: {path}")
+                        current.pop("_book_messages", None)
+                        current["meta"] = {"ctl": ctl}
+                    elif event == "fallback":
+                        raw = values["fallback_raw"][use]
+                        if not isinstance(raw, str):
+                            raise ValueError(f"invalid book cache fallback payload: {path}")
+                        current.pop("_book_messages", None)
+                        current["raw"] = raw
+                    else:
+                        current["_book_messages"].append(_message(values, use, event))
+                    use += 1
+            if ordinal + 1 != int(record_count):
+                raise ValueError(f"book cache source record count differs: {path}")
+            if current is not None:
+                yield current
+        if _stamp(source) != source_stamp:
+            raise ValueError(f"book cache source changed during replay: {source}")
