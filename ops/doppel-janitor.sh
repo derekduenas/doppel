@@ -1,4 +1,4 @@
 #!/bin/sh
-# Keep the existing protected-day local policy until cold retention is enabled.
-set -eu
-exec python3 "$(dirname "$0")/tape_janitor.py" --local-floor "${1:?tape root}" "${2:-12}"
+# A stale production unit must hold local tape until the policy-bound unit is installed.
+echo 'Install the canonical policy-bound doppel-janitor.service before pruning tape.' >&2
+exit 1

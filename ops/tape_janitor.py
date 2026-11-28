@@ -3,16 +3,21 @@
 import argparse
 from contextlib import nullcontext
 from datetime import date, datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
+import tomllib
 
 if __package__:
     from . import cold_tape as cold
+    from . import storage
 else:
     import cold_tape as cold
+    import storage
 
 GIB = 1024**3
 
@@ -89,6 +94,100 @@ def prune(root, floor_gib=12, *, target=None, state=None, retain_days=10, dry_ru
     return result
 
 
+def read_audit(path: Path, policy: dict, now: datetime) -> dict:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as source:
+        info = os.fstat(source.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise ValueError("storage audit is not a regular service-owned file")
+        audit = json.load(source)
+    if not isinstance(audit, dict):
+        raise ValueError("invalid storage audit")
+    stamp = audit.get("t")
+    if (audit.get("schema") != storage.AUDIT_SCHEMA or audit.get("policy_sha256") != storage.policy_sha256(policy)
+            or type(stamp) is not int or not 0 <= now.timestamp() - stamp <= storage.seconds(policy["audit"]["grace"])
+            or audit.get("unclassified") != [] or not isinstance(audit.get("classes"), dict)):
+        raise ValueError("storage audit is stale, unclassified, or outside the active policy")
+    return audit["classes"]
+
+
+def policy_prune(policy: dict, audit_path: Path, floor_gib: int = 12, *, max_files: int = 12,
+                 dry_run: bool = False, now: datetime | None = None) -> dict:
+    """Remove old, locally sealed segments only after current exact R2 readback."""
+    if floor_gib < 0 or max_files <= 0:
+        raise ValueError("free-space floor and file limit are invalid")
+    now = now or datetime.now(timezone.utc)
+    audit = read_audit(audit_path, policy, now)
+    classes = [c for c in policy["class"] if c["local_days"] and Path(c["local"]).is_dir()]
+    def protected():
+        return set().union(*(protected_days(Path(c["local"])) for c in classes))
+
+    keep_days = protected()
+    result: dict = {"deleted": [], "ready": [], "issues": [], "kept_protected": sorted(keep_days)}
+    candidates = []
+    for cls in classes:
+        name, root = cls["name"], Path(cls["local"])
+        rec = audit.get(name, {})
+        paths = rec.get("verified_paths")
+        keys = rec.get("remote_keys") if storage.archive_owns(cls) else None
+        if (root.is_symlink() or not 7 <= cls["local_days"] <= 14 or not isinstance(paths, list)
+                or not all(isinstance(path, str) for path in paths) or len(set(paths)) != len(paths)
+                or rec.get("verified") != len(paths) or rec.get("local_days") != cls["local_days"]):
+            raise ValueError(f"missing or invalid size-audit scope: {name}")
+        if storage.archive_owns(cls) and (not isinstance(keys, dict) or set(keys) != set(paths)):
+            raise ValueError(f"missing or invalid immutable archive audit scope: {name}")
+        matched = set(paths)
+        through = now - timedelta(days=cls["local_days"])
+        for path, history in cold.manifests(root, ["auto"], None, through.replace(minute=0, second=0, microsecond=0)):
+            stream, day, hour = path.split("/")
+            if path in matched and day not in keep_days and prunable(stream):
+                key = path if keys is None else keys[path]
+                if keys is None or key == cold.data_key(path, history[-1].get("sha256")):
+                    candidates.append((day, hour, name, path, key, cls, history))
+
+    processed = 0
+    for day, _, name, path, key, cls, history in sorted(candidates):
+        if processed >= max_files:
+            break
+        root = Path(cls["local"])
+        try:
+            with cold.open_file(root, path) as (source, parent_fd, leaf):
+                processed += 1
+                stamp = cold.file_stamp(os.fstat(source.fileno()))
+                identity, receipt, allowed = cold.describe_file(root, path, history, source, stamp,
+                                                               legacy=False, dry_run=dry_run)
+                if not allowed or day in protected():
+                    continue
+                if dry_run:
+                    result["ready"].append(f"{name}/{path}")
+                    continue
+                checksum = hashlib.file_digest(source, "sha256").hexdigest()
+                if (checksum != identity["sha256"]
+                        or storage.remote_digest(policy, cls, key, stamp[2]) != checksum):
+                    raise ValueError(f"SHA-256 mismatch: {name}/{path}")
+                if storage.archive_owns(cls):
+                    _, receipt_key, record_key, record, _ = cold.manifest_objects(identity, receipt)
+                    if storage.remote_digest(policy, cls, record_key, len(record)) != cold.sha(record):
+                        raise ValueError(f"remote archive manifest hash mismatch: {name}/{path}")
+                else:
+                    receipt_key = f"receipts/{day}/{Path(path).name[:2]}.json"
+                if receipt is not None:
+                    if storage.remote_digest(policy, cls, receipt_key, len(receipt)) != identity["receipt_sha256"]:
+                        raise ValueError(f"remote receipt hash mismatch: {name}/{path}")
+                if day in protected() or not cold.unchanged(source, parent_fd, leaf, stamp):
+                    continue
+                os.unlink(leaf, dir_fd=parent_fd)
+                result["deleted"].append(f"{name}/{path}")
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:
+            result["issues"].append(str(exc))
+    for mount in {Path(c["local"]).parent for c in classes}:
+        if shutil.disk_usage(mount).free < floor_gib * GIB:
+            result["issues"].append(f"disk below reserve: {mount}")
+    return result
+
+
 def closed_days(root: Path, today: date) -> dict[date, list[Path]]:
     days: dict[date, list[Path]] = {}
     protected = protected_days(root)
@@ -136,14 +235,29 @@ def prune_local_floor(root: Path, floor_gib: int) -> int:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("root", type=Path)
+    p.add_argument("root", type=Path, nargs="?")
     p.add_argument("floor_gib", type=int, nargs="?", default=12)
     p.add_argument("--local-floor", action="store_true", help="existing protected-day local retention policy")
     p.add_argument("--remote", help="same named rclone destination as the hourly offload")
     p.add_argument("--state", type=Path, help="same proof directory as the hourly offload")
     p.add_argument("--retain-days", type=int, default=10)
+    p.add_argument("--storage-policy", type=Path, help="sole production storage policy")
+    p.add_argument("--storage-audit", type=Path, help="fresh canonical audit from the same policy")
+    p.add_argument("--max-files", type=int, default=12, help="per-run canonical readback budget")
     p.add_argument("--dry-run", action="store_true", help="check local deletion eligibility without remote requests")
     args = p.parse_args()
+    if args.storage_policy is not None or args.storage_audit is not None:
+        if not args.storage_policy or not args.storage_audit or args.root or args.remote or args.state or args.local_floor:
+            p.error("use --storage-policy and --storage-audit together, without a local or alternate archive mode")
+        try:
+            policy = tomllib.loads(args.storage_policy.read_text())
+            result = policy_prune(policy, args.storage_audit, dry_run=args.dry_run, max_files=args.max_files)
+        except (OSError, ValueError) as exc:
+            p.exit(1, f"{exc}\n")
+        print(json.dumps(result, sort_keys=True))
+        return int(bool(result["issues"]))
+    if args.root is None:
+        p.error("root is required outside the canonical storage policy")
     if args.local_floor:
         if args.remote or args.state or args.dry_run:
             p.error("--local-floor is separate from object-backed retention")
