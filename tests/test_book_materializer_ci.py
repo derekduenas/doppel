@@ -16,7 +16,7 @@ from doppel.lab.mechanisms import walk_cost
 from doppel.tape.segment import SegmentWriter
 from test_cohort_v2 import FREEZE, NA, _build, _write_tape
 from test_ordermatch import W, order, orow
-from test_orderreplay import FRAMES, MS, ORDERS, QUOTES, T0, append_received, book, pc, trade, write_dir
+from test_orderreplay import FRAMES, ORDERS, QUOTES, T0, append_received, book, pc, trade, write_dir
 
 
 STREAM = "clob_btc_5m"
@@ -75,7 +75,7 @@ def test_deep_queue_fills_receipt_order_bbo_and_sweep_match(tmp_path, materializ
                     pc(10_999, "A", 0.66, 200, "SELL"),
                     trade(11_000, "A", 0.61, 10, "BUY", "deep"))
     append_received(writer, 12 * NS, book(12_000, "A", [(0.48, 500)], deep))
-    writer.append("", {"ctl": "disconnect"}, tw=(T0 + 13) * NS)
+    writer.append("", meta={"ctl": "disconnect"}, tw=(T0 + 13) * NS)
     append_received(writer, 14 * NS, pc(14_000, "A", 0.46, 19, "BUY"))
     append_received(writer, 15 * NS, book(15_000, "A", [(0.48, 500)], deep))
     append_received(writer, 3601 * NS, pc(3_601_000, "A", 0.66, 199, "SELL"))

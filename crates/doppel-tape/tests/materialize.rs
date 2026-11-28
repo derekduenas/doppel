@@ -16,10 +16,8 @@ const T: i64 = 1_700_000_000_000_000_000;
 const STREAM: &str = "clob_btc_5m";
 
 fn snapshot(market: &str, asset: &str) -> Value {
-    let bids = [0.49, 0.48, 0.47, 0.46, 0.45, 0.44]
-        .into_iter()
-        .map(|price| json!({"price": price.to_string(), "size": "5"}))
-        .collect::<Vec<_>>();
+    let bids =
+        [0.49, 0.48, 0.47, 0.46, 0.45, 0.44].into_iter().map(|price| json!({"price": price.to_string(), "size": "5"})).collect::<Vec<_>>();
     json!({
         "event_type": "book", "asset_id": asset, "market": market, "timestamp": "1700000000000",
         "bids": bids,
