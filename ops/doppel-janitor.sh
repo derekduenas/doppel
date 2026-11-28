@@ -1,4 +1,4 @@
 #!/bin/sh
-# Preserve the systemd entry point for the tape-volume free-space janitor.
+# The legacy unit can report disk pressure while stopping short of unverified deletion.
 set -eu
 exec python3 "$(dirname "$0")/tape_janitor.py" "${1:?tape root}" "${2:-12}"
