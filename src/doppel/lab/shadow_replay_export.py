@@ -9,7 +9,6 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import BinaryIO
 
 from ..paper.epoch import _book_complete
 from ..strategy.genome import Genome, from_dict
@@ -31,11 +30,12 @@ from .shadow_trial_ledger import TrialLedger, read_plan
 
 RUN_SCHEMA = "doppel.shadow-replay-run-spec/v1"
 POLICY_SCHEMA = "doppel.shadow-fixed-abstention/v1"
+ABSTENTION_MAX_BOOK_AGE_NS = 3 * NS
 WINDOW_POLICY = {
     "schema": "doppel.shadow-window-policy/v1",
     "eligibility": "canonical_twin_on_preregistered_panel_trial",
     "missing_returns": "reject_unaligned",
-    "abstention_max_book_age_ns": 3 * NS,
+    "abstention_max_book_age_ns": ABSTENTION_MAX_BOOK_AGE_NS,
 }
 SCENARIO_POLICY = {
     "schema": "doppel.shadow-scenario-policy/v1",
@@ -135,7 +135,7 @@ def _panel(data: Path, genome: Genome, start: int, end: int, cfg: SimConfig) -> 
         if exclusion(genome, window, ref, cfg.min_trade_coverage, cfg.max_inferred_share,
                      cfg.max_unidentified_share) is None:
             windows.append((window.start, window.end))
-            complete = complete and _book_complete(window, WINDOW_POLICY["abstention_max_book_age_ns"])
+            complete = complete and _book_complete(window, ABSTENTION_MAX_BOOK_AGE_NS)
     if len(windows) < 2 * PBO_S or any(left[1] > right[0] for left, right in zip(windows, windows[1:])):
         raise ValueError("preregistered panel does not contain at least 32 nonoverlapping eligible windows")
     return windows, complete
@@ -152,16 +152,15 @@ def _publish(path: Path, raw: bytes, *, bounded: bool = False) -> str:
     return _sha(raw)
 
 
-def _trace_line(source: BinaryIO, row: dict) -> None:
-    source.write(_canon(row) + b"\n")
-
-
 def _candidate(data: Path, lab: Path | None, genome: Genome, start: int, end: int, cfg: SimConfig,
                windows: list[tuple[int, int]], output: Path, replay: dict) -> dict:
     output.mkdir(mode=0o700, parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=output) as trace:
+        def append_trace(row: dict) -> None:
+            trace.write(_canon(row) + b"\n")
+
         scenarios, diagnostics = replay_scenarios(
-            data, lab, genome, start, end, cfg, windows, trace=lambda row: _trace_line(trace, row),
+            data, lab, genome, start, end, cfg, windows, trace=append_trace,
         )
         trace.flush()
         os.fsync(trace.fileno())
@@ -278,7 +277,8 @@ def export_run(run_spec: Path, run_spec_sha256: str, plan_file: Path, plan_sha25
                                     windows, complete, identity)
                 return "ABSTAIN", [0.0] * len(windows), "verified_fixed_no_entry", {**evidence, "abstention": proof}
             genome, reg, bound, config = _registration(registry, records, spec, identity["genome_id"])
-            if genome.universe != panel_genome.universe or uses_intl(genome) != intl:
+            if (genome.universe.assets != panel_genome.universe.assets
+                    or genome.universe.horizons != panel_genome.universe.horizons or uses_intl(genome) != intl):
                 raise ValueError("trial differs from the common market universe or snapshot source set")
             rows, evaluation = replay_snapshot(data, lab, reg, binding=bound)
             if evaluation.get("input_sha256") != input_sha:

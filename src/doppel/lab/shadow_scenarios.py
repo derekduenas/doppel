@@ -147,7 +147,8 @@ class ScenarioSim(WindowSim):
             self._iocs[(i, t)] = a
             self._push(t + self.L, P_LAND, "ioc", TakerOrder(i, side, a.submitted, a.limit, t))
 
-    def _on_ioc(self, t: int, order: TakerOrder) -> None:
+    def _on_ioc(self, t: int, o: TakerOrder) -> None:
+        order = o
         if order.rule >= 0:
             self.inflight[order.rule] = False
             a = self._iocs.pop((order.rule, order.decided_ns))
@@ -239,11 +240,11 @@ class ScenarioSim(WindowSim):
             self._quote_ids[id(q)] = a
             self._schedule_quote(quote_side, q, t)
 
-    def _schedule_quote(self, side: str, quote: Quote | None, t: int) -> None:
+    def _schedule_quote(self, side: str, q: Quote | None, t: int) -> None:
         pending = self.pending.get(side)
         if pending is not None and pending[1] is not None:
             self._quote_ids[id(pending[1])].reasons.append("superseded")
-        super()._schedule_quote(side, quote, t)
+        super()._schedule_quote(side, q, t)
 
     def _on_quote_land(self, t: int, payload: tuple[str, int]) -> None:
         side, version = payload
@@ -281,10 +282,10 @@ class ScenarioSim(WindowSim):
         elif not quote.queue_known:
             a.reasons.append("unknown_passive_queue")
 
-    def _maker_fill(self, t: int, quote: Quote, qty: float, via: str, ref_qty: float) -> None:
-        super()._maker_fill(t, quote, qty, via, ref_qty)
-        a = self._quote_ids[id(quote)]
-        self._annotate_fill(a, quote.price, qty)
+    def _maker_fill(self, t: int, q: Quote, f: float, via: str, ref_qty: float) -> None:
+        super()._maker_fill(t, q, f, via, ref_qty)
+        a = self._quote_ids[id(q)]
+        self._annotate_fill(a, q.price, f)
 
     def _fill_attempt(self, a: Attempt, t: int, role: str, px: float, qty: float, via: str, ref_qty: float) -> None:
         self._fill(t, role, a.side, px, qty, via, ref_qty)
