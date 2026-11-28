@@ -65,6 +65,7 @@ doppel-markout = "doppel.lab.markout:main"
 doppel-skilldecay = "doppel.lab.skilldecay:main"
 doppel-mechanisms = "doppel.lab.mechanisms:main"
 doppel-invert = "doppel.lab.inversion:main"
+doppel-simulate = "doppel.lab.simulator:main"
 
 [dependency-groups]
 dev = [
