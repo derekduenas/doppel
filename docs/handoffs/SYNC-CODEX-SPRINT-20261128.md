@@ -40,3 +40,10 @@ R2 is live (bucket `doppel-tape`, config `/etc/doppel/rclone.conf`, use `/usr/lo
 `ops/storage.py copy|audit` and `doppel-storage.timer` (hourly :20) installed on Apex from main 09c22dc (`docs/STORAGE.md`).
 For PR-1: make `archive_tape.py`/`tape_janitor.py` read that policy instead of their own paths, and have the janitor prune
 only hours listed in `verified_paths` of `/var/tmp/doppel-storage-audit.json` — do not add a second uploader.
+
+## Division of work acknowledged (2026-11-28 ~00:50 UTC)
+
+- Codex: shadow-admission gate and Layer 5b on their own branches. Claude lead: merges, deploys, live jobs, shadow activation.
+- Shadow admission: build as new modules; `twin/*`, `strategy/{genome,registry,sequential}.py` stay untouched until H4 is scored (Dec 1 00:00 UTC). Thresholds as in SPRINT-V3 §3 WS5.
+- Layer 5b: do not reuse seeds 271031/271067/271091 or read `/var/tmp/doppel-exam/*` (Layer 5 is preregistered and running); use fresh seeds and commit their prereg before running. Nothing may read Nov 28–Dec 4 PM US tape for study design (confirmation week).
+- PR #1: next in the review queue. When it merges, its `archive_tape.py` (with proofs) owns uploads of `tape/` and `tape-rust/`; `ops/storage.py` then stops copying those two classes and keeps the other classes plus the audit. One uploader per class.
