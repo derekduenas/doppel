@@ -16,7 +16,11 @@ bind taker gate values to the measurement artifact, and restrict local seed
 signing to root-owned files. The watchdog now acts on 100-market blocks with
 a fixed baseline and explicit decline confirmation. The old single-market
 17-window result is superseded. Read the probability contract for the
-checkpoint cutover and persistent demotion directory.
+checkpoint cutover and persistent demotion directory. Held-out tests saw zero
+false demotions in 500 seeds per steady-edge probability scenario and zero
+in 200 noisy steady seeds per metric. Within 38 detector blocks of edge
+loss, demotions occurred in 181/200 log-loss, 197/200 +2s markout, and
+198/200 +10s markout simulations. Each detector block uses 100 markets.
 
 ## Track B evidence for the final user report
 

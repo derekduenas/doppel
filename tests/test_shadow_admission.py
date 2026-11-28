@@ -1,5 +1,6 @@
 from dataclasses import replace
 import hashlib
+import os
 import time
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -8,7 +9,7 @@ import pytest
 
 from doppel import cli
 from doppel.lab import promotion
-from doppel.lab.shadow_bundle import build_shadow_bundle
+from doppel.lab.shadow_bundle import _local_signature, build_shadow_bundle
 from doppel.strategy.genome import Condition, Genome, MakerRule, Source, TakerRule, Universe, to_dict
 from doppel.strategy.registry import Registry
 from doppel.strategy.shadow_admission import (
@@ -146,6 +147,11 @@ class Bundle:
                          "scoring_sha256": bound["code_sha256"], "registry_result_sha256": result["hash"],
                          "valid_from_ns": now - 10**9, "valid_until_ns": now + 60 * 10**9, "n_trials": 2,
                          "trial_head_sha256": prev, "candidate_trial_id": identities[0]["trial_id"]}
+        st = self.approval["statistics"]
+        self.report_statistics = {"dsr": {"dsr": st["dsr"]}, "pbo": {"pbo": st["pbo"]},
+                                  "fdr": {"bh_q": st["fdr_q"], "bh_survives": st["bh_survives"]},
+                                  "hac": {"t": st["hac_t"], "p_one_sided": st["hac_p"]},
+                                  "bootstrap": {"p_one_sided": st["bootstrap_p"]}}
         self.trust = AdmissionTrust(self.private.public_key().public_bytes_raw(), reg.root, self.commit, plan_sha, ())
         self.registry = reg
         self.seal()
@@ -156,7 +162,8 @@ class Bundle:
         report = {"sources": {"canonical.json": replay_hash, "trials.json": digest(encode(self.trials))},
                   "trials": {"n_trials": 2},
                   "candidates": [{"input": "canonical.json", "genome": {"id": self.genome.id},
-                                  "decision": "PROMOTE", "base_decision": "PASS", "windows": 48}]}
+                                  "decision": "PROMOTE", "base_decision": "PASS", "windows": 48,
+                                  **self.report_statistics}]}
         files = {"plan.json": self.plan, "trials.json": self.trials, "replay.json": self.replay,
                  "gates.json": self.gates, "promotion.json": report, **self.offshore}
         if self.genome.mode == "taker":
@@ -166,6 +173,14 @@ class Bundle:
             src["offshore_receipts"]["sources_sha256"] = hashes
             src["taker_timing"]["source_sha256"] = digest(encode(self.timing))
             files["layer5b.json"] = self.timing
+            names = ("markout_2s", "markout_10s", "paper_replay_slippage", "residual_correlation")
+            doc = {"schema": "doppel.shadow-taker-measurements/v1", "genome_id": self.genome.id,
+                   "replay_sha256": replay_hash,
+                   "measurements": {name: {k: v for k, v in src[name].items() if k not in ("status", "source_sha256")}
+                                    for name in names}}
+            for name in names:
+                src[name]["source_sha256"] = digest(encode(doc))
+            files["taker-measurements.json"] = doc
         else:
             self.maker["replay_sha256"] = replay_hash
             for name in MAKER_GATES:
@@ -359,14 +374,20 @@ def test_promotion_cli_to_signed_maker_bundle_to_admission(tmp_path):
     output = tmp_path / "signed"
     genome = tmp_path / "candidate.json"
     write(genome, to_dict(b.genome))
-    signing = tmp_path / "test-signing.key"
+    signature = tmp_path / "test-signature"
+    signature.write_bytes(b.private.sign(SIGNATURE_DOMAIN + product.approval))
+    signing = tmp_path / "non-root-signing.key"
     signing.touch(mode=0o600)
     signing.write_bytes(b.private.private_bytes_raw())
+    if os.getuid() == 0:
+        os.chown(signing, 65534, -1)
+    with pytest.raises(ValueError, match="root-owned"):
+        _local_signature(product, signing)
     assert cli.main(["promote", "bundle", "--promotion-dir", str(report), "--replay-artifact", str(replay),
                      "--trial-ledger", str(ledger), "--gate-results", str(results / "gates.json"), "--genome", str(genome),
                      "--registry-root", str(b.trust.registry_root), "--out", str(output), "--commit-sha", b.commit,
                      "--plan-sha256", b.trust.plan_sha256, "--public-key-hex", b.trust.public_key.hex(),
-                     "--valid-from-ns", str(cuts[0]), "--valid-until-ns", str(cuts[1]), "--signing-key", str(signing)]) == 0
+                     "--valid-from-ns", str(cuts[0]), "--valid-until-ns", str(cuts[1]), "--signature", str(signature)]) == 0
     assert (output / "approval.json").read_bytes() == product.approval
     receipt = admit_shadow(b.genome, output, b.trust, tmp_path / "live-owned-receipt",
                            simulation_sha256=simulation_digest(b.cfg))
@@ -405,3 +426,50 @@ def test_watchdog_admission_requires_a_valid_bound_probability_before_receipt(tm
     assert actual["probability_sha256"] == digest
     assert actual["replay_start_ns"] == b.start * 10**9
     assert receipt_path.is_file()
+
+
+@pytest.mark.parametrize("section,field", [
+    ("dsr", "dsr"), ("pbo", "pbo"), ("fdr", "bh_q"), ("hac", "t"),
+    ("hac", "p_one_sided"), ("bootstrap", "p_one_sided"),
+])
+def test_signed_report_with_drifting_statistics_is_rejected(tmp_path, section, field):
+    b = Bundle(tmp_path)
+    b.report_statistics[section][field] += .01
+    b.seal()
+    b.reject("REJECT_NONCANONICAL_REPLAY")
+
+
+def test_taker_gate_digests_and_values_bind_the_measurement_artifact(tmp_path):
+    b = Bundle(tmp_path, taker=True)
+    name = "taker-measurements.json"
+    path = b.bundle / name
+    measurements = orjson.loads(path.read_bytes())
+    path.unlink()
+    b.reject("REJECT_UNMEASURED_GATE")
+    write(path, measurements)
+    b.gates["gates"]["markout_2s"]["value"] += 0.01
+    b.approval["files"]["gates.json"] = write(b.bundle / "gates.json", b.gates)
+    b.sign()
+    b.reject("REJECT_UNMEASURED_GATE")
+
+
+def test_canonical_report_applies_cross_trial_dsr_penalty(tmp_path):
+    g, other = label("candidate"), label("alternative")
+    returns = [.55 + ((i * 37) % 17 - 8) / 4 for i in range(48)]
+    values = [returns, [r - .7 for r in returns]]
+    candidate = {"schema": "doppel.shadow-replay/v1", "genome_id": g,
+                 "windows": [{"eligible": True, "start": i, "end": i + 1, "net_c": v}
+                             for i, v in enumerate(returns)],
+                 "verdict": {"decision": "PASS", "p_value": .01, "evaluation": {"range": [0, 48]}}}
+    ledger = {"schema": "doppel.shadow-trial-ledger/v1",
+              "trials": [{"trial_id": label(f"trial-{i}"), "genome_id": gid, "returns_c": rows}
+                         for i, (gid, rows) in enumerate(zip((g, other), values, strict=True))]}
+    replay_path, trials_path, out = tmp_path / "replay", tmp_path / "ledger", tmp_path / "promotion"
+    write(replay_path, candidate)
+    write(trials_path, ledger)
+    assert promotion.main(["--results", str(replay_path), "--trials", str(trials_path), "--out", str(out)]) == 0
+    report = orjson.loads((out / "promotion.json").read_bytes())["candidates"][0]
+    expected = _statistics(0, values)
+    assert promotion.deflated_sharpe(returns, 2)["dsr"] > promotion.DSR_MIN > expected["dsr"]
+    assert report["dsr"]["dsr"] == expected["dsr"]
+    assert report["decision"] == "HOLD"

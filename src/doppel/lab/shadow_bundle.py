@@ -88,6 +88,11 @@ def _fill_gates(genome, raw_gates, files, evidence):
     else:
         populate("offshore_receipts", {"status": na})
     if genome.mode == "taker":
+        if "taker-measurements.json" in files:
+            name = "taker-measurements.json"
+            digest = _sha(files[name])
+            for gate, measurement in evidence[name]["measurements"].items():
+                populate(gate, {"status": passed, **measurement, "source_sha256": digest})
         if "layer5b.json" in files:
             populate("taker_timing", {"status": passed, "source_sha256": _sha(files["layer5b.json"]),
                                       "trigger_source": genome.evidence["taker_trigger_source"]})
@@ -116,7 +121,7 @@ def build_shadow_bundle(promotion_dir: Path, replay_artifact: Path, trial_ledger
     """
     paths = {"promotion.json": promotion_dir / "promotion.json", "plan.json": promotion_dir / "plan.json",
              "replay.json": replay_artifact, "trials.json": trial_ledger}
-    specific = ("layer5b.json",) if genome.mode == "taker" else ("maker.json",)
+    specific = ("layer5b.json", "taker-measurements.json") if genome.mode == "taker" else ("maker.json",)
     for name in (*specific, "binance.json", "hyperliquid.json", "probability.json"):
         source = gate_results.parent / name
         if source.exists():
@@ -158,8 +163,8 @@ def _local_signature(bundle: ShadowBundle, path: Path) -> bytes:
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as source:
         info = os.fstat(source.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_size != 32:
-            raise ValueError("signing key must be a private, owner-only raw 32-byte Ed25519 seed")
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077 or info.st_size != 32:
+            raise ValueError("signing key must be a root-owned, owner-only raw 32-byte Ed25519 seed")
         key = Ed25519PrivateKey.from_private_bytes(source.read(33))
     if key.public_key().public_bytes_raw() != bundle.public_key:
         raise ValueError("signing key does not match the independently configured public key")
@@ -176,7 +181,7 @@ def main(argv=None) -> int:
         parser.add_argument("--" + name, type=int, required=True)
     parser.add_argument("--active-genome", action="append", default=[])
     signing = parser.add_mutually_exclusive_group()
-    signing.add_argument("--signing-key", type=Path, help="operator-only raw Ed25519 seed in an owner-only file")
+    signing.add_argument("--signing-key", type=Path, help="root-owned raw Ed25519 seed in an owner-only file")
     signing.add_argument("--signature", type=Path, help="offline binary signature for the deterministically rebuilt approval")
     args = parser.parse_args(argv)
     try:
