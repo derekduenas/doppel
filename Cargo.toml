@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/doppel-tape", "crates/doppel-fair"]
+members = ["crates/doppel-tape", "crates/doppel-fair", "crates/doppel-exec"]
 
 [profile.release]
 debug = 1
