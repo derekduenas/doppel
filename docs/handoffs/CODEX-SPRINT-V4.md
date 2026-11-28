@@ -5,9 +5,9 @@ The code review baseline is `d610b69`. The isolated review branches include its 
 ## Review order
 
 1. `sprint/v4-shadow-bundle` connects canonical replay and a complete frozen trial ledger to the promotion report, deterministic approval bytes and `admit_shadow()`. Use the [evidence contract and commands](../SHADOW-ADMISSION-EVIDENCE.md). Maker and structural-TWAP admission require positive +2s/+10s fill markouts and canonical delayed-cancel stress evidence. A maker with an offshore cancel guard also needs both native receipt files. Both taker archetypes need the recorded Layer 5b scorecard and both exact offshore receipts.
-2. `sprint/v4-shadow-watchdog` builds on the bundle receipt. Prepare a sealed candidate probability model on development inputs ending before the binding replay starts. Include its JSON in the bundle before approval so the live paper runtime can bind its digest. Review the watchdog's time, restart and missing-input checks before the first controlled Shadow session.
+2. `sprint/v4-shadow-watchdog` builds on the bundle receipt. Prepare a sealed candidate probability model on development inputs ending before the binding replay starts. Include its JSON in the bundle before approval so the live paper runtime can bind its digest. The live entry point validates the model before writing an admission receipt. The [probability contract](../SHADOW-PROBABILITY.md) documents forecast timing, missing evidence and restart behavior.
 
-Use a fresh, independently pinned plan and approval window for each attempt. Have the issuer reconcile the trial invent­ory and inspect the actual source artifacts and predeclared stress plan behind the digests before attaching a signature. A green fixture run and a formatted bundle do not supply those research observations.
+Use a fresh, independently pinned plan and approval window for each attempt. Have the issuer reconcile the trial inventory and inspect the actual source artifacts and predeclared stress plan behind the digests before attaching a signature. A green fixture run and a formatted bundle do not supply those research observations.
 
 ## Track B evidence for the final user report
 

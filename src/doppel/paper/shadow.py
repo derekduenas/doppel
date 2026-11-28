@@ -85,7 +85,7 @@ def authorize(genome: Genome, bundle: Path, tape: Path, journal: Path,
     except (OSError, ValueError, TypeError, KeyError) as exc:
         raise AdmissionRejected("REJECT_UNTRUSTED_OPERATOR", "shadow configuration is unavailable or invalid") from exc
     receipt = admit_shadow(genome, bundle, trust, journal / "admissions",
-                           simulation_sha256=simulation_digest(cfg))
+                           simulation_sha256=simulation_digest(cfg), require_probability=True)
     try:
         model = load_probability(bundle / "probability.json", receipt["probability_sha256"], genome,
                                  before_ns=receipt["replay_start_ns"])
