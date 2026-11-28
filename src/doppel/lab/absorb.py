@@ -48,8 +48,9 @@ the low byte, so for a ``BinaryModule`` (module 1) id seen on the PositionManage
 indexed conditionId, address indexed recipient0, address recipient1, uint256 amount)``,
 ``PositionsMerged(address indexed initiator, bytes31 indexed conditionId, address indexed recipient,
 uint256 amount)``, ``PositionRedeemed(address indexed initiator, uint256 indexed positionId, address
-indexed recipient, uint256 amount, uint256 payout)``. The initiator is the Router, Exchange or
-AutoRedeemer, so they are attributed to the wallet by recipient.
+indexed recipient, uint256 amount, uint256 payout)``. The initiator is the Router or Exchange, so
+they are attributed to the wallet by recipient; one V2 tx may name several conditions. The
+AutoRedeemer redeems to itself and forwards the payout, so its redemptions read as ``transfer``.
 
 Why receipts and not stakeholder filters: V2 splits, merges and redemptions go through the
 collateral adapter (``CtfCollateralAdapter.sol``), so the CTF events name the adapter, and the
@@ -603,7 +604,8 @@ def reconstruct(wallet: str, fills: list[dict], legs: list[dict], filled: list[d
             ev = {e["kind"] for e in ctf}
             if not ev:
                 kind = "transfer"
-            elif (len(ev) != 1 or len({e["condition"] for e in ctf}) != 1 or
+            # A V2 event names its own condition, so one V2 tx may redeem several (Router batches).
+            elif (len(ev) != 1 or len({e["condition"] for e in ctf if "recipients" not in e}) > 1 or
                   not share_cps <= ({ZERO} | {e["stakeholder"] for e in ctf
                                               if e["stakeholder"] in ADAPTERS + PM_MODULES})):
                 kind = "unclassified"

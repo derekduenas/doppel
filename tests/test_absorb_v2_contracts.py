@@ -84,11 +84,11 @@ class Net:
 
 
 def _row(wallet, of, ts):
-    """A Goldsky row with the amounts of a chain OrderFilled (BUY only, as in the fixture)."""
+    """A Goldsky row with the amounts of a chain OrderFilled."""
     o = ab.order_filled(of)
-    assert o["maker"] == wallet and o["side"] == "BUY"
+    assert o["maker"] == wallet
     return {"id": f"{o['tx']}-{o['li']}", "address": wallet, "event_type": "TRADE", "token_id": o["token"],
-            "side": "BUY", "amount_shares": o["shares"] / U, "amount_usdc": o["usdc"] / U, "fee": o["fee"] / U,
+            "side": o["side"], "amount_shares": o["shares"] / U, "amount_usdc": o["usdc"] / U, "fee": o["fee"] / U,
             "block_timestamp": ts, "block_number": o["block"], "order_type": "maker",
             "price": o["usdc"] / o["shares"], "order_id": "0x" + o["order_id"], "transaction_hash": o["tx"]}
 
@@ -196,6 +196,46 @@ def test_residuals_still_fail_in_either_system(net, tmp_path):
     r = _absorb(net, MAKER, [], tmp_path)  # the V2 fill itself missing from Goldsky
     assert {"goldsky_missing_fill_txs", "share_residual"} <= set(r["causes"])
     assert r["reconciliation"][V2_YES]["residual"] == 6
+
+
+MERGE = FIX["merge_receipt"]  # a MERGE match: two sellers' NO and YES merged on the BinaryModule
+SELLER_BOTH = "0xd8f1fbe130e2b33f32633bf568a08b85058e74a9"  # BUY 2.78 YES and SELL 2.21 NO in one tx
+SELLER = "0x977ad9e8d79b0bd80c0c9d411bf1ae928cc74b41"  # SELL 5 YES, the taker, with a fee
+
+
+@pytest.mark.parametrize("wallet,opening,cash", [
+    (SELLER_BOTH, {"01": 0x21B8D0}, -0xF5370 + 0x159500), (SELLER, {"00": 5 * U}, 0x1B4A40)])
+def test_v2_sell_fills_of_a_merge_match_reconcile(tmp_path, wallet, opening, cash):
+    b = int(MERGE["blockNumber"], 16)
+    n = Net(b, int(MERGE["logs"][0]["blockTimestamp"], 16), MERGE["logs"], {})
+    base = int(MERGE["logs"][1]["data"][66:130], 16) & ~1
+    for suffix, v in opening.items():
+        n.open[(ab.PM, wallet, str(base | int(suffix)))] = v
+    rows = [_row(wallet, lg, n.ts0) for lg in MERGE["logs"]
+            if lg["topics"][0] == ab.T_FILLED and ab._addr(lg["topics"][2]) == wallet]
+    r = _absorb(n, wallet, rows, tmp_path)
+    assert r["status"] == "reconciled", r["causes"]
+    assert r["fill_check"]["order_filled"]["matched"] == len(rows) and "SELL" in {x["side"] for x in rows}
+    assert r["reconciliation"]["cash"]["observed"] == cash / U
+
+
+def test_v2_router_batch_redeeming_two_conditions_is_one_redeem():
+    """Router batches name several conditions in one tx (430 such groups in the scanned range)."""
+    log = REDEEM["logs"][3]
+    other = {**log, "logIndex": "0x999", "topics": [*log["topics"][:2], f"0x{int(log['topics'][2], 16) + (1 << 8):064x}",
+                                                    log["topics"][3]]}
+    events = ab.pm_events({"logs": [log, other]})
+    assert [e["kind"] for e in events] == ["redeem", "redeem"] and len({e["condition"] for e in events}) == 2
+    legs = [{"tx": "0x01", "block": 5, "li": 1, "asset": str(int(log["topics"][2], 16)), "delta": -1,
+             "cp": ab.PM_MODULES[0], "batch": None, "contract": ab.PM}]
+    rec = {"transactionHash": "0x01", "blockNumber": hex(5), "status": "0x1",
+           "logs": [{"address": ab.PM, "topics": [ab.T_SINGLE, ab.topic(ab.PM_MODULES[0]), ab.topic(REDEEMER),
+                                                  ab.topic(ab.PM_MODULES[0])],
+                     "data": _w(int(legs[0]["asset"]), 1), "transactionHash": "0x01", "blockNumber": hex(5),
+                     "logIndex": hex(1)}, {**log, "transactionHash": "0x01", "blockNumber": hex(5)},
+                    {**other, "transactionHash": "0x01", "blockNumber": hex(5)}]}
+    r = ab.reconstruct(REDEEMER, [], legs, [], {"0x01": rec}, None, None, {}, {5: 100}, (1, 9))
+    assert r["tx_kinds"] == {"redeem": 1}
 
 
 def test_v2_router_redemption_is_classified(tmp_path):

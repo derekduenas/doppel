@@ -18,7 +18,10 @@ Everything below comes from Polymarket's public source, the observed logs, and o
   - `src/positionManager/PositionManager.sol`, which shows the mint, burn and unsafe transfer log emission
   - `src/libraries/ModuleIds.sol`, `src/libraries/Ids.sol`, `src/routers/Router.sol` and `src/utils/AutoRedeemer.sol`
 - **S2, on-chain reads.** Made on 2026-11-27 through `https://polygon-bor-rpc.publicnode.com`, from the Apex host, because the Mac's TLS to public RPCs was refused. Each read is listed below.
-- **S3, the example transaction.** The receipt of `0x0189c27086445efa3e166977a350aecb00c3c49bc0d75969cb243652bf300c13` (block 97966413). It is committed unmodified, with a Router redemption receipt and one real `PositionsMerged` and `TransferBatch` log, as `tests/fixtures_absorb/pm-v2-polygon.json`.
+- **S3, the example transaction.** The receipt of `0x0189c27086445efa3e166977a350aecb00c3c49bc0d75969cb243652bf300c13` (block 97966413). It is committed unmodified as `tests/fixtures_absorb/pm-v2-polygon.json`, together with:
+  - a MERGE-match receipt with SELL fills (`0x8e827b6e…7d2c`)
+  - a Router redemption receipt (`0x9c388d79…21ca`)
+  - one real PositionManager `TransferBatch` log
 - **Topic hashes.** Every topic0 below is `keccak256` of the canonical signature from S1, computed with pycryptodome. User-defined value types are encoded as their underlying type: `PositionId` is `uint256`, `ConditionId` is `bytes31`, and the `Side` enum is `uint8`. Each hash equals the topic observed in S3 or in a live `eth_getLogs` (S2).
 
 ## Contracts (Polygon, chainId 137)
@@ -30,11 +33,11 @@ Everything below comes from Polymarket's public source, the observed logs, and o
 | BinaryModule | `0x1000008dD9001B968442c1000017eaE6E0dA00Ba` | Module 1: binary conditions, with `split`/`merge`/`redeem` and resolution. **This is the contract the task asked about.** It is a module, not a registry or adapter. The PositionManager routes mint and burn rights by the id's top byte. | S1 README table. S2: `PositionManager.moduleById(1)` returns it, and `BinaryModule.POSITION_MANAGER()` returns the PositionManager. |
 | NegRiskModule | `0x200000900045e3B6259600682756002200028933` | Module 2 (multi-outcome events) | S1. S2: `moduleById(2)`. |
 | CombinatorialModule | `0x30000034706C7d8e12009DAB006Be20000c031A8` | Module 3 (conjunctions) | S1. S2: `moduleById(3)`. |
-| Router | `0x12121212006e4CD160D18e3f00711DA5c3372600` | The user entry point for split, merge and redeem | S1. S2: it is the `initiator` of a live `PositionRedeemed`. |
-| AutoRedeemer | `0xa1200000d0002264C9a1698e001292D00E1b00af` | Operator batch redemptions | S1 |
+| Router | `0x12121212006e4CD160D18e3f00711DA5c3372600` | The user entry point for split, merge and redeem | S1. S2: initiator of 2,804 of 6,409 `PositionRedeemed` logs in the scanned range. |
+| AutoRedeemer | `0xa1200000d0002264C9a1698e001292D00E1b00af` | Operator batch redemptions | S1. S2: initiator of the other 3,605. |
 | CollateralToken (pUSD / PMCT) | `0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB` | The same collateral the classic V2 exchanges use. Modules burn it on split and mint it on merge and redeem. | S1, S2, S3 |
 
-**Implementation drift.** EIP-1967 implementation slot reads (S2) agree with the S1 table only for the PositionManager (`0xCc5De1e9…c2D0`). The Exchange proxy now points to `0x862f1cff1bd6246a2585e3622137e6f961b34e55` (S1 lists `0x641b40ec…8Bb7`). The BinaryModule proxy points to `0x66290cf3c362be3910c1b5572d381453fa7da2ba` (S1 lists `0xf6428c0b…e9A2`). Both were upgraded after S1. Verified source for those two implementations was not checked: Polygonscan was not queried, since that would have needed an API key. What absorb decodes is therefore limited to events whose topic0 *and* data layout match S1 in real logs from the live implementations:
+**Implementation drift.** EIP-1967 implementation slot reads (S2) agree with the S1 table only for the PositionManager (`0xCc5De1e9…c2D0`). The Exchange proxy now points to `0x862f1cff1bd6246a2585e3622137e6f961b34e55` (S1 lists `0x641b40ec…8Bb7`). The BinaryModule proxy points to `0x66290cf3c362be3910c1b5572d381453fa7da2ba` (S1 lists `0xf6428c0b…e9A2`). Both were upgraded after S1. Verified source for those two implementations on Polygonscan was not checked. What absorb decodes is therefore limited to events whose topic0 *and* data layout match S1 in real logs from the live implementations:
 
 - `OrderFilled`, `OrdersMatched`, `FeeCharged` and `PositionsSplit`, in S3
 - `PositionsMerged`, `PositionRedeemed` and PositionManager `TransferBatch`, from live `eth_getLogs` over blocks 97,961,168–97,967,436 (S2), with fixtures committed
@@ -82,7 +85,10 @@ Everything below comes from Polymarket's public source, the observed logs, and o
 - **Scan.** Three more `eth_getLogs` filters per chunk: the PositionManager's `TransferSingle`/`TransferBatch` from and to the wallet, and Exchange `OrderFilled` with the wallet as maker. They are separate filters, so the classic queries' RPC cache keys are unchanged.
 - **Legs.** PositionManager transfers become share legs (tagged `contract`). Exchange `OrderFilled` rows are matched to Goldsky by (tx, order hash, block, side, token id, amounts, fee), in the token-id space Goldsky reports.
 - **Balances.** `balanceOfBatch` on the PositionManager for the ids seen there, plus their BinaryModule siblings, is added to the ConditionalTokens balance. A wallet with no V2 positions makes no extra call.
-- **Non-fill transactions.** BaseModule `PositionsSplit`, `PositionsMerged` and `PositionRedeemed` from the three modules classify a transaction as split, merge or redeem when the wallet is a recipient and its share counterparties are the zero address or a module. Anything else stays `transfer`, as migrations do, or `unclassified`.
+- **Non-fill transactions.** BaseModule `PositionsSplit`, `PositionsMerged` and `PositionRedeemed` from the three modules classify a transaction as split, merge or redeem when the wallet is a recipient and its share counterparties are the zero address or a module.
+  - **Multi-condition transactions.** A V2 event names its own condition, so one transaction may span several conditions. In blocks 97,961,168–97,967,436, 430 (tx, recipient) redemption groups spanned more than one condition, all initiated by the Router.
+  - **AutoRedeemer.** It calls `redeem(address(this), …)` and then transfers the payout (`AutoRedeemer.sol`), so the event's recipient is the AutoRedeemer itself. Those redemptions reconcile but are labelled `transfer`, so the `redeems` count understates them.
+  - **Everything else** stays `transfer`, as migrations do, or `unclassified`.
 - **Pairing.** A BinaryModule id gives its own (condition, outcome). The condition key is the 62-hex `bytes31`, which cannot collide with a classic 64-hex condition.
 - **Not decoded.** `PositionMigrated`, bridge events and combinatorial wrap/unwrap are not decoded. They surface as transfer movements, and as residuals if balances disagree.
 - **Signer identity.** `identities` reads signers from the order tape, which decodes only CTFExchangeV2 calldata. For V2 Exchange orders, signer coverage reads `partial`.
