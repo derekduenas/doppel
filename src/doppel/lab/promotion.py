@@ -51,6 +51,7 @@ import hashlib
 import itertools
 import math
 import sys
+from collections.abc import Set
 from pathlib import Path
 from statistics import NormalDist
 
@@ -59,6 +60,7 @@ import orjson
 
 from ..strategy.registry import holm
 from ..twin.verdict import block_bootstrap_ci, block_bootstrap_p
+from . import shadow_trial_ledger
 
 DSR_MIN = 0.95
 PBO_MAX = 0.15
@@ -68,6 +70,10 @@ ALPHA = 0.05
 EULER = 0.5772156649015329
 RHO_CAP = 0.97
 Z = NormalDist()
+CANONICAL_LEDGER_SCHEMA = "doppel.shadow-trial-ledger/v1"
+ABSTENTION_PLAN_SCHEMA = shadow_trial_ledger.PLAN_SCHEMA
+ABSTENTION_LEDGER_SCHEMA = shadow_trial_ledger.LEDGER_SCHEMA
+ABSTENTION_PROOF_SCHEMA = shadow_trial_ledger.ABSTENTION_SCHEMA
 
 
 def moments(x) -> tuple[float, float, float, float] | None:
@@ -204,7 +210,7 @@ def pbo(matrix, s: int = PBO_S) -> dict:
                       "hist_edges": [_r(float(e)) for e in edges], "hist_counts": [int(c) for c in counts]}}
 
 
-def canonical_trial_statistics(values) -> tuple[float, dict, list[dict]]:
+def canonical_trial_statistics(values, *, abstentions: Set[int] = frozenset()) -> tuple[float, dict, list[dict]]:
     """Compute full-precision statistics for the same aligned trial family at report and admission."""
     from ..twin.evaluate import VERDICT_OPTIONS
 
@@ -212,31 +218,61 @@ def canonical_trial_statistics(values) -> tuple[float, dict, list[dict]]:
     if rows.ndim != 2 or rows.shape[0] < 2:
         raise ValueError("canonical statistics require at least two aligned trials")
     n, size = rows.shape
-    trial_moments = [moments(row) for row in rows]
-    if any(m is None or not all(math.isfinite(x) for x in m) for m in trial_moments):
+    if any(type(i) is not int or not 0 <= i < n or np.any(rows[i] != 0) for i in abstentions):
+        raise ValueError("verified abstentions must be aligned all-zero trials")
+    trial_moments = [None if i in abstentions else moments(row) for i, row in enumerate(rows)]
+    if any(m is None or not all(math.isfinite(x) for x in m)
+           for i, m in enumerate(trial_moments) if i not in abstentions):
         raise ValueError("a planned trial lacks estimable return moments")
     usable = [m for m in trial_moments if m is not None]
+    if len(usable) < 2:
+        raise ValueError("canonical statistics require at least two estimable trials")
     sharpes = np.asarray([m / sd for m, sd, _, _ in usable])
     variance = float(sharpes.var(ddof=1))
     sr_star = expected_max_sr(n, max(variance, 1 / (size - 1)))
     overfit = pbo(rows.T)
-    boot = [block_bootstrap_p(row, VERDICT_OPTIONS["block"], VERDICT_OPTIONS["n_boot"], VERDICT_OPTIONS["seed"])
-            for row in rows]
+    boot = [1.0 if i in abstentions else
+            block_bootstrap_p(row, VERDICT_OPTIONS["block"], VERDICT_OPTIONS["n_boot"], VERDICT_OPTIONS["seed"])
+            for i, row in enumerate(rows)]
     if any(p is None or not math.isfinite(p) for p in boot):
         raise ValueError("trial p-values are unavailable")
     q, keep = bh([p for p in boot if p is not None])
     stats = []
-    for i, (row, (mean, _, skew, kurt)) in enumerate(zip(rows, usable, strict=True)):
-        dsr = psr(float(sharpes[i]), sr_star, size, skew, kurt)
+    for i, (row, m) in enumerate(zip(rows, trial_moments, strict=True)):
+        common = {"pbo": overfit["pbo"], "fdr_q": q[i], "bootstrap_p": boot[i],
+                  "bh_survives": keep[i], "trial_count": n}
+        if m is None:
+            stats.append({**common, "dsr": None, "hac_t": None, "hac_p": None})
+            continue
+        mean, sd, skew, kurt = m
+        dsr = psr(mean / sd, sr_star, size, skew, kurt)
         bw, _ = andrews_bandwidth(row)
         long_var = hac_var(row, bw)
         t = mean / math.sqrt(long_var / size) if long_var > 0 else float("nan")
         if not all(math.isfinite(x) for x in (dsr, t)):
             raise ValueError("a required statistic is undefined")
-        stats.append({"dsr": dsr, "pbo": overfit["pbo"], "fdr_q": q[i], "hac_t": t,
-                      "hac_p": math.erfc(t / math.sqrt(2)) / 2, "bootstrap_p": boot[i],
-                      "bh_survives": keep[i], "trial_count": n})
+        stats.append({**common, "dsr": dsr, "hac_t": t, "hac_p": math.erfc(t / math.sqrt(2)) / 2})
     return variance, overfit, stats
+
+
+def verified_abstentions(ledger: dict, input_sha256: str, *, plan: dict | None = None) -> set[int]:
+    """Check the v2 chain and bind abstention evidence to the verified replay and pinned plan."""
+    shadow_trial_ledger.validate_ledger_v2(ledger)
+    actual = {}
+    indices = set()
+    for i, row in enumerate(ledger["trials"]):
+        if row["disposition"] == "ERROR":
+            raise ValueError("a planned trial lacks a finite aligned return series")
+        if row["disposition"] != "ABSTAIN":
+            continue
+        proof = row["abstention"]
+        if proof["input_sha256"] != input_sha256:
+            raise ValueError("abstention proof refers to a different sealed replay input")
+        actual[row["trial_id"]] = proof["policy_sha256"]
+        indices.add(i)
+    if plan is not None and plan.get("abstentions") != actual:
+        raise ValueError("abstention proofs differ from the preregistered policies")
+    return indices
 
 
 def load_variants(doc: dict) -> tuple[list[str], np.ndarray]:
@@ -401,15 +437,27 @@ def _r(x, nd: int = 6):
     return None if x is None else round(float(x), nd)
 
 
-def _canonical_trial_inputs(ledger, results):
+def _canonical_trial_inputs(ledger, results, sources):
     trials = ledger["trials"]
+    v2 = ledger.get("schema") == ABSTENTION_LEDGER_SCHEMA
+    shared_input = None
     selected = {}
-    for _, replay in results:
+    for path, replay in results:
         if replay.get("schema") != "doppel.shadow-replay/v1":
             continue
+        if v2:
+            input_digest = replay["verdict"]["evaluation"]["input_sha256"]
+            if shared_input is not None and input_digest != shared_input:
+                raise ValueError("canonical v2 replays do not share the same observed inputs")
+            shared_input = input_digest
+            windows = [[row["start"], row["end"]] for row in replay["windows"] if row["eligible"]]
+            if windows != ledger["windows"]:
+                raise ValueError("canonical v2 replay and trial ledger do not share the same observed windows")
         gid = replay["genome_id"]
         eligible = series(replay)
         matches = [row["trial_id"] for row in trials if row["genome_id"] == gid and row["returns_c"] == eligible
+                   and (not v2 or (row.get("disposition") == "PASS" and replay.get("trial_id") == row["trial_id"]
+                                   and row.get("replay_sha256") == sources[path]))
                    and ("trial_id" not in replay or replay["trial_id"] == row["trial_id"])]
         if len(matches) != 1 or gid in selected.values():
             raise ValueError("canonical ledger does not uniquely identify each scored candidate")
@@ -418,7 +466,12 @@ def _canonical_trial_inputs(ledger, results):
         raise ValueError("canonical ledger requires a canonical replay candidate")
     if len(selected) != len(results):
         raise ValueError("a canonical family accepts only canonical replay candidates")
-    variance, overfit, stats = canonical_trial_statistics([row["returns_c"] for row in trials])
+    if v2 and not isinstance(shared_input, str):
+        raise ValueError("canonical v2 replay does not bind a sealed input digest")
+    abstentions = verified_abstentions(ledger, shared_input) if isinstance(shared_input, str) else set()
+    variance, overfit, stats = canonical_trial_statistics([row["returns_c"] for row in trials], abstentions=abstentions)
+    if v2:
+        overfit["verified_abstentions"] = len(abstentions)
     summary = {"n_trials": len(trials), "sr_variance": variance, "trials": [
         {"id": selected.get(row["trial_id"], row["trial_id"]), "p_value": stat["bootstrap_p"]}
         for row, stat in zip(trials, stats, strict=True)]}
@@ -451,12 +504,15 @@ def main(argv=None) -> int:
         trials = orjson.loads(raws[a.trials])
         variants = orjson.loads(raws[a.variants]) if a.variants else None
         stats = overfit = None
-        if trials.get("schema") == "doppel.shadow-trial-ledger/v1":
+        ledger_schema = trials.get("schema")
+        if ledger_schema in (CANONICAL_LEDGER_SCHEMA, ABSTENTION_LEDGER_SCHEMA):
             if variants is not None or a.pbo_s != PBO_S:
                 raise ValueError("canonical Shadow promotion takes its complete variants and PBO defaults from the ledger")
-            trials, variants, stats, overfit = _canonical_trial_inputs(trials, results)
+            trials, variants, stats, overfit = _canonical_trial_inputs(trials, results, srcs)
         doc = promote(results, trials, srcs, variants, a.pbo_s, canonical_stats=stats, canonical_pbo=overfit)
-    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+        if ledger_schema == ABSTENTION_LEDGER_SCHEMA:
+            doc["trials"]["ledger_schema"] = ledger_schema
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError) as e:
         print(f"REFUSED {e}", file=sys.stderr)
         return 2
     a.out.mkdir(parents=True, exist_ok=True)

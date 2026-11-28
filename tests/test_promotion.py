@@ -47,6 +47,41 @@ def test_dsr_is_null_when_undefined_and_falls_with_more_trials():
     assert ds == sorted(ds, reverse=True)
 
 
+def test_verified_zero_trials_count_in_dsr_bh_and_pbo():
+    sample = [.55 + ((i * 37) % 17 - 8) / 4 for i in range(48)]
+    other = [v - .7 for v in sample]
+    null = [0] * len(sample)
+    v1_var, _, v1 = P.canonical_trial_statistics([sample, other])
+    v2_var, pbo, v2 = P.canonical_trial_statistics([sample, null, other], abstentions={1})
+    assert v2_var == v1_var
+    m, sd, skew, kurt = P.moments(sample)
+    benchmark = P.expected_max_sr(3, max(v1_var, 1 / (len(sample) - 1)))
+    assert v2[0]["dsr"] == P.psr(m / sd, benchmark, len(sample), skew, kurt) < v1[0]["dsr"]
+    q, keep = P.bh([v1[0]["bootstrap_p"], 1.0, v1[1]["bootstrap_p"]])
+    assert [row["fdr_q"] for row in v2] == q
+    assert [row["bh_survives"] for row in v2] == keep
+    assert pbo == P.pbo(np.array([sample, null, other]).T)
+    assert all(row["trial_count"] == pbo["variants"] == 3 for row in v2)
+    assert v2[1]["bootstrap_p"] == v2[1]["fdr_q"] == 1.0
+    assert v2[1]["dsr"] is v2[1]["hac_t"] is None
+
+
+@pytest.mark.parametrize("series,verified,message", [
+    ([0] * 48, False, "lacks estimable return moments"),
+    ([1] * 48, True, "must be aligned all-zero"),
+    ([1] * 48, False, "lacks estimable return moments"),
+])
+def test_statistics_do_not_silently_relabel_unavailable_trials(series, verified, message):
+    with pytest.raises(ValueError, match=message):
+        P.canonical_trial_statistics([list(range(48)), list(reversed(range(48))), series],
+                                     abstentions={2} if verified else set())
+
+
+def test_verified_abstentions_do_not_substitute_for_estimable_trials():
+    with pytest.raises(ValueError, match="at least two estimable trials"):
+        P.canonical_trial_statistics([list(range(48)), [0] * 48, [0] * 48], abstentions={1, 2})
+
+
 # ---------------------------------------------------------------- FDR
 BH95 = [0.0001, 0.0004, 0.0019, 0.0095, 0.0201, 0.0278, 0.0298, 0.0344, 0.0459, 0.3240, 0.4262,
         0.5719, 0.6528, 0.7590, 1.0000]   # Benjamini & Hochberg (1995), section 4

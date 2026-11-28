@@ -156,14 +156,55 @@ class Bundle:
         self.registry = reg
         self.seal()
 
+    def enable_abstention(self):
+        windows = self.trials["windows"]
+        measured = self.trials["trials"]
+        measured[0].update(disposition="PASS", reason="candidate reached its preregistered target")
+        measured[1].update(disposition="FAIL", reason="alternative missed its preregistered target")
+        control = {"trial_id": label("no-entry trial"), "genome_id": label("no-entry identity"),
+                   "subject_id": label("control wallet"), "variant_id": label("no-entry variant")}
+        policy = label("preregistered fixed no-entry policy")
+        self.plan["attempts"].append(control)
+        self.plan.update(schema=promotion.ABSTENTION_PLAN_SCHEMA, abstentions={control["trial_id"]: policy})
+        plan_hash = digest(encode(self.plan))
+        self.trust = replace(self.trust, plan_sha256=plan_hash)
+        self.trials.update(schema=promotion.ABSTENTION_LEDGER_SCHEMA, plan_sha256=plan_hash)
+        measured.append({**control, "disposition": "ABSTAIN", "returns_c": [0] * len(windows),
+                         "reason": "fixed no-entry policy on a fully observed panel",
+                         "abstention": {"schema": promotion.ABSTENTION_PROOF_SCHEMA,
+                                        "policy_sha256": policy, "observed_windows": len(windows),
+                                        "entry_attempts": 0, "windows_sha256": digest(encode(windows)),
+                                        "input_sha256": self.replay["verdict"]["evaluation"]["input_sha256"]}})
+        self.replay["trial_id"] = measured[0]["trial_id"]
+        measured[0]["replay_sha256"] = digest(encode(self.replay))
+        self.approval.update(trial_ledger_schema=promotion.ABSTENTION_LEDGER_SCHEMA, n_trials=len(measured))
+        self.approval["statistics"] = _statistics(0, [r["returns_c"] for r in measured], abstentions={2})
+        s = self.approval["statistics"]
+        self.report_statistics["dsr"]["dsr"] = s["dsr"]
+        self.report_statistics["pbo"]["pbo"] = s["pbo"]
+        self.report_statistics["fdr"].update(bh_q=s["fdr_q"], bh_survives=s["bh_survives"])
+        self.rehash_trials()
+        self.seal()
+
+    def rehash_trials(self):
+        previous = "0" * 64
+        for seq, row in enumerate(self.trials["trials"]):
+            row.pop("sha256", None)
+            row.update(seq=seq, previous_sha256=previous)
+            previous = row["sha256"] = digest(encode(row))
+        self.approval["trial_head_sha256"] = previous
+
     def seal(self):
         src = self.gates["gates"]
         replay_hash = digest(encode(self.replay))
         report = {"sources": {"canonical.json": replay_hash, "trials.json": digest(encode(self.trials))},
-                  "trials": {"n_trials": 2},
+                  "trials": {"n_trials": self.approval["n_trials"]},
                   "candidates": [{"input": "canonical.json", "genome": {"id": self.genome.id},
                                   "decision": "PROMOTE", "base_decision": "PASS", "windows": 48,
                                   **self.report_statistics}]}
+        if "trial_ledger_schema" in self.approval:
+            report["trials"]["ledger_schema"] = self.approval["trial_ledger_schema"]
+            report["pbo"] = {"verified_abstentions": self.approval["statistics"]["verified_abstentions"]}
         files = {"plan.json": self.plan, "trials.json": self.trials, "replay.json": self.replay,
                  "gates.json": self.gates, "promotion.json": report, **self.offshore}
         if self.genome.mode == "taker":
@@ -356,8 +397,11 @@ def test_explicit_failure_and_statistic_tampering_are_rejected(tmp_path):
     b.reject("REJECT_INCOMPLETE_LEDGER")
 
 
-def test_promotion_cli_to_signed_maker_bundle_to_admission(tmp_path):
+@pytest.mark.parametrize("v2", [False, True], ids=["v1", "v2-abstention"])
+def test_promotion_cli_to_signed_maker_bundle_to_admission(tmp_path, v2):
     b = Bundle(tmp_path)
+    if v2:
+        b.enable_abstention()
     results = b.bundle
     report = tmp_path / "promotion"
     replay = results / "replay.json"
@@ -392,10 +436,75 @@ def test_promotion_cli_to_signed_maker_bundle_to_admission(tmp_path):
     receipt = admit_shadow(b.genome, output, b.trust, tmp_path / "live-owned-receipt",
                            simulation_sha256=simulation_digest(b.cfg))
     assert receipt["state"] == "SHADOW_ACTIVE"
-    assert receipt["archetype"] == "maker" and receipt["n_trials"] == 2
+    assert receipt["archetype"] == "maker" and receipt["n_trials"] == (3 if v2 else 2)
+    if v2:
+        assert receipt["trial_ledger_schema"] == promotion.ABSTENTION_LEDGER_SCHEMA
+        assert receipt["gates"]["verified_abstentions"] == 1
+        doc = orjson.loads((report / "promotion.json").read_bytes())
+        assert doc["trials"]["padded_with_p1"] == 0
+        assert doc["pbo"]["variants"] == 3 and doc["pbo"]["verified_abstentions"] == 1
+        assert next(row["p"] for row in doc["family"]["members"]
+                    if row["id"] == f"trial:{b.plan['attempts'][2]['trial_id']}") == 1.0
+    else:
+        assert "trial_ledger_schema" not in receipt and "verified_abstentions" not in receipt["gates"]
     assert receipt["gates"]["maker_queue_fill"]["verified_fills"] == 60
     assert receipt["gate_statuses"]["taker_timing"] == "NOT_APPLICABLE_ARCHETYPE"
     assert not (output / "layer5b.json").exists()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("observed_windows", 47),
+    ("entry_attempts", 1),
+    ("entry_attempts", False),
+    ("policy_sha256", label("unregistered policy")),
+    ("windows_sha256", label("shorter coverage panel")),
+    ("input_sha256", label("another snapshot")),
+])
+def test_signed_v2_abstention_must_prove_full_coverage_and_no_entry(tmp_path, field, value):
+    b = Bundle(tmp_path)
+    b.enable_abstention()
+    b.trials["trials"][2]["abstention"][field] = value
+    b.rehash_trials()
+    b.seal()
+    b.reject("REJECT_INCOMPLETE_LEDGER")
+
+
+def test_v2_ledger_keeps_existing_guards(tmp_path):
+    b = Bundle(tmp_path)
+    b.enable_abstention()
+    b.gates["gates"]["markout_2s"]["status"] = "UNMEASURED"
+    b.seal()
+    b.reject("REJECT_UNMEASURED_GATE")
+    b.gates["gates"]["markout_2s"]["status"] = "MEASURED_PASS"
+    b.seal()
+    b.replay["scenarios"][0]["net_c"] = 42
+    write(b.bundle / "replay.json", b.replay)
+    b.reject("REJECT_NONCANONICAL_REPLAY")
+    b.seal()  # The new signature cannot replace the exporter-pinned replay for this trial.
+    b.reject("REJECT_INCOMPLETE_LEDGER")
+    b.trials["trials"].pop()
+    b.rehash_trials()
+    b.seal()
+    b.reject("REJECT_INCOMPLETE_LEDGER")
+
+
+def test_v2_ledger_requires_signed_version_and_measured_rows(tmp_path):
+    b = Bundle(tmp_path)
+    b.enable_abstention()
+    schema = b.approval.pop("trial_ledger_schema")
+    b.sign()
+    b.reject("REJECT_INCOMPLETE_LEDGER")
+    b.approval["trial_ledger_schema"] = schema
+    row = b.trials["trials"][2]
+    row["returns_c"][0] = 0.0001
+    b.rehash_trials()
+    b.seal()
+    b.reject("REJECT_INCOMPLETE_LEDGER")
+    row.update(disposition="ERROR", returns_c=None)
+    row.pop("abstention")
+    b.rehash_trials()
+    b.seal()
+    b.reject("REJECT_INCOMPLETE_LEDGER")
 
 
 def test_watchdog_admission_requires_a_valid_bound_probability_before_receipt(tmp_path):

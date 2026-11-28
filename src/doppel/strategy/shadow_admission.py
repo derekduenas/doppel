@@ -141,6 +141,9 @@ def _verify_approval_metadata(approval, trust, genome, *, require_current=True):
              and _hex(trust.commit_sha, 40) and approval.get("commit_sha") == trust.commit_sha
              and approval.get("scoring_sha256") == scoring,
              code, "approval does not match this genome, archetype and evaluator release")
+    _require("trial_ledger_schema" not in approval
+             or approval["trial_ledger_schema"] == promotion.ABSTENTION_LEDGER_SCHEMA,
+             code, "unsupported trial ledger policy in approval")
     start, end = approval.get("valid_from_ns"), approval.get("valid_until_ns")
     _require(_int(start, 1) and _int(end, 1) and start < end and (not require_current or start <= now < end),
              code, "approval is outside its validity interval")
@@ -236,15 +239,18 @@ def _canonical_replay(genome, trust, approval, replay, simulation_sha256):
     return reg, records, windows, returns
 
 
-def _complete_ledger(genome, trust, approval, plan, ledger, reg, records, windows, returns):
+def _complete_ledger(genome, trust, approval, plan, ledger, reg, records, windows, returns, replay):
     code = "REJECT_INCOMPLETE_LEDGER"
     expected = plan.get("attempts")
     trials = ledger.get("trials")
     start = reg["eval_window"]["start_s"]
+    schema = approval.get("trial_ledger_schema", promotion.CANONICAL_LEDGER_SCHEMA)
+    v2 = schema == promotion.ABSTENTION_LEDGER_SCHEMA
+    plan_schema = promotion.ABSTENTION_PLAN_SCHEMA if v2 else "doppel.shadow-trial-plan/v1"
     _require(_hex(trust.plan_sha256) and approval["files"]["plan.json"] == trust.plan_sha256
-             and plan.get("schema") == "doppel.shadow-trial-plan/v1" and plan.get("family") == reg["family"]
+             and plan.get("schema") == plan_schema and plan.get("family") == reg["family"]
              and _int(plan.get("frozen_ns"), 1) and plan["frozen_ns"] < start * 10**9
-             and ledger.get("schema") == "doppel.shadow-trial-ledger/v1"
+             and ledger.get("schema") == schema
              and ledger.get("plan_sha256") == trust.plan_sha256
              and isinstance(expected, list) and isinstance(trials, list)
              and _int(approval.get("n_trials"), 2) and len(expected) == len(trials) == approval["n_trials"]
@@ -274,17 +280,30 @@ def _complete_ledger(genome, trust, approval, plan, ledger, reg, records, window
         if identity["trial_id"] == candidate_id:
             _require(identity["genome_id"] == genome.id and rows == returns, code,
                      "candidate trial differs from its canonical replay")
+            _require(not v2 or (trial.get("disposition") == "PASS" and replay.get("trial_id") == candidate_id
+                                and trial.get("replay_sha256") == approval["files"]["replay.json"]),
+                     code, "candidate trial did not bind the exported measured PASS replay")
             candidate = i
     _require(previous == approval.get("trial_head_sha256") and candidate is not None and family <= coverage,
              code, "closure, candidate, or registered family inventory is incomplete")
-    return candidate, values
-
-
-def _statistics(candidate, values):
     try:
-        return promotion.canonical_trial_statistics(values)[2][candidate]
+        input_sha256 = replay["verdict"]["evaluation"]["input_sha256"]
+        abstentions = promotion.verified_abstentions(ledger, input_sha256, plan=plan) if v2 else None
+    except (TypeError, ValueError, KeyError, OverflowError) as exc:
+        raise AdmissionRejected(code, str(exc)) from exc
+    _require(abstentions is None or all(trials[i]["genome_id"] not in family for i in abstentions),
+             code, "fixed no-entry controls cannot replace a registered strategy trial")
+    return candidate, values, abstentions
+
+
+def _statistics(candidate, values, *, abstentions: set[int] | None = None):
+    try:
+        stats = promotion.canonical_trial_statistics(values, abstentions=abstentions or frozenset())[2][candidate]
     except ValueError as exc:
         raise AdmissionRejected("REJECT_UNMEASURED_GATE", str(exc)) from exc
+    if abstentions is not None:
+        stats["verified_abstentions"] = len(abstentions)
+    return stats
 
 
 def _scenarios(replay):
@@ -493,6 +512,11 @@ def _check_promotion(report, approved, windows, stats):
              and approved["files"]["trials.json"] in sources.values()
              and report.get("trials", {}).get("n_trials") == approved["n_trials"], code,
              "promotion result does not state the verified trial inventory")
+    if approved.get("trial_ledger_schema") == promotion.ABSTENTION_LEDGER_SCHEMA:
+        _require(report.get("trials", {}).get("ledger_schema") == promotion.ABSTENTION_LEDGER_SCHEMA
+                 and _int(report.get("pbo", {}).get("verified_abstentions"))
+                 and report["pbo"]["verified_abstentions"] == stats["verified_abstentions"],
+                 code, "promotion report differs from the signed trial ledger policy and abstention count")
     matches = [row for row in rows if (row.get("genome") or {}).get("id") == approved["genome_id"]]
     _require(len(matches) == 1 and matches[0].get("decision") == "PROMOTE"
              and matches[0].get("base_decision") == "PASS" and matches[0].get("windows") == len(windows)
@@ -514,11 +538,12 @@ def _verified_evidence(genome, trust, approved, evidence, simulation_sha256):
     try:
         replay = evidence["replay.json"]
         reg, records, windows, returns = _canonical_replay(genome, trust, approved, replay, simulation_sha256)
-        candidate, values = _complete_ledger(genome, trust, approved, evidence["plan.json"],
-                                             evidence["trials.json"], reg, records, windows, returns)
+        candidate, values, abstentions = _complete_ledger(
+            genome, trust, approved, evidence["plan.json"], evidence["trials.json"], reg, records, windows,
+            returns, replay)
         scenarios = _scenarios(replay)
         measured = _measured_gates(genome, trust, evidence, approved, replay, windows)
-        stats = _statistics(candidate, values)
+        stats = _statistics(candidate, values, abstentions=abstentions)
         _check_promotion(evidence["promotion.json"], approved, windows, stats)
         if "probability.json" in evidence:
             try:
@@ -573,6 +598,8 @@ def admit_shadow(genome: Genome, bundle: Path, trust: AdmissionTrust, receipt_di
             "probability_sha256": approved["files"].get("probability.json"),
             "n_trials": stats["trial_count"], "scenario_grid": scenarios, "gates": {**stats, **measured},
             "gate_statuses": {k: row["status"] for k, row in evidence["gates.json"]["gates"].items()}}
+    if "trial_ledger_schema" in approved:
+        body["trial_ledger_schema"] = approved["trial_ledger_schema"]
     receipt = {**body, "receipt_sha256": _sha(_canon(body))}
     _issue(receipt_dir / genome.id / "admission_receipt.json", receipt)
     return receipt
