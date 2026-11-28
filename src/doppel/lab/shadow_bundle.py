@@ -18,6 +18,7 @@ from ..strategy.shadow_admission import (
 from ..strategy.shadow_archetypes import archetype
 from ..strategy.shadow_probability import MAX_BYTES as MAX_MODEL_BYTES
 from ..twin.cli import code_sha256
+from .promotion import ABSTENTION_LEDGER_SCHEMA
 
 COMPUTED_GATES = ("dsr", "pbo", "fdr", "hac", "bootstrap", "promo_edge")
 
@@ -150,6 +151,8 @@ def build_shadow_bundle(promotion_dir: Path, replay_artifact: Path, trial_ledger
                 "valid_from_ns": start, "valid_until_ns": end, "n_trials": len(trials),
                 "candidate_trial_id": matches[0]["trial_id"], "trial_head_sha256": trials[-1]["sha256"],
                 "files": {name: _sha(raw) for name, raw in files.items()}}
+    if ledger.get("schema") == ABSTENTION_LEDGER_SCHEMA:
+        approval["trial_ledger_schema"] = ABSTENTION_LEDGER_SCHEMA
     _verify_approval_metadata(approval, trust, genome, require_current=False)
     simulation = replay["verdict"]["evaluation"]["simulation"]
     _, _, _, stats = _verified_evidence(genome, trust, approval, evidence, _sha(_canon(simulation)))
